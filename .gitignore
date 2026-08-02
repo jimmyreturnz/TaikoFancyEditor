@@ -1,0 +1,33 @@
+
+# Private/local files
+.env
+.env.*
+!.env.example
+patches_backup/
+*.bak
+*.before_*.bak
+repomix-output*.md
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+
+# Build output
+build/
+dist/
+release/
+*.spec.bak
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
