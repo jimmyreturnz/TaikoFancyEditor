@@ -8,6 +8,8 @@ The program keeps the notes playable as osu! hit objects while giving you a visu
 
 > **Current release:** v1.0.0  
 > **Platform:** Windows x64
+
+
 > **Author:** jimmyreturnz
 
 The original idea is from a random chat with maruaki101 and other inspirations are from Alchyr's idea on his ranked maps called 13 stairs, and the other one is Helios where he places notes in a really interesting way to express something. You definitely should go check it out!
