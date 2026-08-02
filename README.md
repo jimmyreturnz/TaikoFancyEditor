@@ -14,6 +14,13 @@ The original idea is from a random chat with maruaki101 and other inspirations a
 
 ---
 
+## Windows SmartScreen notice
+
+Taiko Fancy Arranger v1.0.0 is a new, currently unsigned
+Windows application. Windows Defender SmartScreen may display
+an "unrecognized app" warning because the executable has not
+yet established download reputation.
+
 ## What can it do?
 
 - Open an osu! song folder by selecting any `.osu` difficulty
