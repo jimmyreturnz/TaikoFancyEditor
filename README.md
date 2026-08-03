@@ -16,7 +16,6 @@ The program keeps the notes as playable osu! hit objects while providing a visua
 > **Current release:** v1.0.1  
 > **Platform:** Windows x64  
 > **Author:** [jimmyreturnz](https://osu.ppy.sh/users/11306153)
->>>>>>> 6602a4c (Release v1.0.1)
 
 The original idea came from a random chat with maruaki101. Other inspirations include Alchyr's ranked maps *13 Stairs* and *Helios*, which use unusual note placement to create visual expression. You should go check it out [here!](https://osu.ppy.sh/beatmapsets/1093671#taiko/3819326)
 
@@ -110,6 +109,7 @@ Ctrl+Y    Restore the latest undone stroke
 ```
 
 ### Mathematical equation patterns
+> Warning: this is still an experimental feature, please expect some bugs.
 
 Equation mode can generate note paths from graph outlines.
 
