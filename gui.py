@@ -10,12 +10,12 @@ from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import QElapsedTimer, QEvent, QPointF, QRectF, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QImageReader, QColor, QFont, QFontDatabase, QKeySequence, QPainter, QPen, QPixmap, QShortcut
+from PySide6.QtGui import QImageReader, QColor, QFont, QFontDatabase, QKeySequence, QPainter, QPen, QPixmap, QShortcut, QIcon
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QAbstractSpinBox, QApplication, QButtonGroup, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
     QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton, QScrollArea,
-    QSlider, QSpinBox, QSplitter, QTabWidget, QVBoxLayout, QWidget,
+    QSlider, QSpinBox, QSplitter, QTabWidget, QVBoxLayout, QWidget, QDialog, QDialogButtonBox, QFontComboBox,
 )
 
 from gui_draft import PARAMETERS
@@ -25,10 +25,42 @@ from transformer import available_transformations, transform, transform_groups
 
 PLAYFIELD_WIDTH = 512
 PLAYFIELD_HEIGHT = 384
-GUI_TRANSFORMATIONS = [
-    name for name in available_transformations()
-    if name in PARAMETERS
-]
+
+
+def resource_roots() -> list[Path]:
+    roots=[]
+    if hasattr(sys,"_MEIPASS"):
+        roots.append(Path(sys._MEIPASS))
+    roots.extend([Path(__file__).resolve().parent,Path(sys.executable).resolve().parent,Path.cwd()])
+    unique=[]
+    for root in roots:
+        if root not in unique:unique.append(root)
+    return unique
+
+
+def application_icon() -> QIcon:
+    relative_candidates=(
+        Path("assets/icons/FancyTaikoEditor_Logo.ico"),
+        Path("assets/icons/FancyTaikoEditor_Logo.png"),
+        Path("assets/FancyTaikoEditor_Logo.ico"),
+        Path("FancyTaikoEditor_Logo.ico"),
+        Path("icon.ico"),
+    )
+    for root in resource_roots():
+        for relative in relative_candidates:
+            candidate=root/relative
+            if candidate.is_file():
+                icon=QIcon(str(candidate))
+                if not icon.isNull():return icon
+    return QIcon()
+PARAMETERS.setdefault("drawn_path", [{"key":"chunk_size","label":"Notes per Drawing","type":"int","min":2,"max":4096,"default":256},{"key":"reverse","label":"Direction","type":"choice","choices":[("Top to Bottom / Left to Right",False),("Top to Bottom / Right to Left",True)],"default":False}])
+if not any(item.get("key")=="font_family" for item in PARAMETERS.get("text",[])):
+    text_parameters=PARAMETERS.setdefault("text",[])
+    insert_at=next((index+1 for index,item in enumerate(text_parameters) if item.get("key")=="text"),0)
+    text_parameters.insert(insert_at,{"key":"font_family","label":"Font","type":"font","default":"Segoe UI"})
+if not any(item.get("key")=="reverse" for item in PARAMETERS.get("text",[])):
+    PARAMETERS["text"].append({"key":"reverse","label":"Direction","type":"choice","choices":[("Top to Bottom / Left to Right",False),("Top to Bottom / Right to Left",True)],"default":False})
+GUI_TRANSFORMATIONS=[name for name in ("text","drawn_path","equation") if name in PARAMETERS]+[name for name in available_transformations() if name in PARAMETERS and name not in {"text","drawn_path","equation"}]
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,6 +141,24 @@ def format_time(time_ms: int) -> str:
     return f"{value // 60000:02d}.{(value % 60000) // 1000:02d}.{value % 1000:03d}"
 
 
+def editor_timeline_metadata(document) -> tuple[list[int], int | None]:
+    section=""; bookmarks=[]; preview_time=None
+    for line in document.lines:
+        raw=line.rstrip("\r\n"); stripped=raw.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            section=stripped[1:-1]; continue
+        if section!="Editor": continue
+        if raw.startswith("Bookmarks:"):
+            for value in raw.split(":",1)[1].split(","):
+                try: bookmarks.append(max(0,round(float(value.strip()))))
+                except ValueError: pass
+        elif raw.startswith("PreviewTime:"):
+            try:
+                value=round(float(raw.split(":",1)[1].strip()))
+                preview_time=value if value>=0 else None
+            except ValueError: pass
+    return sorted(set(bookmarks)),preview_time
+
 def timing_point_lines(document) -> list[str]:
     section = ""; result = []
     for line in document.lines:
@@ -138,7 +188,7 @@ def kiai_ranges(document, duration_ms: int) -> list[tuple[int, int]]:
 
 
 def display_name(name: str) -> str:
-    return name.replace("_", " ").title()
+    return "Drawing" if name=="drawn_path" else name.replace("_"," ").title()
 
 
 def extract_background_filename(document) -> str:
@@ -197,6 +247,10 @@ class ParameterControl(QWidget):
     def __init__(self, definition: dict[str, Any]) -> None:
         super().__init__(); self.definition = definition
         layout = QHBoxLayout(self); layout.setContentsMargins(0,0,0,0); layout.setSpacing(8)
+        if definition["type"] == "font":
+            self.font_combo=QFontComboBox();self.font_combo.setCurrentFont(QFont(str(definition.get("default","Segoe UI"))))
+            self.font_combo.currentFontChanged.connect(lambda _font:self.changed.emit());layout.addWidget(self.font_combo,1)
+            self.choice=None;self.slider=None;self.spin=None;return
         if definition["type"] == "text":
             self.text_input = QLineEdit(str(definition.get("default", "")))
             self.text_input.setPlaceholderText("Enter text, for example 67, 日本, or ภาษาไทย")
@@ -266,6 +320,8 @@ class ParameterControl(QWidget):
     def randomize(self):
         self.set_value(random.SystemRandom().randint(int(self.definition["min"]),int(self.definition["max"]))); self.changed.emit()
     def set_value(self, value):
+        if self.definition["type"] == "font":
+            self.font_combo.blockSignals(True);self.font_combo.setCurrentFont(QFont(str(value)));self.font_combo.blockSignals(False);return
         if self.definition["type"] == "text":
             self.text_input.blockSignals(True)
             self.text_input.setText(str(value))
@@ -293,7 +349,86 @@ class ParameterControl(QWidget):
 
         self.spin.blockSignals(False)
     def value(self):
+        if self.definition["type"]=="font":return self.font_combo.currentFont().family()
         return self.text_input.text() if self.definition["type"]=="text" else self.choice_group.checkedButton().property("choice_value") if self.definition["type"]=="choice" else self.spin.value()
+
+
+class DifficultyValueControl(QWidget):
+    changed = Signal(float)
+    def __init__(self, label: str, default: float, tooltip: str) -> None:
+        super().__init__()
+        self.setToolTip(tooltip)
+        layout=QHBoxLayout(self);layout.setContentsMargins(0,0,0,0);layout.setSpacing(3)
+        caption=QLabel(label);caption.setToolTip(tooltip);layout.addWidget(caption)
+        self.slider=QSlider(Qt.Horizontal);self.slider.setRange(0,1000);self.slider.setSingleStep(1);self.slider.setPageStep(10);self.slider.setFixedWidth(200);self.slider.setToolTip(tooltip);layout.addWidget(self.slider)
+        self.value_box=QDoubleSpinBox();self.value_box.setRange(0.0,10.0);self.value_box.setDecimals(2);self.value_box.setSingleStep(0.01);self.value_box.setFixedWidth(62);self.value_box.setButtonSymbols(QAbstractSpinBox.NoButtons);self.value_box.setToolTip(tooltip);layout.addWidget(self.value_box)
+        decrease=QPushButton("-");increase=QPushButton("+")
+        for button in (decrease,increase):button.setFixedSize(28,28);button.setAutoRepeat(True);button.setFocusPolicy(Qt.NoFocus);button.setToolTip("Adjust by 0.01")
+        decrease.clicked.connect(self.value_box.stepDown);increase.clicked.connect(self.value_box.stepUp);layout.addWidget(increase);layout.addWidget(decrease)
+        self.slider.valueChanged.connect(self._slider_changed);self.value_box.valueChanged.connect(self._box_changed);self.set_value(default)
+    def _slider_changed(self, raw: int) -> None:
+        value=raw/100.0;self.value_box.blockSignals(True);self.value_box.setValue(value);self.value_box.blockSignals(False);self.changed.emit(value)
+    def _box_changed(self, value: float) -> None:
+        self.slider.blockSignals(True);self.slider.setValue(round(float(value)*100));self.slider.blockSignals(False);self.changed.emit(float(value))
+    def value(self) -> float:return float(self.value_box.value())
+    def set_value(self, value: float) -> None:
+        value=max(0.0,min(10.0,float(value)));self.value_box.setValue(value);self.slider.setValue(round(value*100))
+
+
+class DrawingSurface(QWidget):
+    def __init__(self):
+        super().__init__();self.strokes=[];self.active=None;self.redo_strokes=[];self.setMinimumSize(700,450);self.setFocusPolicy(Qt.StrongFocus)
+    def mousePressEvent(self,event):
+        if event.button()==Qt.LeftButton:
+            self.setFocus();self.active=[event.position()];self.strokes.append(self.active);self.redo_strokes.clear();event.accept();self.update()
+    def mouseMoveEvent(self,event):
+        if self.active is not None and event.buttons() & Qt.LeftButton:
+            point=event.position()
+            if (point-self.active[-1]).manhattanLength()>=1:self.active.append(point);self.update()
+            event.accept()
+    def mouseReleaseEvent(self,event):
+        if event.button()==Qt.LeftButton:
+            point=event.position()
+            if self.active is not None and (point-self.active[-1]).manhattanLength()>=1:self.active.append(point)
+            self.active=None;event.accept();self.update()
+    def paintEvent(self,event):
+        painter=QPainter(self);painter.fillRect(self.rect(),QColor("#11151c"));painter.setRenderHint(QPainter.Antialiasing,True);painter.setPen(QPen(QColor("#f3a6bd"),4,Qt.SolidLine,Qt.RoundCap,Qt.RoundJoin))
+        for stroke in self.strokes:
+            if len(stroke)==1:painter.drawPoint(stroke[0])
+            for a,b in zip(stroke,stroke[1:]):painter.drawLine(a,b)
+    def sampled_points(self):
+        points=[]
+        for stroke in self.strokes:
+            for point in stroke:
+                points.append((max(0.0,min(512.0,point.x()/max(1,self.width())*512.0)),max(0.0,min(384.0,point.y()/max(1,self.height())*384.0))))
+        return points
+    def clear(self):
+        if self.strokes:self.redo_strokes.extend(reversed(self.strokes));self.strokes.clear();self.active=None;self.update()
+    def undo(self):
+        self.active=None
+        if self.strokes:self.redo_strokes.append(self.strokes.pop());self.update()
+    def redo(self):
+        if self.redo_strokes:self.strokes.append(self.redo_strokes.pop());self.update()
+
+
+class DrawingDialog(QDialog):
+    def __init__(self,parent=None):
+        super().__init__(parent);self.accepted_points=[];self.setWindowTitle("Drawing");self.resize(780,560)
+        icon=application_icon()
+        if not icon.isNull():self.setWindowIcon(icon)
+        layout=QVBoxLayout(self);label=QLabel("Draw one or more strokes. Notes are placed top-to-bottom, then horizontally within each row. Ctrl+Z: undo, Ctrl+Y: redo.");label.setWordWrap(True);layout.addWidget(label)
+        self.surface=DrawingSurface();layout.addWidget(self.surface,1)
+        row=QHBoxLayout();undo_button=QPushButton("Undo");redo_button=QPushButton("Redo");clear_button=QPushButton("Clear");undo_button.clicked.connect(self.surface.undo);redo_button.clicked.connect(self.surface.redo);clear_button.clicked.connect(self.surface.clear);row.addWidget(undo_button);row.addWidget(redo_button);row.addWidget(clear_button);layout.addLayout(row)
+        self.undo_shortcut=QShortcut(QKeySequence("Ctrl+Z"),self);self.undo_shortcut.setContext(Qt.WidgetWithChildrenShortcut);self.undo_shortcut.activated.connect(self.surface.undo)
+        self.redo_shortcut=QShortcut(QKeySequence("Ctrl+Y"),self);self.redo_shortcut.setContext(Qt.WidgetWithChildrenShortcut);self.redo_shortcut.activated.connect(self.surface.redo)
+        buttons=QDialogButtonBox(QDialogButtonBox.Ok|QDialogButtonBox.Cancel);buttons.accepted.connect(self.accept);buttons.rejected.connect(self.reject);layout.addWidget(buttons)
+    def accept(self):
+        points=self.surface.sampled_points()
+        if len(points)<2:
+            QMessageBox.information(self,"Drawing","Draw at least one stroke before pressing OK.")
+            return
+        self.accepted_points=points
+        super().accept()
 
 
 class TransformCanvas(QWidget):
@@ -580,29 +715,40 @@ class TimelineGameplay(QWidget):
             * self.width()
         )
 
+    def _change_snap_from_wheel(self, delta: int) -> None:
+        if not delta:
+            return
+        values = (1, 2, 3, 4, 5, 6, 7, 8, 12, 16)
+        try:
+            current = values.index(self.snap_divisor)
+        except ValueError:
+            current = values.index(4)
+        # Wheel up moves toward finer snaps; wheel down toward coarser snaps.
+        direction = 1 if delta > 0 else -1
+        new_index = max(0, min(len(values) - 1, current + direction))
+        new_divisor = values[new_index]
+        if new_divisor != self.snap_divisor:
+            self.snap_divisor = new_divisor
+            self.snap_changed_by_wheel.emit(new_divisor)
+            self.update()
+
     def wheelEvent(self, event) -> None:
-        angle_delta = event.angleDelta().y()
-        pixel_delta = event.pixelDelta().y()
-        delta = angle_delta if angle_delta != 0 else pixel_delta
+        angle = event.angleDelta()
+        pixel = event.pixelDelta()
+        # Windows/Qt can turn Alt+vertical-wheel into a horizontal delta.
+        delta = angle.y() or angle.x() or pixel.y() or pixel.x()
 
         if delta == 0:
             event.accept()
             return
 
-        if event.modifiers() & Qt.AltModifier:
-            values = (1, 2, 3, 4, 5, 6, 7, 8, 12, 16)
-            current = values.index(self.snap_divisor)
-            direction = 1 if delta > 0 else -1
-            new_index = max(0, min(len(values) - 1, current + direction))
-            new_divisor = values[new_index]
-            if new_divisor != self.snap_divisor:
-                self.snap_divisor = new_divisor
-                self.snap_changed_by_wheel.emit(new_divisor)
-                self.update()
+        modifiers = event.modifiers() | QApplication.keyboardModifiers()
+        if modifiers & Qt.AltModifier:
+            self._change_snap_from_wheel(delta)
             event.accept()
             return
 
-        if event.modifiers() & Qt.ControlModifier:
+        if modifiers & Qt.ControlModifier:
             zoom_factor = 0.86 if delta > 0 else 1.16
             self.window_ms = max(
                 500.0,
@@ -621,7 +767,7 @@ class TimelineGameplay(QWidget):
             seek_direction = -1 if steps > 0 else 1
             divisor = (
                 1
-                if event.modifiers() & Qt.ShiftModifier
+                if modifiers & Qt.ShiftModifier
                 else self.snap_divisor
             )
 
@@ -851,10 +997,66 @@ class TimelineGameplay(QWidget):
         )
 
 
+class TimingOverviewBar(QWidget):
+    seek_requested = Signal(int)
+    def __init__(self) -> None:
+        super().__init__()
+        self.duration_ms=1; self.current_time=0; self.viewport_start=0; self.viewport_end=0
+        self.kiai=[]; self.timing_markers=[]; self.bookmarks=[]; self.preview_time=None; self.dragging=False
+        self.setFixedHeight(28); self.setCursor(Qt.PointingHandCursor)
+    def load_document(self,document,duration_ms:int)->None:
+        self.duration_ms=max(duration_ms,document.hit_objects[-1].time if document.hit_objects else 1,1)
+        self.kiai=kiai_ranges(document,self.duration_ms); self.timing_markers=[]
+        self.bookmarks,self.preview_time=editor_timeline_metadata(document)
+        for line in timing_point_lines(document):
+            fields=line.split(",")
+            try:
+                if len(fields)>=7:self.timing_markers.append((round(float(fields[0])),int(fields[6])==1))
+            except ValueError:pass
+        self.update()
+    def set_duration(self,value:int)->None:
+        if value>0:self.duration_ms=value;self.update()
+    def set_time(self,value:int)->None:self.current_time=max(0,min(value,self.duration_ms));self.update()
+    def set_viewport(self,center:int,window_ms:float)->None:
+        self.viewport_start=max(0,center-window_ms/2);self.viewport_end=min(self.duration_ms,center+window_ms/2);self.update()
+    def _seek(self,x:float)->None:self.seek_requested.emit(round(max(0,min(1,x/max(1,self.width())))*self.duration_ms))
+    def mousePressEvent(self,event)->None:
+        if event.button()==Qt.LeftButton:self.dragging=True;self._seek(event.position().x())
+    def mouseMoveEvent(self,event)->None:
+        if self.dragging:self._seek(event.position().x())
+    def mouseReleaseEvent(self,event)->None:
+        if self.dragging:self._seek(event.position().x())
+        self.dragging=False
+    def paintEvent(self,event)->None:
+        painter=QPainter(self);painter.fillRect(self.rect(),QColor("#0d1219"));painter.setRenderHint(QPainter.Antialiasing,False)
+        center=self.height()//2
+        kiai_height=max(3,self.height()//3);kiai_top=center-kiai_height//2
+        painter.setPen(Qt.NoPen)
+        for start,end in self.kiai:
+            x=start/self.duration_ms*self.width();w=max(1,(end-start)/self.duration_ms*self.width())
+            painter.fillRect(QRectF(x,kiai_top,w,kiai_height),QColor(255,170,0,82))
+        painter.setPen(QPen(QColor(255,255,255,190),1));painter.drawLine(0,center,self.width(),center)
+        groups={}
+        for time_ms,uninherited in self.timing_markers:groups.setdefault(time_ms,set()).add(uninherited)
+        for time_ms,kinds in groups.items():
+            x=round(time_ms/self.duration_ms*self.width())
+            color=QColor("#ffd400") if len(kinds)>1 else QColor("#ff4545") if True in kinds else QColor("#45d65a")
+            painter.setPen(QPen(color,1));painter.drawLine(x,1,x,center-1)
+        painter.setPen(QPen(QColor("#3e9bff"),1))
+        for bookmark in self.bookmarks:
+            x=round(bookmark/self.duration_ms*self.width());painter.drawLine(x,center+1,x,self.height()-2)
+        if self.preview_time is not None:
+            x=round(self.preview_time/self.duration_ms*self.width());painter.setPen(QPen(QColor("#ffd400"),1));painter.drawLine(x,center+1,x,self.height()-2)
+        if self.viewport_end>self.viewport_start:
+            x=self.viewport_start/self.duration_ms*self.width();w=(self.viewport_end-self.viewport_start)/self.duration_ms*self.width()
+            painter.setPen(QPen(QColor(255,255,255,65),1));painter.setBrush(Qt.NoBrush);painter.drawRect(QRectF(x,1,w,self.height()-2))
+        x=round(self.current_time/self.duration_ms*self.width());painter.setPen(QPen(QColor("#ffffff"),1));painter.drawLine(x,0,x,self.height())
+
+
 class DensityOverview(QWidget):
     seek_requested = Signal(int)
     def __init__(self) -> None:
-        super().__init__(); self.duration_ms=1; self.current_time=0; self.viewport_start=0; self.viewport_end=0; self.windows=[]; self.kiai=[]; self.dragging=False
+        super().__init__(); self.duration_ms=1; self.current_time=0; self.viewport_start=0; self.viewport_end=0; self.windows=[]; self.dragging=False
         self.static_layer = QPixmap()
         self.static_layer_dirty = True
         self.setFixedHeight(58); self.setCursor(Qt.PointingHandCursor)
@@ -870,7 +1072,7 @@ class DensityOverview(QWidget):
                     end=min(section_end,cursor+point.beat_length*4)
                     count=bisect_left(times,end)-bisect_left(times,cursor)
                     self.windows.append((max(0,cursor),end,count)); cursor=end
-        self.kiai=kiai_ranges(document,self.duration_ms); self.static_layer_dirty=True; self.update()
+        self.static_layer_dirty=True; self.update()
     def set_duration(self,value:int)->None:
         if value>0 and value!=self.duration_ms:
             self.duration_ms=value; self.static_layer_dirty=True; self.update()
@@ -891,8 +1093,6 @@ class DensityOverview(QWidget):
     def _rebuild_static_layer(self)->None:
         if self.width()<=0 or self.height()<=0:return
         layer=QPixmap(self.size()); layer.fill(QColor("#000000")); painter=QPainter(layer); painter.setPen(Qt.NoPen)
-        for start,end in self.kiai:
-            x=start/self.duration_ms*self.width();w=(end-start)/self.duration_ms*self.width();painter.fillRect(QRectF(x,0,w,self.height()),QColor(255,170,0,64))
         maximum=max((c for _,_,c in self.windows),default=1) or 1
         for start,end,count in self.windows:
             if not count:continue
@@ -909,15 +1109,25 @@ class DensityOverview(QWidget):
         x=self.current_time/self.duration_ms*self.width();painter.setPen(QPen(QColor("#ffffff"),2));painter.drawLine(round(x),0,round(x),self.height())
 
 
+def freeze_preview_value(value):
+    """Convert nested preview parameters into stable, hashable cache data."""
+    if isinstance(value, dict):
+        return tuple(sorted((str(key), freeze_preview_value(item)) for key, item in value.items()))
+    if isinstance(value, (list, tuple)):
+        return tuple(freeze_preview_value(item) for item in value)
+    if isinstance(value, set):
+        return tuple(sorted(freeze_preview_value(item) for item in value))
+    return value
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("Taiko Fancy Arranger v1.0.0")
+        self.app_name="Taiko Fancy Arranger";self.setWindowTitle(self.app_name)
+        icon=application_icon()
+        if not icon.isNull():self.setWindowIcon(icon)
         QApplication.instance().setFont(
             QFontDatabase.systemFont(QFontDatabase.GeneralFont)
-        )
-        self.setWindowTitle(
-            "Taiko Arranger - Selection Apply + Audio"
         )
         self.resize(1360, 900)
 
@@ -933,6 +1143,7 @@ class MainWindow(QMainWindow):
         self.preview_offsets = {"all": [0.0, 0.0], "don": [0.0, 0.0], "kat": [0.0, 0.0]}
 
         self.position_controls: dict[str, dict[str, ParameterControl]] = {}
+        self.drawing_points={"all":[],"don":[],"kat":[]};self.last_drawing_points=[];self.drawing_dialog_active=False
         self.controls: dict[
             str,
             dict[str, ParameterControl],
@@ -995,6 +1206,25 @@ class MainWindow(QMainWindow):
             widget=widget.parentWidget()
         return False
     def eventFilter(self,watched,event)->bool:
+        if self.drawing_dialog_active and event.type()==QEvent.MouseButtonPress:return super().eventFilter(watched,event)
+        if event.type()==QEvent.Wheel and hasattr(self,"timeline"):
+            modifiers=event.modifiers() | QApplication.keyboardModifiers()
+            alt_down=bool(modifiers & Qt.AltModifier)
+            if sys.platform=="win32":
+                try:
+                    import ctypes
+                    # VK_MENU catches the real physical Alt state even when Qt
+                    # converts Alt+wheel to horizontal scrolling.
+                    alt_down = alt_down or bool(ctypes.windll.user32.GetAsyncKeyState(0x12) & 0x8000)
+                except (AttributeError,OSError):
+                    pass
+            if alt_down:
+                angle=event.angleDelta();pixel=event.pixelDelta()
+                delta=angle.y() or angle.x() or pixel.y() or pixel.x()
+                if delta:
+                    self.timeline._change_snap_from_wheel(delta)
+                event.accept()
+                return True
         if event.type()==QEvent.MouseButtonPress and hasattr(self,"timeline") and self.selected:
             clicked=QApplication.widgetAt(event.globalPosition().toPoint())
             inside_timeline = self._is_descendant(clicked, self.timeline)
@@ -1053,6 +1283,10 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(self.play_button)
         toolbar.addWidget(self.reset_button)
         toolbar.addWidget(self.export_button)
+        self.approach_rate_control=DifficultyValueControl("AR",10.0,"Approach Rate: 0 is slowest, 10 is fastest. Export default is 10.00.")
+        self.circle_size_control=DifficultyValueControl("CS",7.0,"Circle Size: 0 is biggest, 10 is smallest. Export default is 7.00.")
+        toolbar.addWidget(self.approach_rate_control)
+        toolbar.addWidget(self.circle_size_control)
         toolbar.addStretch()
 
         self.status = QLabel("Open a map to begin.")
@@ -1142,6 +1376,20 @@ class MainWindow(QMainWindow):
         self.timeline.seek_requested.connect(self.seek_audio)
         self.timeline.snap_changed_by_wheel.connect(self._snap_changed_by_wheel)
         root.addWidget(self.timeline, 0)
+        timeline_row=QHBoxLayout();timeline_row.setSpacing(5)
+        time_area=QWidget();time_area.setFixedWidth(150)
+        time_area_layout=QHBoxLayout(time_area);time_area_layout.setContentsMargins(0,0,0,0);time_area_layout.addStretch()
+        self.timeline_time=QLabel("00:00:000");self.timeline_time.setAlignment(Qt.AlignCenter);self.timeline_time.setStyleSheet("font-size:18px;font-weight:700;");time_area_layout.addWidget(self.timeline_time)
+        time_area_layout.addStretch();timeline_row.addWidget(time_area)
+        self.timing_bar=TimingOverviewBar();self.timing_bar.seek_requested.connect(self.seek_audio);timeline_row.addWidget(self.timing_bar,1)
+        self.timeline_play_button=QPushButton("▶");self.timeline_play_button.setFixedWidth(42);self.timeline_play_button.clicked.connect(self.toggle_playback);timeline_row.addWidget(self.timeline_play_button)
+        timeline_row.addWidget(QLabel("Playback Rate"))
+        self.playback_speed_buttons=[]
+        for label,rate in (("25%",.25),("50%",.5),("75%",.75),("100%",1.0)):
+            button=QPushButton(label);button.setCheckable(True);button.setFixedWidth(52);button.setProperty("playbackRate",rate)
+            button.clicked.connect(lambda checked=False,r=rate:self._change_playback_speed(r));self.playback_speed_buttons.append(button);timeline_row.addWidget(button)
+        self._change_playback_speed(1.0)
+        root.addLayout(timeline_row)
         self.overview=DensityOverview(); self.overview.seek_requested.connect(self.seek_audio); root.addWidget(self.overview)
 
         self.setStyleSheet(
@@ -1382,6 +1630,21 @@ class MainWindow(QMainWindow):
                 self.controls[group][definition["key"]] = control
                 form.addRow(definition["label"], control)
 
+            if transformation_name=="drawn_path":
+                draw_button=QPushButton("Open Drawing Window")
+                def open_drawing(active_group=group):
+                    self.drawing_dialog_active=True
+                    try:
+                        dialog=DrawingDialog(self)
+                        if dialog.exec()==QDialog.Accepted:
+                            points=list(dialog.accepted_points)
+                            self.last_drawing_points=points
+                            self.drawing_points[active_group]=points
+                            for group_name,page in zip(("all","don","kat"),self.group_pages):
+                                if str(page.combo.currentData() or "")=="drawn_path":self.drawing_points[group_name]=points
+                            self.preview_cache.clear();self.schedule_preview()
+                    finally:self.drawing_dialog_active=False
+                draw_button.clicked.connect(open_drawing);form.addRow(draw_button)
             self.position_controls[group] = {}
             for axis, label, minimum, maximum in (
                 ("x", "Position X", -512, 512),
@@ -1445,13 +1708,9 @@ class MainWindow(QMainWindow):
     ) -> tuple[str, dict[str, Any]]:
         page = self.control_tabs.widget(tab_index)
 
-        return (
-            str(page.combo.currentData() or ""),
-            {
-                key: control.value()
-                for key, control in self.controls[group].items()
-            },
-        )
+        name=str(page.combo.currentData() or "");params={key:control.value() for key,control in self.controls[group].items()}
+        if name=="drawn_path":params["points"]=list(self.drawing_points.get(group) or self.last_drawing_points)
+        return name,params
 
     def open_map(self) -> None:
         filename, _ = QFileDialog.getOpenFileName(
@@ -1474,6 +1733,7 @@ class MainWindow(QMainWindow):
 
         self.document = document
         self.source_path = source_path
+        self.setWindowTitle(f"{source_path.name} - {self.app_name}")
         self.original_positions = {
             note.original_index: (note.x, note.y)
             for note in document.hit_objects
@@ -1487,7 +1747,9 @@ class MainWindow(QMainWindow):
         self.timeline.load_document(document)
         self.timeline.set_snap_divisor(int(self.snap_combo.currentData()))
         self.player.setSource(QUrl.fromLocalFile(str(audio_path)))
-        self.overview.load_document(document, document.hit_objects[-1].time)
+        duration_hint=document.hit_objects[-1].time if document.hit_objects else 1
+        self.timing_bar.load_document(document,duration_hint)
+        self.overview.load_document(document,duration_hint)
 
         background_name = extract_background_filename(document)
         background_path = source_path.parent / background_name if background_name else None
@@ -1709,7 +1971,9 @@ class MainWindow(QMainWindow):
             specs=[]
             if self.mode_combo.currentText()=="All Notes": specs=[self._spec(0,"all")]
             else: specs=[self._spec(0,"don"),self._spec(1,"kat")]
-            key=(self.commit_revision,tuple(sorted(self.selected)),tuple((name,tuple(sorted(params.items()))) for name,params in specs))
+            if any(name=="drawn_path" and len(params.get("points",[]))<2 for name,params in specs):
+                self.preview_positions=dict(self.applied_positions);self.refresh_canvas();self.status_label.setText("Open Drawing Window and draw a shape to preview.");return
+            key=(self.commit_revision,tuple(sorted(self.selected)),tuple((name,freeze_preview_value(params)) for name,params in specs))
             result=self.preview_cache.get(key)
             if result is None:
                 result=self._calculate_selected_transform(); self.preview_cache={key:result}
@@ -1784,6 +2048,13 @@ class MainWindow(QMainWindow):
         if not self.redo_stack:return
         self.undo_stack.append(dict(self.applied_positions));self.applied_positions=self.redo_stack.pop();self.preview_positions=dict(self.applied_positions);self.commit_revision+=1;self.preview_cache.clear();self.refresh_canvas()
 
+    def _change_playback_speed(self,rate:float)->None:
+        rate=float(rate);self.player.setPlaybackRate(rate)
+        self.audio_anchor_position=self.player.position();self.audio_anchor_clock.restart()
+        for button in getattr(self,"playback_speed_buttons",[]):
+            active=abs(float(button.property("playbackRate"))-rate)<0.0001
+            button.blockSignals(True);button.setChecked(active);button.blockSignals(False)
+
     def toggle_playback(self) -> None:
         if (
             self.player.playbackState()
@@ -1792,15 +2063,17 @@ class MainWindow(QMainWindow):
             self.player.pause()
             self.timeline.is_playing=False
             self.play_button.setText("Play")
+            if hasattr(self,"timeline_play_button"):self.timeline_play_button.setText("▶")
         else:
             self.audio_anchor_position=self.player.position(); self.audio_anchor_clock.restart()
             self.timeline.is_playing=True
             self.player.play()
             self.play_button.setText("Pause")
+            if hasattr(self,"timeline_play_button"):self.timeline_play_button.setText("❚❚")
 
     def seek_audio(self, position: int) -> None:
         position=max(0,position); self.audio_anchor_position=position; self.latest_audio_position=position; self.audio_anchor_clock.restart()
-        self.player.setPosition(position); self.timeline.set_time(position,force=True); self.overview.set_time(position)
+        self.player.setPosition(position); self.timeline.set_time(position,force=True); self.timing_bar.set_time(position); self.overview.set_time(position)
 
     def _update_timeline_info(self) -> None:
         if not hasattr(self, "timeline_info"):
@@ -1808,6 +2081,9 @@ class MainWindow(QMainWindow):
         duration = max(0, self.player.duration())
         position = max(0, round(self.timeline.current_time) if hasattr(self,"timeline") else self.player.position())
         if hasattr(self,"overview"): self.overview.set_duration(duration)
+        if hasattr(self,"timing_bar"): self.timing_bar.set_duration(duration)
+        if hasattr(self,"timeline_time"):
+            value=max(0,int(position));self.timeline_time.setText(f"{value//60000:02d}:{(value%60000)//1000:02d}:{value%1000:03d}")
         self.timeline_info.setText(
             f"Duration: {format_time(duration)}   |   "
             f"Position: {format_time(position)}   |   "
@@ -1828,6 +2104,8 @@ class MainWindow(QMainWindow):
         duration=self.player.duration()
         if duration>0:position=min(position,duration)
         self.timeline.set_time(position,force=True)
+        self.timing_bar.set_time(position)
+        self.timing_bar.set_viewport(position,self.timeline.window_ms)
         self.overview.set_time(position)
         self.overview.set_viewport(position,self.timeline.window_ms)
 
@@ -1837,7 +2115,7 @@ class MainWindow(QMainWindow):
         if answer!=QMessageBox.Yes:return
         try:
             for note in self.document.hit_objects:note.x,note.y=self.applied_positions[note.original_index]
-            write_osu(self.document,self.source_path,self.document.version,allow_overwrite_source=True,create_backup=True,force_ar=10,force_cs=7)
+            write_osu(self.document,self.source_path,self.document.version,allow_overwrite_source=True,create_backup=True,force_ar=self.approach_rate_control.value(),force_cs=self.circle_size_control.value())
         except Exception as error:QMessageBox.critical(self,"Write failed",str(error));return
         QMessageBox.information(self,"Original updated","Applied all committed changes to:\n"+str(self.source_path))
 
@@ -1888,6 +2166,8 @@ class MainWindow(QMainWindow):
                 self.document,
                 destination_path,
                 f"{self.document.version} (arranged)",
+                force_ar=self.approach_rate_control.value(),
+                force_cs=self.circle_size_control.value(),
             )
 
         except Exception as error:
@@ -1906,7 +2186,14 @@ class MainWindow(QMainWindow):
 
 
 def main() -> None:
-    app = QApplication(sys.argv)
+    if sys.platform=="win32":
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("jimmyreturnz.TaikoFancyArranger")
+        except (AttributeError,OSError):pass
+    app=QApplication(sys.argv)
+    icon=application_icon()
+    if not icon.isNull():app.setWindowIcon(icon)
     window = MainWindow()
     window.showMaximized()
     raise SystemExit(app.exec())

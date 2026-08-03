@@ -1,33 +1,187 @@
+# ============================================================
+# Local configuration and secrets
+# ============================================================
 
-# Private/local files
 .env
 .env.*
 !.env.example
-patches_backup/
-*.bak
-*.before_*.bak
-repomix-output*.md
 
+*.key
+*.pem
+*.pfx
+*.p12
+*.cer
+*.crt*
+# ============================================================
 # Python
+# ============================================================
+
 __pycache__/
 *.py[cod]
-*.egg-info/
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
+*$py.class
+*.pyo
+*.pyd
+
 .venv/
 venv/
 env/
+ENV/
 
-# Build output
+*.egg
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# ============================================================
+# Build and release output
+# ============================================================
+
 build/
 dist/
 release/
-*.spec.bak
+releases/
 
-# Editors and OS
+*.zip
+*.7z
+*.rar
+*.tar
+*.tar.gz
+*.t*z
+
+*.spec.bak
+*.manifest
+
+# Keep t*e actual PyInstaller specification*!TaikoFancyArranger.spec
+
+# ======*==================================*==================
+# Temporary rel*ase and security-review files
+# ==*==================================*======================
+
+FEATURES_A*DED.md
+REFACTOR_PLAN.md
+SECURITY.m*
+WINDOWS_DEFENDER_RESPONSE.md
+
+build_source_release.bat
+check_release_clean.py
+generate_release_evidence.py
+
+security_utils.py
+test_security.py
+
+security-reports/
+release-evidence/
+release_evidence/
+scan-results/
+scan_results/
+
+# ============================================================
+# Patch, migration, and backup scripts
+# ============================================================
+
+patches_backup/
+patches/
+patch_backup/
+patch-backup/
+
+*.bak
+*.bak.*
+*.before**.bak
+*.backup
+*.orig
+*.rej
+*.patc*
+
+# ==============================*=============================
+# AI*and repository packing output
+# ==*=========================================================
+
+repomix-output*.md
+repomix-output*.xml
+repomix-output*.txt
+repomix-output*.json
+
+# =========================*==================================*# Logs and runtime files
+# =======*==================================*=================
+
+*.log
+*.tmp
+*.t*mp
+*.lock
+*.pid
+*.cache
+
+logs/
+tem*/
+tmp/
+
+# ========================*==================================*
+# IDE and editor files
+# ========*==================================*================
+
 .vscode/
 .idea/
-.DS_Store
+*.code-workspace
+
+*.swp
+*.swo
+*~
+.p*oject
+.pydevproject
+
+# ===========*==================================*=============
+# Windows and operat*ng-system files
+# ============================================================
+
 Thumbs.db
-desktop.ini
+Thumbs.db:encryptable
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Windows executable metadata and crash dumps
+*.dmp
+*.stackdump
+
+# Keep source icon assets
+!assets/icons/*.ico
+!assets/icons/*.png
+
+# ==========================*=================================
+* macOS and Linux desktop files
+# ============================================================
+
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+.directory
+.Trash-*
+
+# ============================================================
+# Test and generated beatmap output
+# ============================================================
+
+test-output/
+test_output/
+generated/
+output/
+
+*.osu.tmp
+*.osu.bak
+
+# Do not ignore real source beatmaps globally.
+# Add local beatmap folders below if needed:
+beatmaps/
+test-beatmaps/
+test_beatmaps/

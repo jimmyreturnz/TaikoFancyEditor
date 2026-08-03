@@ -8,7 +8,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 from PySide6.QtCore import QPointF
-from PySide6.QtGui import QFontDatabase, QFontMetricsF, QRawFont, QTextLayout, QTextOption, QTransform
+from PySide6.QtGui import QFont, QFontDatabase, QFontMetricsF, QRawFont, QTextLayout, QTextOption, QTransform
 
 PLAYFIELD_WIDTH = 512
 PLAYFIELD_HEIGHT = 384
@@ -63,6 +63,13 @@ def transform(name: str, selected_note_indexes: Iterable[int], params: Mapping[s
     if name == "equation":
         return _equation(indexes, p)
 
+    if name == "drawn_path":
+        points=[(float(point[0]),float(point[1])) for point in p.get("points",[]) if len(point)>=2]
+        if len(points)<2: raise ValueError("Drawing needs at least two sampled points")
+        ordered=_visual_reading_order(points,bool(p.get("reverse",False)));count=len(indexes)
+        sampled=[ordered[round(i*(len(ordered)-1)/max(1,count-1))] for i in range(count)]
+        return {index:(_round(x),_round(y)) for index,(x,y) in zip(indexes,sampled)}
+
     builders = {
         "circle": _circle,
         "ellipse": _ellipse,
@@ -78,7 +85,6 @@ def transform(name: str, selected_note_indexes: Iterable[int], params: Mapping[s
         "wave": _wave,
         "zigzag": _zigzag,
         "bezier": _bezier,
-        "drawn_path": _drawn,
     }
     if name not in builders:
         raise ValueError(f"Unknown transformation: {name}. Available: {', '.join(available_transformations())}")
@@ -430,7 +436,8 @@ def _text(indexes: list[int], p: dict[str, Any]) -> PositionMap:
 
     # This is intentionally the operating-system general font. Exo 2 is not
     # involved in generated text geometry.
-    font = QFontDatabase.systemFont(QFontDatabase.GeneralFont)
+    requested_family=str(p.get("font_family","")).strip()
+    font=QFont(requested_family) if requested_family else QFontDatabase.systemFont(QFontDatabase.GeneralFont)
     font.setPointSizeF(160.0)
     metrics = QFontMetricsF(font)
 
@@ -572,9 +579,7 @@ def _text(indexes: list[int], p: dict[str, Any]) -> PositionMap:
         if allocation:
             sampled.extend(_sample_polyline(contour, allocation))
     sampled = sampled[:count]
-
-    if bool(p.get("reverse", False)):
-        sampled.reverse()
+    sampled = _visual_reading_order(sampled, bool(p.get("reverse", False)))
     return {
         index: (_round(x), _round(y))
         for index, (x, y) in zip(indexes, sampled)
@@ -1075,3 +1080,11 @@ def _point(value):
     return float(value[0]), float(value[1])
 def _points(values): return [] if values is None else [_point(v) for v in values]
 def _round(value): return int(math.floor(value + 0.5))
+
+
+def _visual_reading_order(points, reverse_horizontal=False, row_band=8.0):
+    rows={}
+    for x,y in points: rows.setdefault(round(float(y)/max(1.0,row_band)),[]).append((float(x),float(y)))
+    ordered=[]
+    for row in sorted(rows): ordered.extend(sorted(rows[row],key=lambda point:point[0],reverse=reverse_horizontal))
+    return ordered
