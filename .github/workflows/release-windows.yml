@@ -7,11 +7,12 @@ on:
       - "v*"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-windows:
     runs-on: windows-latest
+
     steps:
       - name: Check out source
         uses: actions/checkout@v7
@@ -39,21 +40,48 @@ jobs:
           Copy-Item README.md dist/TaikoFancyArranger/README.md
           Copy-Item LICENSE dist/TaikoFancyArranger/LICENSE
 
+          if (Test-Path RELEASE_NOTES_v1.0.2.md) {
+            Copy-Item `
+              RELEASE_NOTES_v1.0.2.md `
+              dist/TaikoFancyArranger/RELEASE_NOTES.md
+          }
+
       - name: Create portable ZIP and checksums
         shell: pwsh
         run: |
-          Compress-Archive -Path dist/TaikoFancyArranger/* -DestinationPath TaikoFancyArranger-Windows-x64.zip
-          $exe = Get-FileHash dist/TaikoFancyArranger/TaikoFancyArranger.exe -Algorithm SHA256
-          $zip = Get-FileHash TaikoFancyArranger-Windows-x64.zip -Algorithm SHA256
+          Compress-Archive `
+            -Path dist/TaikoFancyArranger/* `
+            -DestinationPath TaikoFancyArranger-Windows-x64.zip `
+            -Force
+
+          $exe = Get-FileHash `
+            dist/TaikoFancyArranger/TaikoFancyArranger.exe `
+            -Algorithm SHA256
+
+          $zip = Get-FileHash `
+            TaikoFancyArranger-Windows-x64.zip `
+            -Algorithm SHA256
+
           @(
             "$($exe.Hash)  TaikoFancyArranger.exe"
             "$($zip.Hash)  TaikoFancyArranger-Windows-x64.zip"
-          ) | Set-Content SHA256SUMS.txt
+          ) | Set-Content SHA256SUMS.txt -Encoding ascii
 
-      - name: Upload workflow artifact for review
+      - name: Upload workflow artifact
         uses: actions/upload-artifact@v7
         with:
           name: TaikoFancyArranger-Windows-x64
           path: |
+            TaikoFancyArranger-Windows-x64.zip
+            SHA256SUMS.txt
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Taiko Fancy Arranger ${{ github.ref_name }}
+          body_path: RELEASE_NOTES_v1.0.2.md
+          files: |
             TaikoFancyArranger-Windows-x64.zip
             SHA256SUMS.txt
