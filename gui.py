@@ -777,7 +777,7 @@ class TimelineGameplay(QWidget):
             event.accept()
             return
 
-        threshold = 40.0 if angle_delta == 0 else 120.0
+        threshold = 40.0 if angle.isNull() == 0 else 120.0
         self.wheel_accumulator += delta
         steps = int(self.wheel_accumulator / threshold)
 
