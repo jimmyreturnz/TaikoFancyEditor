@@ -14,6 +14,13 @@ The original idea came from a random chat with maruaki101. Other inspirations in
 
 ---
 
+## Windows SmartScreen notice
+
+Taiko Fancy Arranger v1.0.1 is a new, currently unsigned
+Windows application. Windows Defender SmartScreen may display
+an "unrecognized app" warning because the executable has not
+yet established download reputation.
+
 ## What can it do?
 
 - Open an osu! song folder by selecting any `.osu` difficulty
@@ -95,6 +102,7 @@ Ctrl+Y    Restore the latest undone stroke
 ```
 
 ### Mathematical equation patterns
+> Warning: this is still an experimental feature, please expect some bugs.
 
 Equation mode can generate note paths from graph outlines.
 
