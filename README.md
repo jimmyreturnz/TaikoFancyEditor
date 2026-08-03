@@ -6,13 +6,6 @@ Taiko Fancy Arranger is a desktop tool for osu!taiko players and mappers who wan
 
 The program keeps the notes as playable osu! hit objects while providing a visual workspace to select, preview, move, transform, undo, redo, and export arrangements.
 
-<<<<<<< HEAD
-> **Current release:** v1.0.0  
-> **Platform:** Windows x64
-
-
-> **Author:** jimmyreturnz
-=======
 > **Current release:** v1.0.1  
 > **Platform:** Windows x64  
 > **Author:** [jimmyreturnz](https://osu.ppy.sh/users/11306153)
@@ -23,7 +16,7 @@ The original idea came from a random chat with maruaki101. Other inspirations in
 
 ## Windows SmartScreen notice
 
-Taiko Fancy Arranger v1.0.0 is a new, currently unsigned
+Taiko Fancy Arranger v1.0.1 is a new, currently unsigned
 Windows application. Windows Defender SmartScreen may display
 an "unrecognized app" warning because the executable has not
 yet established download reputation.
