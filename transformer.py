@@ -641,8 +641,47 @@ def _normalize_math_expression(expression: str) -> str:
     return value
 
 
+MAX_EXPRESSION_LENGTH = 512
+MAX_EXPRESSION_NODES = 128
+MAX_EXPRESSION_DEPTH = 24
+MAX_ABS_EXPONENT = 32.0
+MAX_ABS_RESULT = 1e12
+
+
+def _validate_expression_tree(tree: ast.AST, variables: set[str]) -> None:
+    nodes=list(ast.walk(tree))
+    if len(nodes)>MAX_EXPRESSION_NODES:
+        raise ValueError("Equation is too complex")
+    def visit(node: ast.AST, depth: int=0) -> None:
+        if depth>MAX_EXPRESSION_DEPTH:
+            raise ValueError("Equation nesting is too deep")
+        allowed=(ast.Expression,ast.Constant,ast.Name,ast.BinOp,ast.UnaryOp,ast.Call,ast.Compare,ast.BoolOp,
+                 ast.Add,ast.Sub,ast.Mult,ast.Div,ast.Mod,ast.Pow,ast.UAdd,ast.USub,
+                 ast.Lt,ast.LtE,ast.Gt,ast.GtE,ast.Eq,ast.And,ast.Or,ast.Load)
+        if not isinstance(node,allowed):
+            raise ValueError("Unsupported equation syntax")
+        if isinstance(node,ast.Name) and node.id not in variables and node.id not in _MATH_CONSTANTS and node.id not in _MATH_FUNCTIONS:
+            raise ValueError(f"Unknown name: {node.id}")
+        if isinstance(node,ast.Call):
+            if not isinstance(node.func,ast.Name) or node.func.id not in _MATH_FUNCTIONS or node.keywords:
+                raise ValueError("Unsupported function call")
+        for child in ast.iter_child_nodes(node):visit(child,depth+1)
+    visit(tree)
+
+
+def _bounded_number(value: Any) -> float:
+    result=float(value)
+    if not math.isfinite(result) or abs(result)>MAX_ABS_RESULT:
+        raise ValueError("Equation result is outside the supported range")
+    return result
+
+
 def _compile_safe_expression(expression: str, variables: set[str]):
-    tree = ast.parse(_normalize_math_expression(expression), mode="eval")
+    normalized=_normalize_math_expression(expression)
+    if len(normalized)>MAX_EXPRESSION_LENGTH:
+        raise ValueError("Equation is too long")
+    tree = ast.parse(normalized, mode="eval")
+    _validate_expression_tree(tree,variables)
     def evaluate(node, env):
         if isinstance(node, ast.Expression): return evaluate(node.body, env)
         if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)): return float(node.value)
@@ -651,11 +690,14 @@ def _compile_safe_expression(expression: str, variables: set[str]):
             if node.id in _MATH_CONSTANTS: return _MATH_CONSTANTS[node.id]
             raise ValueError(f"Unknown name: {node.id}")
         if isinstance(node, ast.BinOp) and type(node.op) in _ALLOWED_BINARY:
-            return _ALLOWED_BINARY[type(node.op)](evaluate(node.left, env), evaluate(node.right, env))
+            left=evaluate(node.left,env);right=evaluate(node.right,env)
+            if isinstance(node.op,ast.Pow) and abs(float(right))>MAX_ABS_EXPONENT:
+                raise ValueError("Exponent is outside the supported range")
+            return _bounded_number(_ALLOWED_BINARY[type(node.op)](left,right))
         if isinstance(node, ast.UnaryOp) and type(node.op) in _ALLOWED_UNARY:
             return _ALLOWED_UNARY[type(node.op)](evaluate(node.operand, env))
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in _MATH_FUNCTIONS:
-            return _MATH_FUNCTIONS[node.func.id](*[evaluate(arg, env) for arg in node.args])
+            return _bounded_number(_MATH_FUNCTIONS[node.func.id](*[evaluate(arg, env) for arg in node.args]))
         if isinstance(node, ast.Compare) and len(node.ops) == 1 and type(node.ops[0]) in _ALLOWED_COMPARE:
             return _ALLOWED_COMPARE[type(node.ops[0])](evaluate(node.left, env), evaluate(node.comparators[0], env))
         if isinstance(node, ast.BoolOp):
