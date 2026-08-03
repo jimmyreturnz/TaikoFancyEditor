@@ -28,14 +28,33 @@ PLAYFIELD_HEIGHT = 384
 
 
 def resource_roots() -> list[Path]:
+    """Return only trusted application roots, never the process working directory."""
     roots=[]
     if hasattr(sys,"_MEIPASS"):
-        roots.append(Path(sys._MEIPASS))
-    roots.extend([Path(__file__).resolve().parent,Path(sys.executable).resolve().parent,Path.cwd()])
+        roots.append(Path(sys._MEIPASS).resolve())
+    roots.append(Path(__file__).resolve().parent)
     unique=[]
     for root in roots:
         if root not in unique:unique.append(root)
     return unique
+
+
+def resolve_song_asset(song_folder: Path, raw_name: str, allowed_suffixes: set[str]) -> Path:
+    """Resolve a beatmap asset without allowing absolute paths or .. traversal."""
+    name=raw_name.strip().strip('"')
+    if not name:
+        raise ValueError("Beatmap asset name is empty")
+    relative=Path(name)
+    if relative.is_absolute() or any(part == ".." for part in relative.parts):
+        raise ValueError(f"Unsafe beatmap asset path: {raw_name}")
+    candidate=(song_folder.resolve()/relative).resolve()
+    try:
+        candidate.relative_to(song_folder.resolve())
+    except ValueError as error:
+        raise ValueError(f"Beatmap asset escapes the song folder: {raw_name}") from error
+    if candidate.suffix.lower() not in allowed_suffixes:
+        raise ValueError(f"Unsupported beatmap asset type: {candidate.suffix}")
+    return candidate
 
 
 def application_icon() -> QIcon:
@@ -758,7 +777,7 @@ class TimelineGameplay(QWidget):
             event.accept()
             return
 
-        threshold = 40.0 if angle_delta == 0 else 120.0
+        threshold = 40.0 if angle.isNull() == 0 else 120.0
         self.wheel_accumulator += delta
         steps = int(self.wheel_accumulator / threshold)
 
@@ -1210,14 +1229,6 @@ class MainWindow(QMainWindow):
         if event.type()==QEvent.Wheel and hasattr(self,"timeline"):
             modifiers=event.modifiers() | QApplication.keyboardModifiers()
             alt_down=bool(modifiers & Qt.AltModifier)
-            if sys.platform=="win32":
-                try:
-                    import ctypes
-                    # VK_MENU catches the real physical Alt state even when Qt
-                    # converts Alt+wheel to horizontal scrolling.
-                    alt_down = alt_down or bool(ctypes.windll.user32.GetAsyncKeyState(0x12) & 0x8000)
-                except (AttributeError,OSError):
-                    pass
             if alt_down:
                 angle=event.angleDelta();pixel=event.pixelDelta()
                 delta=angle.y() or angle.x() or pixel.y() or pixel.x()
@@ -1724,9 +1735,13 @@ class MainWindow(QMainWindow):
             document = parse_osu(source_path)
             if not document.hit_objects:
                 raise ValueError("No hit objects were parsed.")
-            audio_path = source_path.parent / document.audio_filename
+            audio_path = resolve_song_asset(
+                source_path.parent,
+                document.audio_filename,
+                {".mp3", ".ogg", ".wav", ".flac", ".m4a", ".aac", ".opus"},
+            )
             if not audio_path.is_file():
-                raise FileNotFoundError(f"Audio file not found: {audio_path}")
+                raise FileNotFoundError(f"Audio file not found: {audio_path.name}")
         except Exception as error:
             QMessageBox.critical(self, "Open failed", str(error))
             return
@@ -1752,8 +1767,14 @@ class MainWindow(QMainWindow):
         self.overview.load_document(document,duration_hint)
 
         background_name = extract_background_filename(document)
-        background_path = source_path.parent / background_name if background_name else None
-        self.current_background_path = background_path if background_path and background_path.is_file() else None
+        background_path = None
+        if background_name:
+            try:
+                candidate = resolve_song_asset(source_path.parent, background_name, {".jpg", ".jpeg", ".png", ".webp", ".bmp"})
+                background_path = candidate if candidate.is_file() else None
+            except ValueError:
+                background_path = None
+        self.current_background_path = background_path
         self.canvas.set_background(str(self.current_background_path) if self.current_background_path else None)
 
         if refresh_difficulties:
@@ -2186,11 +2207,6 @@ class MainWindow(QMainWindow):
 
 
 def main() -> None:
-    if sys.platform=="win32":
-        try:
-            import ctypes
-            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("jimmyreturnz.TaikoFancyArranger")
-        except (AttributeError,OSError):pass
     app=QApplication(sys.argv)
     icon=application_icon()
     if not icon.isNull():app.setWindowIcon(icon)

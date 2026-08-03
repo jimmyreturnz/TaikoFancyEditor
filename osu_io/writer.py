@@ -2,6 +2,7 @@ from pathlib import Path
 import os
 import shutil
 import tempfile
+import math
 from osu_io.parser import OsuDocument, parse_osu
 
 
@@ -22,6 +23,15 @@ def _replace_xy(line, x, y):
 
 def write_osu(document, destination, new_version, *, allow_overwrite_source=False, force_ar=10, force_cs=7, create_backup=False):
     destination = Path(destination).resolve(); source = document.source_path.resolve()
+    if destination.suffix.lower() != ".osu":
+        raise ValueError("Destination must be an .osu file")
+    force_ar=float(force_ar);force_cs=float(force_cs)
+    if not math.isfinite(force_ar) or not 0.0 <= force_ar <= 10.0:
+        raise ValueError("ApproachRate must be between 0 and 10")
+    if not math.isfinite(force_cs) or not 0.0 <= force_cs <= 10.0:
+        raise ValueError("CircleSize must be between 0 and 10")
+    if "\n" in str(new_version) or "\r" in str(new_version):
+        raise ValueError("Difficulty version must be one line")
     if destination == source and not allow_overwrite_source:
         raise FileExistsError("Refusing to overwrite source")
     if destination.exists() and destination != source:
@@ -63,5 +73,15 @@ def write_osu(document, destination, new_version, *, allow_overwrite_source=Fals
         finally:
             if os.path.exists(temporary): os.unlink(temporary)
     else:
-        destination.write_bytes(payload)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(prefix=destination.stem + "_", suffix=".osu.tmp", dir=destination.parent)
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(payload);handle.flush();os.fsync(handle.fileno())
+            parsed = parse_osu(temporary)
+            if len(parsed.hit_objects) != len(document.hit_objects):
+                raise ValueError("Validation failed: output hit-object count changed")
+            os.replace(temporary, destination)
+        finally:
+            if os.path.exists(temporary): os.unlink(temporary)
     return destination
