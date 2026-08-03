@@ -2,30 +2,33 @@
 
 **Turn osu!taiko notes into visual patterns without manually placing every circle.**
 
-Taiko Fancy Arranger is a desktop tool for osu!taiko players and mappers who want to create fancy storyboard-like note layouts, geometric patterns, text, equations, spirals, and other visual effects directly inside a beatmap.
+Taiko Fancy Arranger is a desktop tool for osu!taiko players and mappers who want to create storyboard-like note layouts, geometric patterns, text, equations, drawings, spirals, and other visual effects directly inside a beatmap.
 
-The program keeps the notes playable as osu! hit objects while giving you a visual workspace to select, preview, move, transform, undo, and export arrangements.
+The program keeps the notes as playable osu! hit objects while providing a visual workspace to select, preview, move, transform, undo, redo, and export arrangements.
 
-> **Current release:** v1.0.0  
-> **Platform:** Windows x64
-> **Author:** jimmyreturnz
+> **Current release:** v1.0.1  
+> **Platform:** Windows x64  
+> **Author:** [jimmyreturnz](https://osu.ppy.sh/users/11306153)
 
-The original idea is from a random chat with maruaki101 and other inspirations are from Alchyr's idea on his ranked maps called 13 stairs, and the other one is Helios where he places notes in a really interesting way to express something. You definitely should go check it out!
+The original idea came from a random chat with maruaki101. Other inspirations include Alchyr's ranked maps *13 Stairs* and *Helios*, which use unusual note placement to create visual expression. You should go check it out [here!](https://osu.ppy.sh/beatmapsets/1093671#taiko/3819326)
 
 ---
 
 ## What can it do?
 
 - Open an osu! song folder by selecting any `.osu` difficulty
-- Switch between difficulties from the same folder
+- Switch between difficulties in the same song folder
 - Play and seek through the song with a taiko gameplay timeline
-- View beat snap lines, Kiai sections, density, and the beatmap background
+- View beat-snap lines, timing points, bookmarks, PreviewTime, Kiai sections, density, and the beatmap background
 - Drag-select part of a map or select the full difficulty
 - Preview a transformation before applying it
 - Arrange all selected notes together or split Don and Kat notes
 - Drag a generated pattern directly inside the transformation view
 - Adjust pattern position, size, rotation, spacing, margins, seeds, and other parameters
+- Choose a system font for Text transformations
+- Draw shapes using multiple independent strokes
 - Undo and redo committed transformations
+- Configure exported Approach Rate and Circle Size
 - Export an arranged difficulty without destroying the source map
 - Back up the original file before applying changes to it
 
@@ -36,6 +39,7 @@ The original idea is from a random chat with maruaki101 and other inspirations a
 Taiko Fancy Arranger includes transformations such as:
 
 - Text
+- Drawing
 - Mathematical Equation
 - Horizontal
 - Vertical
@@ -68,7 +72,27 @@ TAIKO
 ภาษาไทย
 ```
 
-The program uses an available system font and fits the result inside the osu! playfield. Text size, margins, direction, note count, and position can be adjusted before applying the result.
+The Text transformation uses a selectable system font and fits the result inside the osu! playfield. Text size, margins, direction, note count, and position can be adjusted before applying the result.
+
+Text notes are ordered from top to bottom, then horizontally within each visual row. Reverse direction keeps the top-to-bottom order and reverses only the horizontal order within each row.
+
+### Drawing patterns
+
+Drawing accepts multiple independent strokes. The strokes are treated as one visual shape rather than being connected into an artificial path.
+
+Drawing notes are ordered:
+
+1. From top to bottom
+2. From left to right within each visual row
+
+Reverse direction keeps the top-to-bottom order and changes each row to right-to-left.
+
+Drawing-window shortcuts:
+
+```text
+Ctrl+Z    Undo the latest stroke
+Ctrl+Y    Restore the latest undone stroke
+```
 
 ### Mathematical equation patterns
 
@@ -106,7 +130,7 @@ Pinwheel creates a central burst with curved blades and optional seeded wander.
 Its controls include:
 
 - Inner circle
-- Inner circle note count and radius
+- Inner-circle note count and radius
 - Number of blades
 - Blade curl and spread
 - Inner and outer radius
@@ -148,26 +172,33 @@ The program reads the difficulty's:
 
 - Audio file
 - Hit objects
-- Timing points
+- Inherited and uninherited timing points
 - Kiai sections
+- Bookmarks
+- PreviewTime
 - Background image
 - Other `.osu` difficulties in the same folder
 
-### 2. Select notes
+### 2. Select and navigate notes
 
 Drag across the gameplay timeline to select a section.
 
 Useful controls:
 
 ```text
-Ctrl+A          Select the whole map while the gameplay view has focus
-Escape          Clear the current selection
-Space           Play or pause
-Mouse wheel     Seek by beat snap
-Shift+wheel     Seek by whole beats
-Ctrl+wheel      Zoom the gameplay timeline
-Alt+wheel       Change beat snap
+Ctrl+A              Select the whole map while the gameplay view has focus
+Escape              Clear the current selection
+Space               Play or pause
+Mouse wheel         Seek by beat snap
+Shift+wheel         Seek by whole beats
+Ctrl+wheel          Zoom the gameplay timeline
+Alt+wheel           Change beat snap
+Shift+Left/Right    Move by one whole beat
+Alt+Left/Right      Move by one current snap division
+Ctrl+Left/Right     Jump to the nearest bookmark
 ```
+
+Bookmark navigation does nothing when no bookmark exists in the requested direction.
 
 ### 3. Choose a transformation
 
@@ -186,7 +217,7 @@ The transformation pane shows a preview only. The `.osu` file is not changed unt
 
 Use either:
 
-- Position X and Position Y sliders
+- Position X and Position Y controls
 - Direct dragging inside the transformation view
 
 In **Split Don / Kat** mode:
@@ -196,7 +227,7 @@ In **Split Don / Kat** mode:
 
 ### 5. Apply or undo
 
-Click **Apply to selection** to commit the preview to the current editing session.
+Click **Transform selected notes** to commit the preview to the current editing session.
 
 ```text
 Ctrl+Z    Undo
@@ -205,34 +236,66 @@ Ctrl+Y    Redo
 
 Undo and redo can be used repeatedly across committed transformations.
 
-### 6. Export
+### 6. Configure Approach Rate and Circle Size
 
-Use **Export applied map** to create a separate arranged difficulty.
+The top toolbar contains **AR** and **CS** controls next to **Export applied map**.
 
-Use **Apply all changes to original file** only when you intentionally want to update the loaded `.osu`. The program creates a backup before replacing the original.
+Each control supports:
 
-Exported maps use:
+- A slider from `0.00` to `10.00`
+- `0.01` increments
+- A numeric field for entering an exact value
+- Pink `+` and `-` buttons
+
+Meaning of the minimum values:
+
+```text
+AR 0.00    Slowest approach rate
+CS 0.00    Biggest circle size
+```
+
+If the controls are not changed, the existing defaults remain:
 
 ```text
 ApproachRate:10
 CircleSize:7
 ```
 
+The selected values are used by both **Export applied map** and **Apply all changes to original file**.
+
+### 7. Export
+
+Use **Export applied map** to create a separate arranged difficulty.
+
+Use **Apply all changes to original file** only when intentionally updating the loaded `.osu`. The program creates a backup before replacing the original.
+
 ---
 
-## Gameplay and density view
+## Gameplay, timing, and density views
 
-The gameplay timeline displays the visible notes around the current song position.
+The gameplay timeline displays visible notes around the current song position.
 
-The density chart below the gameplay uses:
+The dedicated full-song timing bar includes:
 
-- White to yellow density coloring
-- Yellow at peak density
-- Orange Kiai highlighting
-- A playback cursor
-- A viewport indicator showing the currently visible gameplay range
+- A thin white horizontal center line
+- Kiai highlighting centered on the line
+- Green inherited timing-point markers above the line
+- Red uninherited timing-point markers above the line
+- Yellow markers where inherited and uninherited timing points overlap
+- Blue bookmark markers below the line
+- A yellow PreviewTime marker below the line
+- Current playback position
+- Visible gameplay viewport
 
-The background image from the beatmap is displayed in the transformation view. Its opacity can be adjusted, and another image can be dragged into the transformation view to use it as the beatmap background.
+The density chart is separate and contains the white-to-yellow note-density visualization without timing points or Kiai highlighting.
+
+The playback row provides:
+
+- Moving time display
+- Play and pause
+- `25%`, `50%`, `75%`, and `100%` playback-rate buttons
+
+The beatmap background is displayed in the transformation view. Its opacity can be adjusted, and another image can be dragged into the transformation view to use as the beatmap background.
 
 ---
 
@@ -248,7 +311,7 @@ Taiko Fancy Arranger changes the X and Y positions of selected hit objects. Note
 
 ### Visual readability depends on note count
 
-Text, equations, and detailed shapes need enough selected notes to remain recognizable. If a pattern looks incomplete, try:
+Text, equations, drawings, and detailed shapes need enough selected notes to remain recognizable. If a pattern looks incomplete, try:
 
 - Selecting more notes
 - Increasing the number of notes per pattern
@@ -263,6 +326,8 @@ Always open the exported difficulty in the osu! editor and verify:
 
 - Note positions
 - Timing
+- Approach Rate
+- Circle Size
 - Background
 - Difficulty name
 
@@ -305,13 +370,13 @@ The portable build is created at:
 dist\TaikoFancyArranger\TaikoFancyArranger.exe
 ```
 
-A tagged GitHub release such as `v1.0.0` can use the included GitHub Actions workflow to build and attach the Windows ZIP automatically.
+A tagged GitHub release such as `v1.0.1` can use the included GitHub Actions workflow to build and attach the Windows ZIP automatically.
 
 ---
 
 ## Feedback and bug reports
 
-When reporting a bug, please include:
+When reporting a bug, include:
 
 - Taiko Fancy Arranger version
 - Windows version
@@ -322,13 +387,13 @@ When reporting a bug, please include:
 - Steps that reproduce the problem
 - A minimal `.osu` example if redistribution is allowed
 
-Do not upload copyrighted audio or private beatmap assets unless you have permission to share them.
+Do not upload copyrighted audio or private beatmap assets unless permission has been granted.
 
 ---
 
 ## Project status
 
-Version 1.0.0 is the first public release. The project focuses on creative single-player beatmap arrangement and previewing. Multiplayer and automatic difficulty calculation are outside the current scope.
+Version 1.0.1 is the current public release. The project focuses on creative single-player beatmap arrangement and previewing. Multiplayer and automatic difficulty calculation are outside the current scope.
 
 ---
 
