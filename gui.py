@@ -15,7 +15,7 @@ from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QAbstractSpinBox, QApplication, QButtonGroup, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
     QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton, QScrollArea,
-    QSlider, QSpinBox, QSplitter, QTabWidget, QVBoxLayout, QWidget, QDialog, QDialogButtonBox, QFontComboBox,
+    QSlider, QSpinBox, QSplitter, QTabWidget, QVBoxLayout, QWidget, QDialog, QDialogButtonBox, QFontComboBox, QSizePolicy
 )
 
 from gui_draft import PARAMETERS
@@ -1138,6 +1138,38 @@ def freeze_preview_value(value):
         return tuple(sorted(freeze_preview_value(item) for item in value))
     return value
 
+class ElidedLabel(QLabel):
+    def __init__(self, text: str = "", parent=None) -> None:
+        super().__init__(text, parent)
+
+        self._full_text = text
+        self.setSizePolicy(
+            QSizePolicy.Ignored,
+            QSizePolicy.Preferred,
+        )
+        self.setMinimumWidth(0)
+        self.setToolTip(text)
+
+    def setText(self, text: str) -> None:
+        self._full_text = str(text)
+        self.setToolTip(self._full_text)
+        self._update_elided_text()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._update_elided_text()
+
+    def _update_elided_text(self) -> None:
+        available_width = max(0, self.width() - 4)
+
+        elided = self.fontMetrics().elidedText(
+            self._full_text,
+            Qt.ElideRight,
+            available_width,
+        )
+
+        super().setText(elided)
+
 
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
@@ -1298,9 +1330,23 @@ class MainWindow(QMainWindow):
         self.circle_size_control=DifficultyValueControl("CS",7.0,"Circle Size: 0 is biggest, 10 is smallest. Export default is 7.00.")
         toolbar.addWidget(self.approach_rate_control)
         toolbar.addWidget(self.circle_size_control)
-        toolbar.addStretch()
+        toolbar.addStretch(1)
 
-        self.status = QLabel("Open a map to begin.")
+        self.status = ElidedLabel("Open a map to begin.")
+        self.status.setMinimumWidth(100)
+        self.status.setMaximumWidth(360)
+        self.status.setAlignment(
+            Qt.AlignRight | Qt.AlignVCenter
+        )
+
+        toolbar.addWidget(self.status, 0)
+
+        self.status = ElidedLabel("Open a map to begin.")
+        self.status.setMaximumWidth(360)
+        self.status.setMinimumWidth(100)
+        self.status.setAlignment(
+            Qt.AlignRight | Qt.AlignVCenter
+        )
         toolbar.addWidget(self.status)
         root.addLayout(toolbar)
 
