@@ -16,7 +16,7 @@ The original idea came from a random chat with maruaki101. Other inspirations in
 
 ## Windows SmartScreen notice
 
-Taiko Fancy Arranger v1.0.1 is a new, currently unsigned
+Taiko Fancy Arranger v1.0.2 is a new, currently unsigned, but implemented safety measures to ensure that the program can be run safely.
 Windows application. Windows Defender SmartScreen may display
 an "unrecognized app" warning because the executable has not
 yet established download reputation.
@@ -82,6 +82,8 @@ TAIKO
 The Text transformation uses a selectable system font and fits the result inside the osu! playfield. Text size, margins, direction, note count, and position can be adjusted before applying the result.
 
 Text notes are ordered from top to bottom, then horizontally within each visual row. Reverse direction keeps the top-to-bottom order and reverses only the horizontal order within each row.
+
+You can also select fonts from your computer as well!
 
 ### Drawing patterns
 
@@ -341,44 +343,7 @@ Always open the exported difficulty in the osu! editor and verify:
 
 ---
 
-## Run from source
-
-Requirements:
-
-- Python 3.12
-- Windows 10 or Windows 11 recommended
-
-```powershell
-py -3.12 -m venv .venv
-.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-pip install -r requirements.txt
-python gui.py
-```
-
-Or run:
-
-```text
-run_from_source.bat
-```
-
----
-
-## Build the Windows release
-
-Run:
-
-```text
-build_windows.bat
-```
-
-The portable build is created at:
-
-```text
-dist\TaikoFancyArranger\TaikoFancyArranger.exe
-```
-
-A tagged GitHub release such as `v1.0.1` can use the included GitHub Actions workflow to build and attach the Windows ZIP automatically.
+A tagged GitHub release such as `v1.0.2` can use the included GitHub Actions workflow to build and attach the Windows ZIP automatically.
 
 ---
 
@@ -401,9 +366,25 @@ Do not upload copyrighted audio or private beatmap assets unless permission has 
 
 ## Project status
 
-Version 1.0.1 is the current public release. The project focuses on creative single-player beatmap arrangement and previewing. Multiplayer and automatic difficulty calculation are outside the current scope.
+Version 1.0.2 is the current public release. The project focuses on creative single-player beatmap arrangement and previewing. Multiplayer and automatic difficulty calculation are outside the current scope.
 
 ---
+
+## Further plans
+
+- Rotation for some transformations that has not been added yet
+- web release (?)
+- 日本語版
+- chart editing with multiple charts of the same audio file support.
+- SV Editing with configurable effect functions (taking Alchyr’s design as a reference)
+- easier usage of equation transformation
+- Image-based outline tracing transformation
+- Gimmick SV Tool with whatever I could think of, basic one are barline, slider, shiny, reverse barline. Planned to experiment with some different ideas to be implemented here too
+- might add updater later, but not anytime soon
+- Proper UI Design
+- fullalt transformation(?)
+
+—--
 
 ## License
 
