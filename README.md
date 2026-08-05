@@ -16,10 +16,9 @@ The original idea came from a random chat with maruaki101. Other inspirations in
 
 ## Windows SmartScreen notice
 
-Taiko Fancy Arranger v1.0.2 is a new, currently unsigned, but implemented safety measures to ensure that the program can be run safely.
-Windows application. Windows Defender SmartScreen may display
-an "unrecognized app" warning because the executable has not
-yet established download reputation.
+Taiko Fancy Arranger v1.0.2 is a currently unsigned Windows application. The release includes additional source-level security hardening, input validation, safer file handling, automated tests, and published SHA-256 checksums.
+
+Windows Defender SmartScreen may still display an "unrecognized app" warning because the executable has not yet established download reputation.
 
 ## What can it do?
 
@@ -104,6 +103,7 @@ Ctrl+Y    Restore the latest undone stroke
 ```
 
 ### Mathematical equation patterns
+
 > Warning: this is still an experimental feature, please expect some bugs.
 
 Equation mode can generate note paths from graph outlines.
@@ -372,19 +372,22 @@ Version 1.0.2 is the current public release. The project focuses on creative sin
 
 ## Further plans
 
-- Rotation for some transformations that has not been added yet
-- web release (?)
-- 日本語版
-- chart editing with multiple charts of the same audio file support.
-- SV Editing with configurable effect functions (taking Alchyr’s design as a reference)
-- easier usage of equation transformation
-- Image-based outline tracing transformation
-- Gimmick SV Tool with whatever I could think of, basic one are barline, slider, shiny, reverse barline. Planned to experiment with some different ideas to be implemented here too
-- might add updater later, but not anytime soon
-- Proper UI Design
-- fullalt transformation(?)
+These ideas are exploratory and are not guaranteed for a specific release.
 
-—--
+- Add rotation controls to transformations that do not support rotation yet
+- Add Japanese localization 日本語版
+- Support editing multiple difficulties that share the same audio file
+- Add SV editing with configurable effect functions, with Alchyr's design used as a reference
+- Improve the usability of the Equation transformation
+- Add an image-based outline-tracing transformation
+- Develop a Gimmick SV tool with effects such as barlines, sliders, shiny effects, and reverse barlines
+- Experiment with additional SV and visual gimmick concepts
+- Improve the overall UI design
+- Explore a possible web version
+- Explore a possible full-alt transformation
+- Consider adding an updater in a later version
+
+---
 
 ## License
 
