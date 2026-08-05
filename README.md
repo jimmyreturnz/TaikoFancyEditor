@@ -6,7 +6,7 @@ Taiko Fancy Arranger is a desktop tool for osu!taiko players and mappers who wan
 
 The program keeps the notes as playable osu! hit objects while providing a visual workspace to select, preview, move, transform, undo, redo, and export arrangements.
 
-> **Current release:** v1.0.1  
+> **Current release:** v1.0.3   
 > **Platform:** Windows x64  
 > **Author:** [jimmyreturnz](https://osu.ppy.sh/users/11306153)
 
@@ -16,10 +16,9 @@ The original idea came from a random chat with maruaki101. Other inspirations in
 
 ## Windows SmartScreen notice
 
-Taiko Fancy Arranger v1.0.1 is a new, currently unsigned
-Windows application. Windows Defender SmartScreen may display
-an "unrecognized app" warning because the executable has not
-yet established download reputation.
+Taiko Fancy Arranger v1.0.3 is a currently unsigned Windows application. The release includes additional source-level security hardening, input validation, safer file handling, automated tests, and published SHA-256 checksums.
+
+Windows Defender SmartScreen may still display an "unrecognized app" warning because the executable has not yet established download reputation.
 
 ## What can it do?
 
@@ -38,6 +37,11 @@ yet established download reputation.
 - Configure exported Approach Rate and Circle Size
 - Export an arranged difficulty without destroying the source map
 - Back up the original file before applying changes to it
+
+---
+
+## What can it do?
+Currently supports English and Japanese, there is no Thai language translation yet even though I am Thai myself 😂
 
 ---
 
@@ -83,6 +87,8 @@ The Text transformation uses a selectable system font and fits the result inside
 
 Text notes are ordered from top to bottom, then horizontally within each visual row. Reverse direction keeps the top-to-bottom order and reverses only the horizontal order within each row.
 
+You can also select fonts from your computer as well!
+
 ### Drawing patterns
 
 Drawing accepts multiple independent strokes. The strokes are treated as one visual shape rather than being connected into an artificial path.
@@ -102,6 +108,7 @@ Ctrl+Y    Restore the latest undone stroke
 ```
 
 ### Mathematical equation patterns
+
 > Warning: this is still an experimental feature, please expect some bugs.
 
 Equation mode can generate note paths from graph outlines.
@@ -341,44 +348,7 @@ Always open the exported difficulty in the osu! editor and verify:
 
 ---
 
-## Run from source
-
-Requirements:
-
-- Python 3.12
-- Windows 10 or Windows 11 recommended
-
-```powershell
-py -3.12 -m venv .venv
-.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-pip install -r requirements.txt
-python gui.py
-```
-
-Or run:
-
-```text
-run_from_source.bat
-```
-
----
-
-## Build the Windows release
-
-Run:
-
-```text
-build_windows.bat
-```
-
-The portable build is created at:
-
-```text
-dist\TaikoFancyArranger\TaikoFancyArranger.exe
-```
-
-A tagged GitHub release such as `v1.0.1` can use the included GitHub Actions workflow to build and attach the Windows ZIP automatically.
+A tagged GitHub release such as `v1.0.3` can use the included GitHub Actions workflow to build and attach the Windows ZIP automatically.
 
 ---
 
@@ -401,7 +371,26 @@ Do not upload copyrighted audio or private beatmap assets unless permission has 
 
 ## Project status
 
-Version 1.0.1 is the current public release. The project focuses on creative single-player beatmap arrangement and previewing. Multiplayer and automatic difficulty calculation are outside the current scope.
+Version 1.0.3 is the current public release. The project focuses on creative single-player beatmap arrangement and previewing. Multiplayer and automatic difficulty calculation are outside the current scope.
+
+---
+
+## Further plans
+
+These ideas are exploratory and are not guaranteed for a specific release.
+
+- Add rotation controls to transformations that do not support rotation yet
+- Add Japanese localization 日本語版
+- Support editing multiple difficulties that share the same audio file
+- Add SV editing with configurable effect functions, with Alchyr's design used as a reference
+- Improve the usability of the Equation transformation
+- Add an image-based outline-tracing transformation
+- Develop a Gimmick SV tool with effects such as barlines, sliders, shiny effects, and reverse barlines
+- Experiment with additional SV and visual gimmick concepts
+- Improve the overall UI design
+- Explore a possible web version
+- Explore a possible full-alt transformation
+- Consider adding an updater in a later version
 
 ---
 
