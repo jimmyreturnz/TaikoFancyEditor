@@ -62,15 +62,19 @@ Taiko Fancy Arranger includes transformations such as:
 - Spiral
 - Infinity
 - Arc
-- Straight line and polyline
+- Straight line
 - Wave and zigzag
-- Bézier path
 - Random
 - Random Walk
 - DVD Bouncing
 - Pinwheel
 
 Some transformations support chunking, direction controls, seeded randomness, or **Back and Forth** traversal.
+
+Polyline and Bézier path exist in the transformation engine but are not yet
+selectable in the interface, because both need a way to enter control points
+that the parameter panel does not have yet. Freehand shapes are covered by
+**Drawing** in the meantime.
 
 ### Text patterns
 
