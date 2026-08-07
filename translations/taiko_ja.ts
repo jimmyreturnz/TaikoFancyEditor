@@ -122,10 +122,8 @@
             <translation>すべてのノーツ</translation>
         </message>
         <message>
-            <source>Applied all committed changes to:
-</source>
-            <translation>確定したすべての変更を次に適用しました:
-</translation>
+            <source>Applied all committed changes to:</source>
+            <translation>確定したすべての変更を次に適用しました:</translation>
         </message>
         <message>
             <source>Apply all changes to original file</source>
@@ -152,10 +150,8 @@
             <translation>別のファイル名を選択してください。</translation>
         </message>
         <message>
-            <source>Created:
-</source>
-            <translation>作成しました:
-</translation>
+            <source>Created:</source>
+            <translation>作成しました:</translation>
         </message>
         <message>
             <source>Ctrl+wheel: zoom</source>
