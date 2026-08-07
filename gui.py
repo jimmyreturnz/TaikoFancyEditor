@@ -129,17 +129,23 @@ def format_time(time_ms: int) -> str:
 
 
 def editor_timeline_metadata(document) -> tuple[list[int], int | None]:
+    """Bookmarks and PreviewTime for the timing overview bar.
+
+    Bookmarks live in [Editor], but PreviewTime lives in [General]. Reading both
+    from [Editor] meant preview_time was always None, so the yellow PreviewTime
+    marker never appeared for any real beatmap. [Editor] is still accepted for
+    PreviewTime in case some editor writes it there.
+    """
     section=""; bookmarks=[]; preview_time=None
     for line in document.lines:
         raw=line.rstrip("\r\n"); stripped=raw.strip()
         if stripped.startswith("[") and stripped.endswith("]"):
             section=stripped[1:-1]; continue
-        if section!="Editor": continue
-        if raw.startswith("Bookmarks:"):
+        if section=="Editor" and raw.startswith("Bookmarks:"):
             for value in raw.split(":",1)[1].split(","):
                 try: bookmarks.append(max(0,round(float(value.strip()))))
                 except ValueError: pass
-        elif raw.startswith("PreviewTime:"):
+        elif section in ("General","Editor") and raw.startswith("PreviewTime:"):
             try:
                 value=round(float(raw.split(":",1)[1].strip()))
                 preview_time=value if value>=0 else None
