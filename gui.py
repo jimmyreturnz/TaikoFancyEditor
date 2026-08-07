@@ -870,6 +870,9 @@ class TimelineGameplay(QWidget):
         if abs(event.position().x()-(self.drag_start_x or 0.0))<5:
             self.current_time=max(0.0,snap_time(self.timing_points,self.time_for_x(event.position().x()),self.snap_divisor)); self.seek_requested.emit(round(self.current_time))
         self.drag_start_x=None; self.drag_anchor_time=None; self.update()
+        # Previewing on every mouse-move would be far too expensive, so the
+        # expensive refresh is deferred until the drag actually ends.
+        self.selection_finalized.emit(set(self.selected))
 
     def keyPressEvent(self, event) -> None:
         if event.key() == Qt.Key_Escape:
@@ -1390,16 +1393,7 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(self.settings_button)
         toolbar.addStretch(1)
 
-        self.status = ElidedLabel("Open a map to begin.")
-        self.status.setMinimumWidth(100)
-        self.status.setMaximumWidth(360)
-        self.status.setAlignment(
-            Qt.AlignRight | Qt.AlignVCenter
-        )
-
-        toolbar.addWidget(self.status, 0)
-
-        self.status = ElidedLabel("Open a map to begin.")
+        self.status = ElidedLabel(tr("MainWindow", "Open a map to begin."))
         self.status.setMaximumWidth(360)
         self.status.setMinimumWidth(100)
         self.status.setAlignment(
@@ -1755,8 +1749,10 @@ class MainWindow(QMainWindow):
                             points=list(dialog.accepted_points)
                             self.last_drawing_points=points
                             self.drawing_points[active_group]=points
-                            for group_name,page in zip(("all","don","kat"),self.group_pages):
-                                if str(page.combo.currentData() or "")=="drawn_path":self.drawing_points[group_name]=points
+                            # Share the strokes with every other group that is also
+                            # set to Drawing, so Split Don/Kat previews both halves.
+                            for group_name,refs in self._transform_page_refs.items():
+                                if str(refs["combo"].currentData() or "")=="drawn_path":self.drawing_points[group_name]=points
                             self.preview_cache.clear();self.schedule_preview()
                     finally:self.drawing_dialog_active=False
                 draw_button.clicked.connect(open_drawing);form.addRow(draw_button)
@@ -2108,7 +2104,7 @@ class MainWindow(QMainWindow):
             if not self._is_split_mode(): specs=[self._spec(0,"all")]
             else: specs=[self._spec(0,"don"),self._spec(1,"kat")]
             if any(name=="drawn_path" and len(params.get("points",[]))<2 for name,params in specs):
-                self.preview_positions=dict(self.applied_positions);self.refresh_canvas();self.status_label.setText(tr("MainWindow", "Open Drawing Window and draw a shape to preview."));return
+                self.preview_positions=dict(self.applied_positions);self.refresh_canvas();self.status.setText(tr("MainWindow", "Open Drawing Window and draw a shape to preview."));return
             key=(self.commit_revision,tuple(sorted(self.selected)),tuple((name,freeze_preview_value(params)) for name,params in specs))
             result=self.preview_cache.get(key)
             if result is None:
