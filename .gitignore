@@ -77,8 +77,9 @@ build_source_release.bat
 check_release_clean.py
 generate_release_evidence.py
 
-security_utils.py
-test_security.py
+# security_utils.py and tests/test_security.py are tracked source, not review
+# artifacts. They were caught by these patterns, which meant those two tests
+# never ran in CI.
 
 security-reports/
 release-evidence/
