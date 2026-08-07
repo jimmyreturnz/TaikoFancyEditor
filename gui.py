@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 
 from gui_draft import PARAMETERS
 from i18n import install_translator, tr
+from image_trace_dialog import ImageTraceDialog
 from settings import SettingsManager, ShortcutRegistry, should_ignore_shortcut_focus
 from settings_dialog import SettingsDialog
 from osu_io.parser import parse_osu
@@ -474,10 +475,36 @@ class DrawingDialog(QDialog):
         if not icon.isNull():self.setWindowIcon(icon)
         layout=QVBoxLayout(self);label=QLabel(tr("DrawingDialog", "Draw one or more strokes. Notes are placed top-to-bottom, then horizontally within each row. Ctrl+Z: undo, Ctrl+Y: redo."));label.setWordWrap(True);layout.addWidget(label)
         self.surface=DrawingSurface();layout.addWidget(self.surface,1)
-        row=QHBoxLayout();undo_button=QPushButton(tr("DrawingDialog", "Undo"));redo_button=QPushButton(tr("DrawingDialog", "Redo"));clear_button=QPushButton(tr("DrawingDialog", "Clear"));undo_button.clicked.connect(self.surface.undo);redo_button.clicked.connect(self.surface.redo);clear_button.clicked.connect(self.surface.clear);row.addWidget(undo_button);row.addWidget(redo_button);row.addWidget(clear_button);layout.addLayout(row)
+        row=QHBoxLayout();undo_button=QPushButton(tr("DrawingDialog", "Undo"));redo_button=QPushButton(tr("DrawingDialog", "Redo"));clear_button=QPushButton(tr("DrawingDialog", "Clear"));undo_button.clicked.connect(self.surface.undo);redo_button.clicked.connect(self.surface.redo);clear_button.clicked.connect(self.surface.clear);row.addWidget(undo_button);row.addWidget(redo_button);row.addWidget(clear_button)
+        import_button=QPushButton(tr("DrawingDialog", "Import Image..."));import_button.clicked.connect(self.import_image);row.addWidget(import_button)
+        layout.addLayout(row)
         self.undo_shortcut=QShortcut(QKeySequence("Ctrl+Z"),self);self.undo_shortcut.setContext(Qt.WidgetWithChildrenShortcut);self.undo_shortcut.activated.connect(self.surface.undo)
         self.redo_shortcut=QShortcut(QKeySequence("Ctrl+Y"),self);self.redo_shortcut.setContext(Qt.WidgetWithChildrenShortcut);self.redo_shortcut.activated.connect(self.surface.redo)
         buttons=QDialogButtonBox(QDialogButtonBox.Ok|QDialogButtonBox.Cancel);buttons.accepted.connect(self.accept);buttons.rejected.connect(self.reject);layout.addWidget(buttons)
+    def import_image(self):
+        """Trace a local image and add the result as Drawing strokes.
+
+        trace_image already fits its output to the 512x384 playfield, so the
+        only conversion needed is playfield -> surface widget coordinates,
+        which is the exact inverse of DrawingSurface.sampled_points().
+
+        Strokes are appended rather than replacing the canvas, so an import
+        can never silently destroy hand-drawn work.
+        """
+        dialog=ImageTraceDialog(self)
+        if dialog.exec()!=QDialog.Accepted:
+            return
+        strokes=[stroke for stroke in dialog.accepted_strokes if len(stroke)>=2]
+        if not strokes:
+            return
+        width=max(1,self.surface.width());height=max(1,self.surface.height())
+        for stroke in strokes:
+            self.surface.strokes.append([
+                QPointF(x/PLAYFIELD_WIDTH*width, y/PLAYFIELD_HEIGHT*height)
+                for x,y in stroke
+            ])
+        self.surface.active=None;self.surface.redo_strokes.clear();self.surface.update()
+
     def accept(self):
         points=self.surface.sampled_points()
         if len(points)<2:

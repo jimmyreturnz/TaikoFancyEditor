@@ -21,7 +21,7 @@
         </message>
         <message>
             <source>Import Image...</source>
-            <translation type="vanished">画像をインポート...</translation>
+            <translation>画像をインポート...</translation>
         </message>
         <message>
             <source>Redo</source>
