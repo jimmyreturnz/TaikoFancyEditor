@@ -329,6 +329,10 @@
             <source>Shift+wheel: 4 beats</source>
             <translation>Shift+ホイール: 4拍</translation>
         </message>
+        <message>
+            <source>Open Drawing Window</source>
+            <translation>描画ウィンドウを開く</translation>
+        </message>
     </context>
     <context>
         <name>Parameters</name>
