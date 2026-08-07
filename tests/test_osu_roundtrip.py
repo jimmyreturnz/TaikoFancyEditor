@@ -132,30 +132,18 @@ class RoundTripTests(unittest.TestCase):
 
 
 class ReversedSectionOrderTests(unittest.TestCase):
-    """R4: the flat `shift` in write_osu assumes [Difficulty] precedes [HitObjects].
+    """R4: [Difficulty] after [HitObjects], with AR and CS both missing.
 
-    When it does not, and AR or CS has to be inserted, every hit object's
-    source_line_index is shifted past the note block and the writer raises
-    IndexError. The payload is only built after that loop, and the write goes
-    through a temp file, so nothing reaches disk: this is an outright failure to
-    write, not silent corruption.
+    The old writer applied a flat `shift` to every hit object's
+    source_line_index after inserting the missing keys, which assumed all
+    insertions preceded all hit objects. Here they do not, so it indexed past
+    the note block and raised IndexError before writing anything.
 
-    The expectedFailure below is a self-clearing TODO. Once the writer computes
-    section spans instead of a flat offset, this test starts passing, unittest
-    reports an unexpected success, and the suite fails until the decorator is
-    removed.
+    Section spans are now recomputed from the patched line list, so no offset
+    arithmetic survives and this round-trips.
     """
 
-    def test_writer_currently_fails_on_reversed_sections(self):
-        with tempfile.TemporaryDirectory() as directory:
-            source = write_fixture(Path(directory), "reversed_sections")
-            document = parse_osu(source)
-            self.assertEqual(len(document.hit_objects), 3)
-            with self.assertRaises(IndexError):
-                write_osu(document, Path(directory) / "out.osu", document.version)
-
-    @unittest.expectedFailure
-    def test_reversed_sections_should_round_trip(self):
+    def test_reversed_sections_round_trip(self):
         with tempfile.TemporaryDirectory() as directory:
             source = write_fixture(Path(directory), "reversed_sections")
             document = parse_osu(source)
@@ -197,3 +185,21 @@ class FixtureShapeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TimelineMetadataTests(unittest.TestCase):
+    """PreviewTime lives in [General], not [Editor]."""
+
+    def _metadata(self, name):
+        import gui
+        with tempfile.TemporaryDirectory() as directory:
+            return gui.editor_timeline_metadata(parse_osu(write_fixture(Path(directory), name)))
+
+    def test_preview_time_is_read_from_general(self):
+        bookmarks, preview_time = self._metadata("full_v14")
+        self.assertEqual(preview_time, 3000, "PreviewTime is a [General] key")
+        self.assertEqual(bookmarks, [2000, 4000], "Bookmarks stay a [Editor] key")
+
+    def test_absent_preview_time_is_none(self):
+        _bookmarks, preview_time = self._metadata("legacy_v4")
+        self.assertIsNone(preview_time)
