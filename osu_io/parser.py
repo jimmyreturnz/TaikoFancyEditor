@@ -66,10 +66,8 @@ def parse_osu(path):
             if point is not None: timing_points.append(point)
             continue
         if section!="HitObjects": continue
-        fields=content.split(",")
-        if len(fields)<5: continue
-        try: hit_objects.append(HitObject(int(fields[0]),int(fields[1]),int(fields[2]),int(fields[3]),int(fields[4]),fields[5] if len(fields)>5 else "",len(hit_objects),line_index))
-        except ValueError: continue
+        note=HitObject.from_line(line,len(hit_objects),line_index)
+        if note is not None: hit_objects.append(note)
     if open_section is not None:
         section_spans[open_section]=(open_index,len(lines))
     return OsuDocument(
