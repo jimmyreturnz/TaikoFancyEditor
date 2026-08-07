@@ -5,7 +5,6 @@ import csv
 import shutil
 import sys
 from bisect import bisect_left, bisect_right
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +23,13 @@ from image_trace_dialog import ImageTraceDialog
 from settings import SettingsManager, ShortcutRegistry, should_ignore_shortcut_focus
 from settings_dialog import SettingsDialog
 from osu_io.parser import parse_osu
+from osu_io.timing import (
+    TimingPoint,
+    active_uninherited_at,
+    kiai_spans,
+    sorted_by_time,
+    uninherited_points,
+)
 from osu_io.writer import write_osu
 from transformer import available_transformations, transform, transform_groups
 
@@ -86,63 +92,21 @@ if not any(item.get("key")=="reverse" for item in PARAMETERS.get("text",[])):
 GUI_TRANSFORMATIONS=[name for name in ("text","drawn_path","equation") if name in PARAMETERS]+[name for name in available_transformations() if name in PARAMETERS and name not in {"text","drawn_path","equation"}]
 
 
-@dataclass(frozen=True, slots=True)
-class TimingPoint:
-    time: float
-    beat_length: float
-
-
 def extract_timing_points(document) -> list[TimingPoint]:
-    section = ""
-    output: list[TimingPoint] = []
+    """Uninherited (BPM) points only, sorted by time.
 
-    for line in document.lines:
-        text = line.rstrip("\r\n").strip()
-
-        if text.startswith("[") and text.endswith("]"):
-            section = text[1:-1]
-            continue
-
-        if section != "TimingPoints" or not text or text.startswith("//"):
-            continue
-
-        fields = text.split(",")
-
-        try:
-            if (
-                len(fields) >= 7
-                and int(fields[6]) == 1
-                and float(fields[1]) > 0
-            ):
-                output.append(
-                    TimingPoint(
-                        time=float(fields[0]),
-                        beat_length=float(fields[1]),
-                    )
-                )
-        except ValueError:
-            continue
-
-    output.sort(key=lambda item: item.time)
-    return output
+    The snap grid and every beat calculation work in whole beats, so inherited
+    SV points are deliberately excluded here. Use document.timing_points when
+    SV matters.
+    """
+    return uninherited_points(sorted_by_time(document.timing_points))
 
 
 def active_timing(
     timing_points: list[TimingPoint],
     time_ms: float,
 ) -> TimingPoint:
-    if not timing_points:
-        return TimingPoint(0.0, 500.0)
-
-    active = timing_points[0]
-
-    for timing_point in timing_points:
-        if timing_point.time <= time_ms:
-            active = timing_point
-        else:
-            break
-
-    return active
+    return active_uninherited_at(timing_points, time_ms)
 
 
 def snap_time(
@@ -182,32 +146,8 @@ def editor_timeline_metadata(document) -> tuple[list[int], int | None]:
             except ValueError: pass
     return sorted(set(bookmarks)),preview_time
 
-def timing_point_lines(document) -> list[str]:
-    section = ""; result = []
-    for line in document.lines:
-        content = line.rstrip("\r\n"); stripped = content.strip()
-        if stripped.startswith("[") and stripped.endswith("]"):
-            section = stripped[1:-1]; continue
-        if section == "TimingPoints" and stripped and not stripped.startswith("//"):
-            result.append(content)
-    return result
-
-
 def kiai_ranges(document, duration_ms: int) -> list[tuple[int, int]]:
-    changes = []
-    for line in timing_point_lines(document):
-        fields = line.split(",")
-        if len(fields) >= 8:
-            try: changes.append((int(float(fields[0])), bool(int(fields[7]))))
-            except ValueError: pass
-    changes.sort()
-    output = []; start = None
-    for time_ms, enabled in changes:
-        if enabled and start is None: start = time_ms
-        elif not enabled and start is not None:
-            output.append((start, time_ms)); start = None
-    if start is not None: output.append((start, duration_ms))
-    return output
+    return kiai_spans(document.timing_points, duration_ms)
 
 
 # Visible transformation labels, keyed by the stable internal transformation ID.
@@ -1094,11 +1034,7 @@ class TimingOverviewBar(QWidget):
         self.duration_ms=max(duration_ms,document.hit_objects[-1].time if document.hit_objects else 1,1)
         self.kiai=kiai_ranges(document,self.duration_ms); self.timing_markers=[]
         self.bookmarks,self.preview_time=editor_timeline_metadata(document)
-        for line in timing_point_lines(document):
-            fields=line.split(",")
-            try:
-                if len(fields)>=7:self.timing_markers.append((round(float(fields[0])),int(fields[6])==1))
-            except ValueError:pass
+        self.timing_markers=[(round(point.time),point.uninherited) for point in document.timing_points]
         self.update()
     def set_duration(self,value:int)->None:
         if value>0:self.duration_ms=value;self.update()
@@ -1998,7 +1934,7 @@ class MainWindow(QMainWindow):
 
             if not transformation_name: return {}
             if transformation_name in {"taiko","vertical_taiko"}:
-                params.update({"note_times":{n.original_index:n.time for n in self.document.hit_objects},"timing_points":timing_point_lines(self.document),"timing_mode":"filtered","anchor_mode":"selection_start"})
+                params.update({"note_times":{n.original_index:n.time for n in self.document.hit_objects},"timing_points":self.document.timing_points,"timing_mode":"filtered","anchor_mode":"selection_start"})
             return transform(transformation_name,indexes,params)
 
         note_by_index = {
@@ -2020,7 +1956,7 @@ class MainWindow(QMainWindow):
 
         don_name, don_params = self._spec(0,"don"); kat_name, kat_params = self._spec(1,"kat")
         for name,params in ((don_name,don_params),(kat_name,kat_params)):
-            if name in {"taiko","vertical_taiko"}: params.update({"note_times":{n.original_index:n.time for n in self.document.hit_objects},"timing_points":timing_point_lines(self.document),"timing_mode":"filtered","anchor_mode":"selection_start"})
+            if name in {"taiko","vertical_taiko"}: params.update({"note_times":{n.original_index:n.time for n in self.document.hit_objects},"timing_points":self.document.timing_points,"timing_mode":"filtered","anchor_mode":"selection_start"})
 
         groups={}
         if don_name: groups["don"]={"transformation_name":don_name,"selected_note_indexes":don_indexes,"params":don_params}
