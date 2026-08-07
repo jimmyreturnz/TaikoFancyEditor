@@ -2,8 +2,40 @@
 
 Turning the visual arranger into a full osu!taiko editor.
 
-> **Status:** M0 and M1 authorized. M2–M6 recorded for continuity, not started.
-> **Current release:** v1.0.3
+> **Status:** M0 complete. M1 complete except the `gui.py` integration, which
+> lands with M2. M2–M6 not started.
+> **Current release:** v1.0.3 · **Tests:** 137 (was 38)
+
+## Progress
+
+| Item | State |
+|---|---|
+| M0 crashes (`group_pages`, `status_label`, duplicate status, `selection_finalized`) | done |
+| M0 Image-to-Drawing wired into `DrawingDialog` | done |
+| M0 `security_utils.py` + `tests/test_security.py` tracked | done |
+| M0 README transformation list corrected | done |
+| M1 regression fixture net (`tests/osu_fixtures.py`) | done |
+| M1 `osu_io/timing.py`, five parsers consolidated | done |
+| M1 `fields[5]` truncation (R2), `note_kind` (R3) | done |
+| M1 writer section regeneration, validation (R4, R7, R8) | done |
+| M1 `DifficultyState` / `History` / commands | model done, **not wired into `gui.py`** |
+
+The state and command model exists and is tested, but `gui.py` still uses its
+flat attributes and snapshot undo stacks. The forwarding-property migration and
+the `_ensure_state` / `_activate_state` split are deliberately deferred to M2,
+where multi-difficulty makes them do something visible. Doing them earlier is a
+pure refactor of a 2300-line file with thin GUI test coverage and no user-facing
+payoff.
+
+### Bugs found and fixed along the way
+
+Beyond the planned risks: `editor_timeline_metadata` read `PreviewTime` from
+`[Editor]`, but it is a `[General]` key, so the yellow PreviewTime marker
+documented in the README has never appeared on any real beatmap.
+
+R4 was also downgraded on inspection. It raises `IndexError` before the payload
+is assembled, and the write goes through a temp file, so nothing reaches disk —
+an outright failure to write on an unusual section order, not silent corruption.
 
 ---
 
