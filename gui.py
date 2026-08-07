@@ -275,7 +275,7 @@ class ParameterControl(QWidget):
             self.choice=None;self.slider=None;self.spin=None;return
         if definition["type"] == "text":
             self.text_input = QLineEdit(str(definition.get("default", "")))
-            self.text_input.setPlaceholderText("Enter text, for example 67, 日本, or ภาษาไทย")
+            self.text_input.setPlaceholderText(tr("Parameters", "Enter text, for example 67, 日本, or ภาษาไทย"))
             self.text_input.textChanged.connect(self.changed)
             layout.addWidget(self.text_input, 1)
             self.choice = None; self.slider = None; self.spin = None
@@ -385,7 +385,7 @@ class DifficultyValueControl(QWidget):
         self.slider=QSlider(Qt.Horizontal);self.slider.setRange(0,1000);self.slider.setSingleStep(1);self.slider.setPageStep(10);self.slider.setFixedWidth(200);self.slider.setToolTip(tooltip);layout.addWidget(self.slider)
         self.value_box=QDoubleSpinBox();self.value_box.setRange(0.0,10.0);self.value_box.setDecimals(2);self.value_box.setSingleStep(0.01);self.value_box.setFixedWidth(62);self.value_box.setButtonSymbols(QAbstractSpinBox.NoButtons);self.value_box.setToolTip(tooltip);layout.addWidget(self.value_box)
         decrease=QPushButton("-");increase=QPushButton("+")
-        for button in (decrease,increase):button.setFixedSize(28,28);button.setAutoRepeat(True);button.setFocusPolicy(Qt.NoFocus);button.setToolTip("Adjust by 0.01")
+        for button in (decrease,increase):button.setFixedSize(28,28);button.setAutoRepeat(True);button.setFocusPolicy(Qt.NoFocus);button.setToolTip(tr("MainWindow", "Adjust by 0.01"))
         decrease.clicked.connect(self.value_box.stepDown);increase.clicked.connect(self.value_box.stepUp);layout.addWidget(increase);layout.addWidget(decrease)
         self.slider.valueChanged.connect(self._slider_changed);self.value_box.valueChanged.connect(self._box_changed);self.set_value(default)
     def _slider_changed(self, raw: int) -> None:
@@ -435,19 +435,19 @@ class DrawingSurface(QWidget):
 
 class DrawingDialog(QDialog):
     def __init__(self,parent=None):
-        super().__init__(parent);self.accepted_points=[];self.setWindowTitle("Drawing");self.resize(780,560)
+        super().__init__(parent);self.accepted_points=[];self.setWindowTitle(tr("DrawingDialog", "Drawing"));self.resize(780,560)
         icon=application_icon()
         if not icon.isNull():self.setWindowIcon(icon)
-        layout=QVBoxLayout(self);label=QLabel("Draw one or more strokes. Notes are placed top-to-bottom, then horizontally within each row. Ctrl+Z: undo, Ctrl+Y: redo.");label.setWordWrap(True);layout.addWidget(label)
+        layout=QVBoxLayout(self);label=QLabel(tr("DrawingDialog", "Draw one or more strokes. Notes are placed top-to-bottom, then horizontally within each row. Ctrl+Z: undo, Ctrl+Y: redo."));label.setWordWrap(True);layout.addWidget(label)
         self.surface=DrawingSurface();layout.addWidget(self.surface,1)
-        row=QHBoxLayout();undo_button=QPushButton("Undo");redo_button=QPushButton("Redo");clear_button=QPushButton("Clear");undo_button.clicked.connect(self.surface.undo);redo_button.clicked.connect(self.surface.redo);clear_button.clicked.connect(self.surface.clear);row.addWidget(undo_button);row.addWidget(redo_button);row.addWidget(clear_button);layout.addLayout(row)
+        row=QHBoxLayout();undo_button=QPushButton(tr("DrawingDialog", "Undo"));redo_button=QPushButton(tr("DrawingDialog", "Redo"));clear_button=QPushButton(tr("DrawingDialog", "Clear"));undo_button.clicked.connect(self.surface.undo);redo_button.clicked.connect(self.surface.redo);clear_button.clicked.connect(self.surface.clear);row.addWidget(undo_button);row.addWidget(redo_button);row.addWidget(clear_button);layout.addLayout(row)
         self.undo_shortcut=QShortcut(QKeySequence("Ctrl+Z"),self);self.undo_shortcut.setContext(Qt.WidgetWithChildrenShortcut);self.undo_shortcut.activated.connect(self.surface.undo)
         self.redo_shortcut=QShortcut(QKeySequence("Ctrl+Y"),self);self.redo_shortcut.setContext(Qt.WidgetWithChildrenShortcut);self.redo_shortcut.activated.connect(self.surface.redo)
         buttons=QDialogButtonBox(QDialogButtonBox.Ok|QDialogButtonBox.Cancel);buttons.accepted.connect(self.accept);buttons.rejected.connect(self.reject);layout.addWidget(buttons)
     def accept(self):
         points=self.surface.sampled_points()
         if len(points)<2:
-            QMessageBox.information(self,"Drawing","Draw at least one stroke before pressing OK.")
+            QMessageBox.information(self,tr("DrawingDialog", "Drawing"),tr("DrawingDialog", "Draw at least one stroke before pressing OK."))
             return
         self.accepted_points=points
         super().accept()
@@ -1348,7 +1348,7 @@ class MainWindow(QMainWindow):
 
         self.settings_button = QPushButton(f"⚙ {tr('SettingsDialog', 'Settings')}")
         self.settings_button.setObjectName("settingsButton")
-        self.settings_button.setToolTip("Open application settings")
+        self.settings_button.setToolTip(tr("MainWindow", "Open application settings"))
         self.settings_button.setAccessibleName("Settings")
         self.settings_button.setMinimumWidth(100)
         self.settings_button.setFocusPolicy(Qt.NoFocus)
@@ -1404,15 +1404,15 @@ class MainWindow(QMainWindow):
         self.mode_combo = QComboBox()
         # Item data is the stable mode identifier. The display text is localized,
         # so mode logic reads currentData() and never currentText().
-        self.mode_combo.addItem("All Notes", "all")
-        self.mode_combo.addItem("Split Don / Kat", "split")
+        self.mode_combo.addItem(tr("MainWindow", "All Notes"), "all")
+        self.mode_combo.addItem(tr("MainWindow", "Split Don / Kat"), "split")
         self.mode_combo.currentIndexChanged.connect(
             self._rebuild_control_tabs
         )
         right_layout.addWidget(self.mode_combo)
         self.swap_don_kat_button = QPushButton(tr("MainWindow", "Swap Don ↔ Kat"))
         self.swap_don_kat_button.setVisible(False)
-        self.swap_don_kat_button.setToolTip("Swap transformation, parameters, and position between Don and Kat")
+        self.swap_don_kat_button.setToolTip(tr("MainWindow", "Swap transformation, parameters, and position between Don and Kat"))
         self.swap_don_kat_button.clicked.connect(self._swap_don_kat_transformations)
         right_layout.addWidget(self.swap_don_kat_button)
         self.mode_combo.currentIndexChanged.connect(
@@ -1446,10 +1446,7 @@ class MainWindow(QMainWindow):
         self.snap_combo.currentIndexChanged.connect(self._snap_changed)
         timeline_controls.addWidget(self.snap_combo)
 
-        self.timeline_info = QLabel(
-            "Duration: --   |   Position: --   |   Snap: 1/4   |   "
-            "Wheel: seek   |   Shift+wheel: 1 beat   |   Ctrl+wheel: zoom"
-        )
+        self.timeline_info = QLabel(self._timeline_info_text("--", "--", "1/4"))
         self.timeline_info.setStyleSheet("color: #aeb8c5; padding-left: 10px;")
         timeline_controls.addWidget(self.timeline_info, 1)
         root.addLayout(timeline_controls)
@@ -1662,7 +1659,7 @@ class MainWindow(QMainWindow):
         self._restore_transform_group("kat", snapshots["don"])
         self.preview_cache.clear()
         self.schedule_preview()
-        self.status.setText("Swapped Don and Kat transformations.")
+        self.status.setText(tr("MainWindow", "Swapped Don and Kat transformations."))
 
     def _control_page(self, group: str) -> QWidget:
         page = QWidget()
@@ -1682,7 +1679,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(combo)
         layout.addWidget(scroll, 1)
         equation_keyboard_button = QPushButton("⌨")
-        equation_keyboard_button.setToolTip("Show or hide equation keyboard")
+        equation_keyboard_button.setToolTip(tr("MainWindow", "Show or hide equation keyboard"))
         equation_keyboard_button.setCheckable(True)
         equation_keyboard_button.setFixedWidth(38)
         equation_keyboard_button.setVisible(False)
@@ -1782,16 +1779,16 @@ class MainWindow(QMainWindow):
         if not self._is_split_mode():
             self.control_tabs.addTab(
                 self._control_page("all"),
-                "All",
+                tr("MainWindow", "All"),
             )
         else:
             self.control_tabs.addTab(
                 self._control_page("don"),
-                "Don",
+                tr("MainWindow", "Don"),
             )
             self.control_tabs.addTab(
                 self._control_page("kat"),
-                "Kat",
+                tr("MainWindow", "Kat"),
             )
 
         self.schedule_preview()
@@ -1809,7 +1806,7 @@ class MainWindow(QMainWindow):
 
     def open_map(self) -> None:
         filename, _ = QFileDialog.getOpenFileName(
-            self, "Open osu! beatmap", "", "osu! beatmaps (*.osu)"
+            self, tr("MainWindow", "Open osu! beatmap"), "", tr("MainWindow", "osu! beatmaps (*.osu)")
         )
         if filename:
             self._load_map_path(Path(filename).resolve(), refresh_difficulties=True)
@@ -1827,7 +1824,7 @@ class MainWindow(QMainWindow):
             if not audio_path.is_file():
                 raise FileNotFoundError(f"Audio file not found: {audio_path.name}")
         except Exception as error:
-            QMessageBox.critical(self, "Open failed", str(error))
+            QMessageBox.critical(self, tr("MainWindow", "Open failed"), str(error))
             return
 
         self.document = document
@@ -1894,7 +1891,7 @@ class MainWindow(QMainWindow):
 
     def _background_dropped(self, dropped_path: str) -> None:
         if self.document is None or self.source_path is None:
-            QMessageBox.information(self, "Open a map first", "Open a beatmap before adding a background.")
+            QMessageBox.information(self, tr("MainWindow", "Open a map first"), tr("MainWindow", "Open a beatmap before adding a background."))
             return
         source = Path(dropped_path).resolve()
         destination = self.source_path.parent / source.name
@@ -1908,7 +1905,7 @@ class MainWindow(QMainWindow):
             try:
                 shutil.copy2(source, destination)
             except Exception as error:
-                QMessageBox.critical(self, "Background copy failed", str(error))
+                QMessageBox.critical(self, tr("MainWindow", "Background copy failed"), str(error))
                 return
         set_document_background(self.document, destination.name)
         self.current_background_path = destination
@@ -2077,7 +2074,7 @@ class MainWindow(QMainWindow):
             if not self._is_split_mode(): specs=[self._spec(0,"all")]
             else: specs=[self._spec(0,"don"),self._spec(1,"kat")]
             if any(name=="drawn_path" and len(params.get("points",[]))<2 for name,params in specs):
-                self.preview_positions=dict(self.applied_positions);self.refresh_canvas();self.status_label.setText("Open Drawing Window and draw a shape to preview.");return
+                self.preview_positions=dict(self.applied_positions);self.refresh_canvas();self.status_label.setText(tr("MainWindow", "Open Drawing Window and draw a shape to preview."));return
             key=(self.commit_revision,tuple(sorted(self.selected)),tuple((name,freeze_preview_value(params)) for name,params in specs))
             result=self.preview_cache.get(key)
             if result is None:
@@ -2109,7 +2106,7 @@ class MainWindow(QMainWindow):
     def apply_selection(self) -> None:
         if not self.selected:
             self.status.setText(
-                "Select notes in the bottom timeline first."
+                tr("MainWindow", "Select notes in the bottom timeline first.")
             )
             return
 
@@ -2120,7 +2117,7 @@ class MainWindow(QMainWindow):
         except Exception as error:
             QMessageBox.warning(
                 self,
-                "Apply failed",
+                tr("MainWindow", "Apply failed"),
                 str(error),
             )
             return
@@ -2143,7 +2140,7 @@ class MainWindow(QMainWindow):
         self.refresh_canvas()
 
         self.status.setText(
-            "All applied transformations reset."
+            tr("MainWindow", "All applied transformations reset.")
         )
 
     def undo(self)->None:
@@ -2180,6 +2177,21 @@ class MainWindow(QMainWindow):
         position=max(0,position); self.audio_anchor_position=position; self.latest_audio_position=position; self.audio_anchor_clock.restart()
         self.player.setPosition(position); self.timeline.set_time(position,force=True); self.timing_bar.set_time(position); self.overview.set_time(position)
 
+    def _timeline_info_text(self, duration_text: str, position_text: str, snap_text: str) -> str:
+        """Build the timeline help line from individually translated pieces.
+
+        The wheel hints describe the real step size in wheelEvent, which moves
+        four snap divisions per notch and four whole beats with Shift held.
+        """
+        return (
+            f"{tr('MainWindow', 'Duration')}: {duration_text}   |   "
+            f"{tr('MainWindow', 'Now')}: {position_text}   |   "
+            f"{tr('MainWindow', 'Snap')}: {snap_text}   |   "
+            f"{tr('MainWindow', 'Wheel: 4 snaps')}   |   "
+            f"{tr('MainWindow', 'Shift+wheel: 4 beats')}   |   "
+            f"{tr('MainWindow', 'Ctrl+wheel: zoom')}"
+        )
+
     def _update_timeline_info(self) -> None:
         if not hasattr(self, "timeline_info"):
             return
@@ -2190,10 +2202,11 @@ class MainWindow(QMainWindow):
         if hasattr(self,"timeline_time"):
             value=max(0,int(position));self.timeline_time.setText(f"{value//60000:02d}:{(value%60000)//1000:02d}:{value%1000:03d}")
         self.timeline_info.setText(
-            f"Duration: {format_time(duration)}   |   "
-            f"Position: {format_time(position)}   |   "
-            f"Snap: 1/{int(self.snap_combo.currentData())}   |   "
-            "Wheel: 4 snaps   |   Shift+wheel: 4 beats   |   Ctrl+wheel: zoom"
+            self._timeline_info_text(
+                format_time(duration),
+                format_time(position),
+                f"1/{int(self.snap_combo.currentData())}",
+            )
         )
 
     def _player_position_changed(self, position: int) -> None:
@@ -2216,13 +2229,13 @@ class MainWindow(QMainWindow):
 
     def apply_to_original_file(self)->None:
         if self.document is None or self.source_path is None:return
-        answer=QMessageBox.question(self,"Overwrite original beatmap?","This writes every committed transformation to the original .osu file. Continue?",QMessageBox.Yes|QMessageBox.No,QMessageBox.No)
+        answer=QMessageBox.question(self,tr("MainWindow", "Overwrite original beatmap?"),tr("MainWindow", "This writes every committed transformation to the original .osu file. Continue?"),QMessageBox.Yes|QMessageBox.No,QMessageBox.No)
         if answer!=QMessageBox.Yes:return
         try:
             for note in self.document.hit_objects:note.x,note.y=self.applied_positions[note.original_index]
             write_osu(self.document,self.source_path,self.document.version,allow_overwrite_source=True,create_backup=True,force_ar=self.approach_rate_control.value(),force_cs=self.circle_size_control.value())
-        except Exception as error:QMessageBox.critical(self,"Write failed",str(error));return
-        QMessageBox.information(self,"Original updated","Applied all committed changes to:\n"+str(self.source_path))
+        except Exception as error:QMessageBox.critical(self,tr("MainWindow", "Write failed"),str(error));return
+        QMessageBox.information(self,tr("MainWindow", "Original updated"),tr("MainWindow", "Applied all committed changes to:\n")+str(self.source_path))
 
     def export_map(self) -> None:
         if self.document is None or self.source_path is None:
@@ -2243,9 +2256,9 @@ class MainWindow(QMainWindow):
 
         destination, _ = QFileDialog.getSaveFileName(
             self,
-            "Export applied map",
+            tr("MainWindow", "Export applied map"),
             str(candidate),
-            "osu! beatmaps (*.osu)",
+            tr("MainWindow", "osu! beatmaps (*.osu)"),
         )
 
         if not destination:
@@ -2256,8 +2269,8 @@ class MainWindow(QMainWindow):
         if destination_path == self.source_path:
             QMessageBox.warning(
                 self,
-                "Source protected",
-                "Choose a different filename.",
+                tr("MainWindow", "Source protected"),
+                tr("MainWindow", "Choose a different filename."),
             )
             return
 
@@ -2278,15 +2291,15 @@ class MainWindow(QMainWindow):
         except Exception as error:
             QMessageBox.critical(
                 self,
-                "Export failed",
+                tr("MainWindow", "Export failed"),
                 str(error),
             )
             return
 
         QMessageBox.information(
             self,
-            "Export complete",
-            f"Created:\n{destination_path}",
+            tr("MainWindow", "Export complete"),
+            tr("MainWindow", "Created:\n") + str(destination_path),
         )
 
 
