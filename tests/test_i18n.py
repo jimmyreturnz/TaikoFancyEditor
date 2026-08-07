@@ -24,6 +24,7 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import QTranslator
 from PySide6.QtWidgets import QApplication
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -140,14 +141,21 @@ class CatalogIntegrityTests(unittest.TestCase):
         }
         self.assertLessEqual(set(load_catalog()), allowed)
 
-    def test_compiled_catalog_is_current(self):
+    def test_compiled_catalog_matches_the_source_catalog(self):
+        """Compare content rather than timestamps, which git checkouts destroy."""
         qm = ROOT / "translations" / "taiko_ja.qm"
         self.assertTrue(qm.is_file(), "taiko_ja.qm missing; run tools/compile_translations.bat")
-        self.assertGreater(
-            qm.stat().st_mtime,
-            TS_PATH.stat().st_mtime - 1,
-            "taiko_ja.qm is older than taiko_ja.ts; recompile the catalog",
-        )
+
+        translator = QTranslator()
+        self.assertTrue(translator.load(str(qm)), "taiko_ja.qm failed to load")
+
+        stale = [
+            (context, source)
+            for context, entries in load_catalog().items()
+            for source, value in entries.items()
+            if translator.translate(context, source) != value
+        ]
+        self.assertEqual(stale, [], f"taiko_ja.qm is out of date for: {stale}")
 
 
 class CoverageTests(unittest.TestCase):

@@ -29,15 +29,14 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-build.txt
 
-      - name: Run tests
-        run: python -m unittest discover -v
-
+      # Compiled before the tests so the localization suite checks the catalog
+      # this build will actually ship.
       - name: Compile translations
         shell: pwsh
-        run: |
-          if (Test-Path translations/taiko_ja.ts) {
-            pyside6-lrelease translations/taiko_ja.ts
-          }
+        run: pyside6-lrelease translations/taiko_ja.ts
+
+      - name: Run tests
+        run: python -m unittest discover -v
 
       - name: Build portable Windows application
         run: pyinstaller --noconfirm --clean TaikoFancyArranger.spec

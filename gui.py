@@ -2269,7 +2269,7 @@ class MainWindow(QMainWindow):
             for note in self.document.hit_objects:note.x,note.y=self.applied_positions[note.original_index]
             write_osu(self.document,self.source_path,self.document.version,allow_overwrite_source=True,create_backup=True,force_ar=self.approach_rate_control.value(),force_cs=self.circle_size_control.value())
         except Exception as error:QMessageBox.critical(self,tr("MainWindow", "Write failed"),str(error));return
-        QMessageBox.information(self,tr("MainWindow", "Original updated"),tr("MainWindow", "Applied all committed changes to:\n")+str(self.source_path))
+        QMessageBox.information(self,tr("MainWindow", "Original updated"),tr("MainWindow", "Applied all committed changes to:")+"\n"+str(self.source_path))
 
     def export_map(self) -> None:
         if self.document is None or self.source_path is None:
@@ -2333,7 +2333,7 @@ class MainWindow(QMainWindow):
         QMessageBox.information(
             self,
             tr("MainWindow", "Export complete"),
-            tr("MainWindow", "Created:\n") + str(destination_path),
+            tr("MainWindow", "Created:") + "\n" + str(destination_path),
         )
 
 
