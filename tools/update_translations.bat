@@ -1,6 +1,11 @@
 @echo off
 setlocal
 cd /d "%~dp0\.."
-pyside6-lupdate gui.py settings_dialog.py settings.py -ts translations\taiko_ja.ts
-if errorlevel 1 exit /b 1
-echo Updated translations\taiko_ja.ts
+set "PY=.venv\Scripts\python.exe"
+if not exist "%PY%" set "PY=python"
+"%PY%" tools\build_i18n.py || exit /b 1
+"%PY%" tools\audit_i18n.py || (
+  echo Coverage failed. Open translations\coverage_report.txt
+  exit /b 1
+)
+echo Japanese translation build and coverage audit passed.
