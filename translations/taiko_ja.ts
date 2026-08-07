@@ -876,4 +876,107 @@
             <translation>保存済みの設定をすべて消去するには「すべての設定をリセット」を使用してください。</translation>
         </message>
     </context>
+    <context>
+        <name>Transformations</name>
+        <message>
+            <source>Text</source>
+            <translation>テキスト</translation>
+        </message>
+        <message>
+            <source>Drawing</source>
+            <translation>描画</translation>
+        </message>
+        <message>
+            <source>Equation</source>
+            <translation>方程式</translation>
+        </message>
+        <message>
+            <source>Pinwheel</source>
+            <translation>ピンホイール</translation>
+        </message>
+        <message>
+            <source>Horizontal</source>
+            <translation>横</translation>
+        </message>
+        <message>
+            <source>Vertical</source>
+            <translation>縦</translation>
+        </message>
+        <message>
+            <source>Taiko</source>
+            <translation>太鼓</translation>
+        </message>
+        <message>
+            <source>Vertical Taiko</source>
+            <translation>縦太鼓</translation>
+        </message>
+        <message>
+            <source>DVD Bouncing</source>
+            <translation>DVDバウンド</translation>
+        </message>
+        <message>
+            <source>Circle</source>
+            <translation>円</translation>
+        </message>
+        <message>
+            <source>Ellipse</source>
+            <translation>楕円</translation>
+        </message>
+        <message>
+            <source>Square</source>
+            <translation>四角形</translation>
+        </message>
+        <message>
+            <source>Triangle</source>
+            <translation>三角形</translation>
+        </message>
+        <message>
+            <source>Diamond</source>
+            <translation>ひし形</translation>
+        </message>
+        <message>
+            <source>Infinity</source>
+            <translation>無限大</translation>
+        </message>
+        <message>
+            <source>Star</source>
+            <translation>星</translation>
+        </message>
+        <message>
+            <source>Spiral</source>
+            <translation>らせん</translation>
+        </message>
+        <message>
+            <source>Arc</source>
+            <translation>円弧</translation>
+        </message>
+        <message>
+            <source>Straight Line</source>
+            <translation>直線</translation>
+        </message>
+        <message>
+            <source>Polyline</source>
+            <translation>折れ線</translation>
+        </message>
+        <message>
+            <source>Bézier Path</source>
+            <translation>ベジェ曲線</translation>
+        </message>
+        <message>
+            <source>Wave</source>
+            <translation>波</translation>
+        </message>
+        <message>
+            <source>Zigzag</source>
+            <translation>ジグザグ</translation>
+        </message>
+        <message>
+            <source>Random Walk</source>
+            <translation>ランダムウォーク</translation>
+        </message>
+        <message>
+            <source>Random</source>
+            <translation>ランダム</translation>
+        </message>
+    </context>
 </TS>

@@ -209,8 +209,42 @@ def kiai_ranges(document, duration_ms: int) -> list[tuple[int, int]]:
     return output
 
 
+# Visible transformation labels, keyed by the stable internal transformation ID.
+# The IDs are what get stored and compared; only the values are ever shown or
+# translated. Adding a transformation without an entry here still works and
+# falls back to a titled form of its ID.
+TRANSFORMATION_LABELS = {
+    "text": "Text",
+    "drawn_path": "Drawing",
+    "equation": "Equation",
+    "pinwheel": "Pinwheel",
+    "horizontal": "Horizontal",
+    "vertical": "Vertical",
+    "taiko": "Taiko",
+    "vertical_taiko": "Vertical Taiko",
+    "dvd_bouncing": "DVD Bouncing",
+    "circle": "Circle",
+    "ellipse": "Ellipse",
+    "square": "Square",
+    "triangle": "Triangle",
+    "diamond": "Diamond",
+    "infinity": "Infinity",
+    "star": "Star",
+    "spiral": "Spiral",
+    "arc": "Arc",
+    "straight_line": "Straight Line",
+    "polyline": "Polyline",
+    "bezier": "Bézier Path",
+    "wave": "Wave",
+    "zigzag": "Zigzag",
+    "random_walk": "Random Walk",
+    "random": "Random",
+}
+
+
 def display_name(name: str) -> str:
-    return "Drawing" if name=="drawn_path" else name.replace("_"," ").title()
+    label = TRANSFORMATION_LABELS.get(name) or name.replace("_", " ").title()
+    return tr("Transformations", label)
 
 
 def extract_background_filename(document) -> str:
