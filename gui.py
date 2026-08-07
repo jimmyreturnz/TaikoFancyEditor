@@ -1402,8 +1402,11 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(QLabel(tr("MainWindow", "Transformation mode")))
 
         self.mode_combo = QComboBox()
-        self.mode_combo.addItems(["All Notes", "Split Don / Kat"])
-        self.mode_combo.currentTextChanged.connect(
+        # Item data is the stable mode identifier. The display text is localized,
+        # so mode logic reads currentData() and never currentText().
+        self.mode_combo.addItem("All Notes", "all")
+        self.mode_combo.addItem("Split Don / Kat", "split")
+        self.mode_combo.currentIndexChanged.connect(
             self._rebuild_control_tabs
         )
         right_layout.addWidget(self.mode_combo)
@@ -1412,8 +1415,8 @@ class MainWindow(QMainWindow):
         self.swap_don_kat_button.setToolTip("Swap transformation, parameters, and position between Don and Kat")
         self.swap_don_kat_button.clicked.connect(self._swap_don_kat_transformations)
         right_layout.addWidget(self.swap_don_kat_button)
-        self.mode_combo.currentTextChanged.connect(
-            lambda mode: self.swap_don_kat_button.setVisible(mode == "Split Don / Kat")
+        self.mode_combo.currentIndexChanged.connect(
+            lambda _index: self.swap_don_kat_button.setVisible(self._is_split_mode())
         )
 
         self.control_tabs = QTabWidget()
@@ -1640,7 +1643,7 @@ class MainWindow(QMainWindow):
         self._sync_position_controls(group)
 
     def _swap_don_kat_transformations(self) -> None:
-        if self.mode_combo.currentText() != "Split Don / Kat":
+        if not self._is_split_mode():
             return
         if not all(
             group in getattr(self, "_transform_page_refs", {})
@@ -1762,10 +1765,21 @@ class MainWindow(QMainWindow):
         }
         return page
 
+    def _transformation_mode(self) -> str:
+        """Return the stable mode identifier, "all" or "split".
+
+        Reads combo item data rather than the visible label so that mode logic
+        is unaffected by localization.
+        """
+        return str(self.mode_combo.currentData() or "all")
+
+    def _is_split_mode(self) -> bool:
+        return self._transformation_mode() == "split"
+
     def _rebuild_control_tabs(self) -> None:
         self.control_tabs.clear()
 
-        if self.mode_combo.currentText() == "All Notes":
+        if not self._is_split_mode():
             self.control_tabs.addTab(
                 self._control_page("all"),
                 "All",
@@ -1908,7 +1922,7 @@ class MainWindow(QMainWindow):
         self.selected=new_selection; self.preview_timer.stop(); self.preview_positions=dict(self.applied_positions); self.refresh_canvas()
     def _selection_finalized(self, selected) -> None:
         self.selected=set(selected)
-        if any(self._spec(i, group)[0] for i,group in enumerate(("all",) if self.mode_combo.currentText()=="All Notes" else ("don","kat"))): self.schedule_preview()
+        if any(self._spec(i, group)[0] for i,group in enumerate(("all",) if not self._is_split_mode() else ("don","kat"))): self.schedule_preview()
 
     def schedule_preview(self) -> None:
         if self.document is not None:
@@ -1922,7 +1936,7 @@ class MainWindow(QMainWindow):
         if not indexes:
             return {}
 
-        if self.mode_combo.currentText() == "All Notes":
+        if not self._is_split_mode():
             transformation_name, params = self._spec(
                 0,
                 "all",
@@ -1961,7 +1975,7 @@ class MainWindow(QMainWindow):
 
 
     def _indices_for_drag_group(self, clicked_group: str) -> set[int]:
-        if self.mode_combo.currentText() == "All Notes":
+        if not self._is_split_mode():
             return set(self.selected)
         return {
             note.original_index
@@ -1975,7 +1989,7 @@ class MainWindow(QMainWindow):
         note_by_index = {note.original_index: note for note in self.document.hit_objects}
         for index in self.selected:
             group = "kat" if note_by_index[index].is_kat else "don"
-            offset_key = "all" if self.mode_combo.currentText() == "All Notes" else group
+            offset_key = "all" if not self._is_split_mode() else group
             dx, dy = self.preview_offsets[offset_key]
             if index in output:
                 x, y = output[index]
@@ -2015,7 +2029,7 @@ class MainWindow(QMainWindow):
         # Position X/Y are always synchronized by the existing drag code.
         # Center X/Y are transformation parameters and should visually track
         # the same translation without triggering a transformation rebuild.
-        groups = ("all",) if self.mode_combo.currentText() != "Split Don / Kat" else (offset_key,)
+        groups = ("all",) if not self._is_split_mode() else (offset_key,)
         for group in groups:
             controls = self.controls.get(group, {})
             center_x = controls.get("center_x")
@@ -2031,7 +2045,7 @@ class MainWindow(QMainWindow):
         target_indices = self._indices_for_drag_group(clicked_group)
         if not target_indices:
             return
-        offset_key = "all" if self.mode_combo.currentText() == "All Notes" else clicked_group
+        offset_key = "all" if not self._is_split_mode() else clicked_group
         current_positions = {
             index: self.preview_positions.get(index, self.applied_positions[index])
             for index in target_indices
@@ -2060,7 +2074,7 @@ class MainWindow(QMainWindow):
         try:
             self.preview_positions=dict(self.applied_positions)
             specs=[]
-            if self.mode_combo.currentText()=="All Notes": specs=[self._spec(0,"all")]
+            if not self._is_split_mode(): specs=[self._spec(0,"all")]
             else: specs=[self._spec(0,"don"),self._spec(1,"kat")]
             if any(name=="drawn_path" and len(params.get("points",[]))<2 for name,params in specs):
                 self.preview_positions=dict(self.applied_positions);self.refresh_canvas();self.status_label.setText("Open Drawing Window and draw a shape to preview.");return
