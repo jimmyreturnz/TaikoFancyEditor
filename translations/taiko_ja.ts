@@ -1,4 +1,5 @@
-<?xml version='1.0' encoding='utf-8'?>
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE TS>
 <TS version="2.1" language="ja_JP">
     <context>
         <name>DrawingDialog</name>
@@ -20,7 +21,7 @@
         </message>
         <message>
             <source>Import Image...</source>
-            <translation>画像をインポート...</translation>
+            <translation type="vanished">画像をインポート...</translation>
         </message>
         <message>
             <source>Redo</source>
@@ -123,7 +124,8 @@
         <message>
             <source>Applied all committed changes to:
 </source>
-            <translation type="unfinished" />
+            <translation>確定したすべての変更を次に適用しました:
+</translation>
         </message>
         <message>
             <source>Apply all changes to original file</source>
@@ -152,7 +154,8 @@
         <message>
             <source>Created:
 </source>
-            <translation type="unfinished" />
+            <translation>作成しました:
+</translation>
         </message>
         <message>
             <source>Ctrl+wheel: zoom</source>
@@ -224,7 +227,7 @@
         </message>
         <message>
             <source>Open Settings</source>
-            <translation>設定を開く</translation>
+            <translation type="vanished">設定を開く</translation>
         </message>
         <message>
             <source>Original updated</source>
@@ -264,7 +267,7 @@
         </message>
         <message>
             <source>Shift+wheel: 1 beat</source>
-            <translation>Shift+ホイール: 1拍</translation>
+            <translation type="vanished">Shift+ホイール: 1拍</translation>
         </message>
         <message>
             <source>Show or hide equation keyboard</source>
@@ -308,11 +311,23 @@
         </message>
         <message>
             <source>Wheel: seek</source>
-            <translation>ホイール: シーク</translation>
+            <translation type="vanished">ホイール: シーク</translation>
         </message>
         <message>
             <source>Write failed</source>
             <translation>書き込みに失敗しました</translation>
+        </message>
+        <message>
+            <source>Open application settings</source>
+            <translation>アプリケーション設定を開く</translation>
+        </message>
+        <message>
+            <source>Wheel: 4 snaps</source>
+            <translation>ホイール: 4スナップ</translation>
+        </message>
+        <message>
+            <source>Shift+wheel: 4 beats</source>
+            <translation>Shift+ホイール: 4拍</translation>
         </message>
     </context>
     <context>
@@ -423,11 +438,11 @@
         </message>
         <message>
             <source>Enter text, for example 67, 日本, or ภาษาไทย</source>
-            <translation type="unfinished" />
+            <translation>テキストを入力してください（例: 67、日本、ภาษาไทย）</translation>
         </message>
         <message>
             <source>Equation</source>
-            <translation type="unfinished" />
+            <translation>方程式</translation>
         </message>
         <message>
             <source>Explicit</source>
@@ -771,7 +786,7 @@
         </message>
         <message>
             <source>x(t)</source>
-            <translation type="unfinished" />
+            <translation>x(t)</translation>
         </message>
         <message>
             <source>Y Maximum</source>
@@ -783,7 +798,7 @@
         </message>
         <message>
             <source>y(t)</source>
-            <translation type="unfinished" />
+            <translation>y(t)</translation>
         </message>
     </context>
     <context>
@@ -850,7 +865,7 @@
         </message>
         <message>
             <source>Shortcut conflict: {sequence} is assigned to {first} and {second}.</source>
-            <translation type="unfinished" />
+            <translation>ショートカットの競合: {sequence} が {first} と {second} に割り当てられています。</translation>
         </message>
         <message>
             <source>Shortcuts</source>
