@@ -121,20 +121,40 @@ class SetNoteFields(Command):
 
 @dataclass
 class InsertHitObjects(Command):
-    """Add hit objects. Stores them so revert can remove exactly these."""
+    """Add hit objects. Stores them so revert can remove exactly these.
+
+    Also registers each inserted note in `applied_positions`, which is what
+    every write path reads a note's final x/y from. Without that, saving a map
+    containing an inserted note either raised KeyError or silently wrote some
+    *other* note's coordinates, depending on whether the new note's
+    original_index happened to collide with an existing one.
+
+    Only keys this command actually created are removed again on revert, so an
+    insert whose note reuses an existing key cannot delete that key's real
+    entry.
+    """
 
     notes: list[Any]
     label_id: str = "insert_notes"
+    _created_keys: set = field(default_factory=set)
 
     def apply(self, target: EditTarget) -> None:
         target.document.hit_objects.extend(self.notes)
         target.document.hit_objects.sort(key=lambda note: note.time)
+        self._created_keys = set()
+        for note in self.notes:
+            if note.original_index not in target.applied_positions:
+                target.applied_positions[note.original_index] = (note.x, note.y)
+                self._created_keys.add(note.original_index)
 
     def revert(self, target: EditTarget) -> None:
         removing = {note.uid for note in self.notes}
         target.document.hit_objects[:] = [
             note for note in target.document.hit_objects if note.uid not in removing
         ]
+        for key in self._created_keys:
+            target.applied_positions.pop(key, None)
+        self._created_keys = set()
 
 
 @dataclass

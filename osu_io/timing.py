@@ -294,32 +294,54 @@ def uninherited_points(points: Iterable[TimingPoint]) -> list[TimingPoint]:
     return [point for point in points if point.uninherited and point.beat_length > 0]
 
 
+def _index_at_or_before(points: Sequence[TimingPoint], time_ms: float) -> int:
+    """Index of the last point at or before `time_ms`, or -1.
+
+    Binary search rather than a scan: these lookups run per note per frame in
+    the editor views, and a gimmick map carries tens of thousands of points --
+    a linear walk there is the difference between a repaint and a freeze.
+    """
+    low, high = 0, len(points)
+    while low < high:
+        middle = (low + high) // 2
+        if points[middle].time <= time_ms:
+            low = middle + 1
+        else:
+            high = middle
+    return low - 1
+
+
 def active_point_at(points: Sequence[TimingPoint], time_ms: float) -> TimingPoint | None:
     """Last point at or before `time_ms`, assuming `points` is time-sorted."""
-    found: TimingPoint | None = None
-    for point in points:
-        if point.time > time_ms:
-            break
-        found = point
-    return found
+    index = _index_at_or_before(points, time_ms)
+    return points[index] if index >= 0 else None
 
 
 def active_uninherited_at(points: Sequence[TimingPoint], time_ms: float) -> TimingPoint:
-    """Timing section covering `time_ms`, falling back to 120 BPM."""
-    found = active_point_at(uninherited_points(points), time_ms)
-    if found is not None:
-        return found
-    first = next(iter(uninherited_points(points)), None)
+    """Timing section covering `time_ms`, falling back to 120 BPM.
+
+    `points` must be time-sorted; it may hold inherited points too, which are
+    stepped over rather than filtered out into a fresh list -- this is called
+    once per note per frame, and the filtering allocation was showing up as a
+    stutter on maps with many SV points.
+    """
+    index = _index_at_or_before(points, time_ms)
+    while index >= 0:
+        point = points[index]
+        if point.uninherited and point.beat_length > 0:
+            return point
+        index -= 1
+    first = next((point for point in points if point.uninherited and point.beat_length > 0), None)
     return first or TimingPoint.default()
 
 
 def sv_at(points: Sequence[TimingPoint], time_ms: float) -> float:
-    """Effective SV multiplier at `time_ms`.
+    """Effective SV multiplier at `time_ms`, assuming `points` is time-sorted.
 
-    An uninherited point resets SV to 1.0x, which is why this walks all points
-    rather than only the inherited ones.
+    An uninherited point resets SV to 1.0x, which is why this reads the last
+    point of either kind rather than only the inherited ones.
     """
-    point = active_point_at(sorted_by_time(points), time_ms)
+    point = active_point_at(points, time_ms)
     return point.sv_multiplier if point is not None else 1.0
 
 
