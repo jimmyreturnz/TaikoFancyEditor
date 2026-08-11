@@ -305,6 +305,10 @@ class StableIdentifierTests(unittest.TestCase):
         for language in ("en", "ja"):
             with self.subTest(language=language):
                 window = self._build_window(language)
+                # swap_don_kat_button lives on the Fancy Arranger page; a
+                # descendant of a page that isn't current reports
+                # isVisible() False regardless of its own setVisible calls.
+                window.page_stack.setCurrentWidget(window.fancy_arranger_page)
                 combo = window.mode_combo
                 data = [combo.itemData(i) for i in range(combo.count())]
                 self.assertEqual(data, ["all", "split"])

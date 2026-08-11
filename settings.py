@@ -59,10 +59,27 @@ class ShortcutDefinition:
     default: str
 
 
+# Every keyboard action the app registers as a real QShortcut, so the Settings
+# dialog's list is the whole truth rather than three of them. Keys handled
+# inside a widget's own keyPressEvent (Delete, Ctrl+A) stay out: they are
+# scoped to the focused view, not app-level bindings, and listing them here
+# would promise a rebind the widget would ignore. `back_to_songs` is the one
+# exception -- it is compared against in MainWindow.keyPressEvent rather than
+# registered, because a real shortcut would take Escape away from the views.
 SHORTCUT_DEFINITIONS: tuple[ShortcutDefinition, ...] = (
     ShortcutDefinition("play_pause", "Play/Pause", "Playback", "Space"),
     ShortcutDefinition("undo", "Undo", "Editing", "Ctrl+Z"),
     ShortcutDefinition("redo", "Redo", "Editing", "Ctrl+Y"),
+    ShortcutDefinition("copy", "Copy", "Editing", "Ctrl+C"),
+    ShortcutDefinition("paste", "Paste", "Editing", "Ctrl+V"),
+    ShortcutDefinition("save_all", "Save all changed difficulties", "File", "Ctrl+S"),
+    ShortcutDefinition("back_to_songs", "Back to the song list", "Navigation", "Esc"),
+    ShortcutDefinition("tool_1", "Tool 1: Select", "Tools", "1"),
+    ShortcutDefinition("tool_2", "Tool 2: Don / Green line", "Tools", "2"),
+    ShortcutDefinition("tool_3", "Tool 3: Kat / Function", "Tools", "3"),
+    ShortcutDefinition("tool_4", "Tool 4: Slider", "Tools", "4"),
+    ShortcutDefinition("tool_5", "Tool 5: Spinner", "Tools", "5"),
+    ShortcutDefinition("tool_6", "Tool 6: New combo", "Tools", "6"),
 )
 
 

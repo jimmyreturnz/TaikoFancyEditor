@@ -1,14 +1,19 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+import sys
+from pathlib import Path
+
+from PySide6.QtCore import QProcess, Qt
 from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QListWidget,
     QListWidgetItem,
@@ -104,7 +109,13 @@ class SettingsDialog(QDialog):
         layout = QVBoxLayout(page)
         self.shortcuts_table = QTableWidget(0, 3)
         self.shortcuts_table.setHorizontalHeaderLabels([self.tr("Action"), self.tr("Category"), self.tr("Shortcut")])
-        self.shortcuts_table.horizontalHeader().setStretchLastSection(True)
+        header = self.shortcuts_table.horizontalHeader()
+        # Action and Category size to their longest label -- which is a
+        # translation, so no fixed width can be right in both languages -- and
+        # the editor column takes what is left.
+        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        header.setStretchLastSection(True)
         for row, definition in enumerate(self.shortcuts.definitions.values()):
             self.shortcuts_table.insertRow(row)
             self.shortcuts_table.setItem(row, 0, QTableWidgetItem(self.tr(definition.label)))
@@ -189,13 +200,53 @@ class SettingsDialog(QDialog):
         if parent is not None and hasattr(parent, "_reload_shortcuts"):
             parent._reload_shortcuts()
         if selected_language != previous_language:
-            QMessageBox.information(
+            self._prompt_language_restart()
+        return True
+
+    def _prompt_language_restart(self) -> None:
+        """Ask to restart, in the language just chosen -- not the old one.
+
+        Qt does not retranslate widgets that already exist, so switching the
+        catalog here leaves the rest of the running UI in the previous
+        language; that is exactly what the restart is for. But the prompt
+        itself is built *after* the switch, so someone who has just picked
+        Japanese is asked in Japanese rather than in the language they were
+        moving away from.
+        """
+        import i18n
+
+        i18n.install_translator(QApplication.instance(), self.settings)
+
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Information)
+        box.setWindowTitle(self.tr("Restart required"))
+        box.setText(self.tr("Please restart Taiko Fancy Arranger to apply the language change."))
+        restart_button = box.addButton(self.tr("Restart now"), QMessageBox.AcceptRole)
+        box.addButton(self.tr("Restart later"), QMessageBox.RejectRole)
+        box.exec()
+        if box.clickedButton() is restart_button:
+            self._restart_application()
+
+    def _restart_application(self) -> None:
+        """Relaunch this program and quit the current instance.
+
+        startDetached before quit, so the new process is not a child of one
+        that is about to exit. A frozen build is its own executable and takes
+        only the original arguments; a source run needs the interpreter in
+        front of them.
+        """
+        if getattr(sys, "frozen", False):
+            program, arguments = sys.executable, sys.argv[1:]
+        else:
+            program, arguments = sys.executable, sys.argv
+        if not QProcess.startDetached(program, arguments, str(Path.cwd())):
+            QMessageBox.warning(
                 self,
                 self.tr("Restart required"),
-                self.tr("Please restart Taiko Fancy Arranger to apply the language change."),
-                QMessageBox.Ok,
+                self.tr("Could not restart automatically. Please close and reopen the program."),
             )
-        return True
+            return
+        QApplication.quit()
 
     def _ok(self) -> None:
         if self.apply():

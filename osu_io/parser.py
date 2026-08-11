@@ -70,6 +70,10 @@ def parse_osu(path):
         if note is not None: hit_objects.append(note)
     if open_section is not None:
         section_spans[open_section]=(open_index,len(lines))
+    # Sorted once here so every later lookup can binary-search instead of
+    # scanning or re-sorting. Stable, so points sharing a timestamp keep the
+    # file order osu! resolves them by.
+    timing_points.sort(key=lambda point: point.time)
     return OsuDocument(
         source_path,lines,encoding,version,audio_filename,hit_objects,
         timing_points,section_spans,_dominant_ending(lines),_format_version(lines),

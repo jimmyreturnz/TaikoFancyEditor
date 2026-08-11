@@ -106,6 +106,10 @@
     <context>
         <name>MainWindow</name>
         <message>
+            <source>A to Z</source>
+            <translation>A → Z</translation>
+        </message>
+        <message>
             <source>Adjust by 0.01</source>
             <translation>0.01ずつ調整</translation>
         </message>
@@ -134,6 +138,10 @@
             <translation>適用に失敗しました</translation>
         </message>
         <message>
+            <source>Artist</source>
+            <translation>アーティスト</translation>
+        </message>
+        <message>
             <source>Background copy failed</source>
             <translation>背景のコピーに失敗しました</translation>
         </message>
@@ -146,8 +154,20 @@
             <translation>ビートスナップ</translation>
         </message>
         <message>
+            <source>Cancel</source>
+            <translation>キャンセル</translation>
+        </message>
+        <message>
+            <source>Change folder</source>
+            <translation>フォルダを変更</translation>
+        </message>
+        <message>
             <source>Choose a different filename.</source>
             <translation>別のファイル名を選択してください。</translation>
+        </message>
+        <message>
+            <source>Continue without saving</source>
+            <translation>保存せずに続行</translation>
         </message>
         <message>
             <source>Created:</source>
@@ -156,6 +176,10 @@
         <message>
             <source>Ctrl+wheel: zoom</source>
             <translation>Ctrl+ホイール: ズーム</translation>
+        </message>
+        <message>
+            <source>Difficulties</source>
+            <translation>難易度</translation>
         </message>
         <message>
             <source>Difficulty</source>
@@ -170,6 +194,10 @@
             <translation>曲の長さ</translation>
         </message>
         <message>
+            <source>Edit this difficulty</source>
+            <translation>この難易度を編集</translation>
+        </message>
+        <message>
             <source>Export applied map</source>
             <translation>適用済み譜面をエクスポート</translation>
         </message>
@@ -182,11 +210,31 @@
             <translation>エクスポートに失敗しました</translation>
         </message>
         <message>
+            <source>Group by</source>
+            <translation>グループ化</translation>
+        </message>
+        <message>
             <source>Kat</source>
             <translation>カッ</translation>
         </message>
         <message>
+            <source>Look for songs added or changed since the last scan</source>
+            <translation>前回のスキャン以降に追加・変更された曲を探します</translation>
+        </message>
+        <message>
+            <source>Mapper</source>
+            <translation>マッパー</translation>
+        </message>
+        <message>
+            <source>No songs folder selected yet.</source>
+            <translation>曲フォルダがまだ選択されていません。</translation>
+        </message>
+        <message>
             <source>None</source>
+            <translation>なし</translation>
+        </message>
+        <message>
+            <source>Nothing</source>
             <translation>なし</translation>
         </message>
         <message>
@@ -226,6 +274,10 @@
             <translation type="vanished">設定を開く</translation>
         </message>
         <message>
+            <source>Original language metadata</source>
+            <translation>原語のメタデータ</translation>
+        </message>
+        <message>
             <source>Original updated</source>
             <translation>元のファイルを更新しました</translation>
         </message>
@@ -250,28 +302,72 @@
             <translation>再生速度</translation>
         </message>
         <message>
+            <source>Please select your osu! Songs folder.
+
+Every beatmap in it is checked once for taiko difficulties, and the result is remembered, so this only takes a while the first time.</source>
+            <translation>osu! の Songs フォルダを選択してください。
+
+フォルダ内のすべてのビートマップを一度だけ確認して太鼓の難易度を探し、結果を記憶します。時間がかかるのは最初の一回だけです。</translation>
+        </message>
+        <message>
             <source>Preview reset to original coordinates.</source>
             <translation>プレビューを元の座標に戻しました。</translation>
+        </message>
+        <message>
+            <source>Rescan</source>
+            <translation>再スキャン</translation>
         </message>
         <message>
             <source>Reset applied transforms</source>
             <translation>適用した変形をリセット</translation>
         </message>
         <message>
+            <source>Save your changes first?</source>
+            <translation>変更を先に保存しますか？</translation>
+        </message>
+        <message>
+            <source>Scanning {files} files, {songs} taiko songs found</source>
+            <translation>スキャン中: {files} ファイル、太鼓の曲 {songs} 件を検出</translation>
+        </message>
+        <message>
+            <source>Search artist, title or difficulty</source>
+            <translation>アーティスト・曲名・難易度で検索</translation>
+        </message>
+        <message>
+            <source>Search artist, title, difficulty, mapper or tags</source>
+            <translation>アーティスト・曲名・難易度・マッパー・タグで検索</translation>
+        </message>
+        <message>
             <source>Select notes in the bottom timeline first.</source>
             <translation>先に下部タイムラインでノーツを選択してください。</translation>
         </message>
         <message>
+            <source>Select your osu! Songs folder</source>
+            <translation>osu! の Songs フォルダを選択してください</translation>
+        </message>
+        <message>
             <source>Shift+wheel: 1 beat</source>
-            <translation type="vanished">Shift+ホイール: 1拍</translation>
+            <translation>Shift+ホイール: 1拍</translation>
         </message>
         <message>
             <source>Show or hide equation keyboard</source>
             <translation>方程式キーボードを表示または非表示</translation>
         </message>
         <message>
+            <source>Show titles and artists in the song's own script instead of the romanized fields</source>
+            <translation>曲名とアーティスト名をローマ字表記ではなく原語の表記で表示します</translation>
+        </message>
+        <message>
             <source>Snap</source>
             <translation>スナップ</translation>
+        </message>
+        <message>
+            <source>Songs</source>
+            <translation>曲</translation>
+        </message>
+        <message>
+            <source>Sort</source>
+            <translation>並び順</translation>
         </message>
         <message>
             <source>Source protected</source>
@@ -294,6 +390,14 @@
             <translation>ドンとカッの変形を入れ替えました。</translation>
         </message>
         <message>
+            <source>Taiko songs</source>
+            <translation>太鼓の曲</translation>
+        </message>
+        <message>
+            <source>These difficulties have edits that are not written to disk:</source>
+            <translation>次の難易度には、ディスクに保存されていない編集があります:</translation>
+        </message>
+        <message>
             <source>This writes every committed transformation to the original .osu file. Continue?</source>
             <translation>確定したすべての変形を元の.osuファイルに書き込みます。続行しますか？</translation>
         </message>
@@ -304,6 +408,22 @@
         <message>
             <source>Transformation mode</source>
             <translation>変形モード</translation>
+        </message>
+        <message>
+            <source>Unknown artist</source>
+            <translation>アーティスト不明</translation>
+        </message>
+        <message>
+            <source>Unknown mapper</source>
+            <translation>マッパー不明</translation>
+        </message>
+        <message>
+            <source>Unsaved changes</source>
+            <translation>保存されていない変更</translation>
+        </message>
+        <message>
+            <source>Wheel: 1 snap</source>
+            <translation>ホイール: 1スナップ</translation>
         </message>
         <message>
             <source>Wheel: seek</source>
@@ -328,6 +448,290 @@
         <message>
             <source>Open Drawing Window</source>
             <translation>描画ウィンドウを開く</translation>
+        </message>
+        <message>
+            <source>Editor</source>
+            <translation>エディター</translation>
+        </message>
+        <message>
+            <source>Fancy Arranger</source>
+            <translation>ファンシーアレンジャー</translation>
+        </message>
+        <message>
+            <source>open new view</source>
+            <translation>新しいビューを開く</translation>
+        </message>
+        <message>
+            <source>Add view</source>
+            <translation>ビューを追加</translation>
+        </message>
+        <message>
+            <source>View type</source>
+            <translation>ビューの種類</translation>
+        </message>
+        <message>
+            <source>Chart</source>
+            <translation>譜面</translation>
+        </message>
+        <message>
+            <source>SV Editor</source>
+            <translation>SVエディター</translation>
+        </message>
+        <message>
+            <source>Gimmick Editor</source>
+            <translation>ギミックエディター</translation>
+        </message>
+        <message>
+            <source>Gameplay Viewer</source>
+            <translation>プレイビューアー</translation>
+        </message>
+        <message>
+            <source>Density</source>
+            <translation>密度</translation>
+        </message>
+        <message>
+            <source>Close view</source>
+            <translation>ビューを閉じる</translation>
+        </message>
+        <message>
+            <source>Lock view (read-only)</source>
+            <translation>ビューをロック(読み取り専用)</translation>
+        </message>
+        <message>
+            <source>Open a beatmap before adding a view.</source>
+            <translation>ビューを追加する前にビートマップを開いてください。</translation>
+        </message>
+        <message>
+            <source>SV editing arrives in a later milestone.</source>
+            <translation>SV編集は今後のマイルストーンで追加されます。</translation>
+        </message>
+        <message>
+            <source>Gimmick tools arrive in a later milestone.</source>
+            <translation>ギミックツールは今後のマイルストーンで追加されます。</translation>
+        </message>
+        <message>
+            <source>Gameplay rendering arrives in a later milestone.</source>
+            <translation>プレイ描画は今後のマイルストーンで追加されます。</translation>
+        </message>
+        <message>
+            <source>Undo</source>
+            <translation>元に戻す</translation>
+        </message>
+        <message>
+            <source>Redo</source>
+            <translation>やり直す</translation>
+        </message>
+        <message>
+            <source>Save</source>
+            <translation>保存</translation>
+        </message>
+        <message>
+            <source>Save every changed difficulty</source>
+            <translation>変更されたすべての難易度を保存</translation>
+        </message>
+        <message>
+            <source>Export</source>
+            <translation>エクスポート</translation>
+        </message>
+        <message>
+            <source>Export as a new difficulty in the same folder</source>
+            <translation>同じフォルダーに新しい難易度としてエクスポート</translation>
+        </message>
+        <message>
+            <source>Nothing to save.</source>
+            <translation>保存する変更はありません。</translation>
+        </message>
+        <message>
+            <source>Save failed</source>
+            <translation>保存に失敗しました</translation>
+        </message>
+        <message>
+            <source>Saved all changed difficulties.</source>
+            <translation>変更されたすべての難易度を保存しました。</translation>
+        </message>
+        <message>
+            <source>Open a beatmap before exporting a new difficulty.</source>
+            <translation>新しい難易度をエクスポートする前にビートマップを開いてください。</translation>
+        </message>
+        <message>
+            <source>Export new difficulty</source>
+            <translation>新しい難易度をエクスポート</translation>
+        </message>
+        <message>
+            <source>New difficulty name:</source>
+            <translation>新しい難易度名:</translation>
+        </message>
+        <message>
+            <source>Select</source>
+            <translation>選択</translation>
+        </message>
+        <message>
+            <source>Drumroll</source>
+            <translation>連打</translation>
+        </message>
+        <message>
+            <source>Denden</source>
+            <translation>風船</translation>
+        </message>
+        <message>
+            <source>New Combo</source>
+            <translation>新しいコンボ</translation>
+        </message>
+        <message>
+            <source>Note tools:</source>
+            <translation>ノートツール:</translation>
+        </message>
+        <message>
+            <source>SV tools:</source>
+            <translation>SVツール:</translation>
+        </message>
+        <message>
+            <source>Green Line</source>
+            <translation>緑線</translation>
+        </message>
+        <message>
+            <source>Function</source>
+            <translation>関数</translation>
+        </message>
+        <message>
+            <source>Generate SV</source>
+            <translation>SVを生成</translation>
+        </message>
+        <message>
+            <source>Initial rate</source>
+            <translation>初期倍率</translation>
+        </message>
+        <message>
+            <source>Final rate</source>
+            <translation>最終倍率</translation>
+        </message>
+        <message>
+            <source>Generate at</source>
+            <translation>生成位置</translation>
+        </message>
+        <message>
+            <source>Each note</source>
+            <translation>各ノート</translation>
+        </message>
+        <message>
+            <source>Every snap</source>
+            <translation>スナップごと</translation>
+        </message>
+        <message>
+            <source>No notes in the selected range to generate SV on.</source>
+            <translation>選択範囲にSVを生成できるノートがありません。</translation>
+        </message>
+        <message>
+            <source>Copied {count} notes.</source>
+            <translation>{count}個のノートをコピーしました。</translation>
+        </message>
+        <message>
+            <source>Pasted {count} notes.</source>
+            <translation>{count}個のノートを貼り付けました。</translation>
+        </message>
+        <message>
+            <source>Copied {count} SV points.</source>
+            <translation>{count}個のSVポイントをコピーしました。</translation>
+        </message>
+        <message>
+            <source>Pasted {count} SV points.</source>
+            <translation>{count}個のSVポイントを貼り付けました。</translation>
+        </message>
+        <message>
+            <source>Position offset (ms)</source>
+            <translation>位置オフセット(ms)</translation>
+        </message>
+        <message>
+            <source>Omit barline</source>
+            <translation>小節線を省略</translation>
+        </message>
+        <message>
+            <source>Relative to final BPM</source>
+            <translation>最終BPMに対して相対的</translation>
+        </message>
+        <message>
+            <source>Linear</source>
+            <translation>直線</translation>
+        </message>
+        <message>
+            <source>Sin In</source>
+            <translation>Sin イン</translation>
+        </message>
+        <message>
+            <source>Sin Out</source>
+            <translation>Sin アウト</translation>
+        </message>
+        <message>
+            <source>Exp 1.3</source>
+            <translation>Exp 1.3</translation>
+        </message>
+        <message>
+            <source>Exp 1.6</source>
+            <translation>Exp 1.6</translation>
+        </message>
+        <message>
+            <source>True Exp</source>
+            <translation>真の指数</translation>
+        </message>
+        <message>
+            <source>Sin</source>
+            <translation>Sin</translation>
+        </message>
+        <message>
+            <source>Generate</source>
+            <translation>生成</translation>
+        </message>
+        <message>
+            <source>1. Select</source>
+            <translation>1. 選択</translation>
+        </message>
+        <message>
+            <source>2. Don</source>
+            <translation>2. ドン</translation>
+        </message>
+        <message>
+            <source>3. Kat</source>
+            <translation>3. カッ</translation>
+        </message>
+        <message>
+            <source>4. Drumroll</source>
+            <translation>4. 連打</translation>
+        </message>
+        <message>
+            <source>5. Denden</source>
+            <translation>5. 風船</translation>
+        </message>
+        <message>
+            <source>4. Slider</source>
+            <translation>4. 連打（スライダー）</translation>
+        </message>
+        <message>
+            <source>5. Spinner</source>
+            <translation>5. 風船（スピナー）</translation>
+        </message>
+        <message>
+            <source>6. New Combo</source>
+            <translation>6. 新しいコンボ</translation>
+        </message>
+        <message>
+            <source>2. Green Line</source>
+            <translation>2. 緑線</translation>
+        </message>
+        <message>
+            <source>3. Function</source>
+            <translation>3. 関数</translation>
+        </message>
+        <message>
+            <source>Z to A</source>
+            <translation>Z → A</translation>
+        </message>
+        <message>
+            <source>{songs} taiko songs from the saved index. Checking for new maps...</source>
+            <translation>保存済みインデックスから太鼓の曲 {songs} 件。新しい譜面を確認中...</translation>
+        </message>
+        <message>
+            <source>{songs} taiko songs, {files} files scanned</source>
+            <translation>太鼓の曲 {songs} 件 / スキャンしたファイル {files} 個</translation>
         </message>
     </context>
     <context>
@@ -812,6 +1216,10 @@
             <translation>詳細設定</translation>
         </message>
         <message>
+            <source>Back to the song list</source>
+            <translation>曲リストに戻る</translation>
+        </message>
+        <message>
             <source>Category</source>
             <translation>カテゴリ</translation>
         </message>
@@ -824,6 +1232,18 @@
             <translation>元の譜面を上書きする前に確認する</translation>
         </message>
         <message>
+            <source>Copy</source>
+            <translation>コピー</translation>
+        </message>
+        <message>
+            <source>Editing</source>
+            <translation>編集</translation>
+        </message>
+        <message>
+            <source>File</source>
+            <translation>ファイル</translation>
+        </message>
+        <message>
             <source>General</source>
             <translation>一般</translation>
         </message>
@@ -832,8 +1252,28 @@
             <translation>言語</translation>
         </message>
         <message>
+            <source>Navigation</source>
+            <translation>ナビゲーション</translation>
+        </message>
+        <message>
+            <source>Paste</source>
+            <translation>貼り付け</translation>
+        </message>
+        <message>
+            <source>Play/Pause</source>
+            <translation>再生 / 一時停止</translation>
+        </message>
+        <message>
+            <source>Playback</source>
+            <translation>再生</translation>
+        </message>
+        <message>
             <source>Please restart Taiko Fancy Arranger to apply the language change.</source>
             <translation>言語の変更を適用するにはTaiko Fancy Arrangerを再起動してください。</translation>
+        </message>
+        <message>
+            <source>Redo</source>
+            <translation>やり直す</translation>
         </message>
         <message>
             <source>Reset all settings</source>
@@ -844,12 +1284,28 @@
             <translation>再起動が必要です</translation>
         </message>
         <message>
+            <source>Restart now</source>
+            <translation>今すぐ再起動</translation>
+        </message>
+        <message>
+            <source>Restart later</source>
+            <translation>後で再起動</translation>
+        </message>
+        <message>
+            <source>Could not restart automatically. Please close and reopen the program.</source>
+            <translation>自動で再起動できませんでした。プログラムを一度終了してから開き直してください。</translation>
+        </message>
+        <message>
             <source>Restart Taiko Fancy Arranger to apply the interface language.</source>
             <translation>インターフェイスの言語を適用するにはTaiko Fancy Arrangerを再起動してください。</translation>
         </message>
         <message>
             <source>Restore Defaults</source>
             <translation>既定値に戻す</translation>
+        </message>
+        <message>
+            <source>Save all changed difficulties</source>
+            <translation>変更されたすべての難易度を保存</translation>
         </message>
         <message>
             <source>Settings</source>
@@ -870,6 +1326,38 @@
         <message>
             <source>Shortcuts</source>
             <translation>ショートカット</translation>
+        </message>
+        <message>
+            <source>Tool 1: Select</source>
+            <translation>ツール1: 選択</translation>
+        </message>
+        <message>
+            <source>Tool 2: Don / Green line</source>
+            <translation>ツール2: ドン / 緑線</translation>
+        </message>
+        <message>
+            <source>Tool 3: Kat / Function</source>
+            <translation>ツール3: カッ / 関数</translation>
+        </message>
+        <message>
+            <source>Tool 4: Slider</source>
+            <translation>ツール4: スライダー</translation>
+        </message>
+        <message>
+            <source>Tool 5: Spinner</source>
+            <translation>ツール5: スピナー</translation>
+        </message>
+        <message>
+            <source>Tool 6: New combo</source>
+            <translation>ツール6: 新コンボ</translation>
+        </message>
+        <message>
+            <source>Tools</source>
+            <translation>ツール</translation>
+        </message>
+        <message>
+            <source>Undo</source>
+            <translation>元に戻す</translation>
         </message>
         <message>
             <source>Use Reset all settings to clear every saved setting.</source>
