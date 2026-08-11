@@ -1,12 +1,12 @@
 # Taiko Fancy Arranger
 
-**Turn osu!taiko notes into visual patterns without manually placing every circle.**
+**An osu!taiko editor with a visual pattern arranger built in.**
 
-Taiko Fancy Arranger is a desktop tool for osu!taiko players and mappers who want to create storyboard-like note layouts, geometric patterns, text, equations, drawings, spirals, and other visual effects directly inside a beatmap.
+Taiko Fancy Arranger started as a tool for turning osu!taiko notes into visual patterns — text, shapes, equations, drawings, spirals — without placing every circle by hand. Version 2.0.0 grows it into an editor: browse your osu! Songs folder, open a difficulty, edit notes, edit scroll velocity, preview the chart the way osu! renders it, and still arrange notes into patterns when you want to.
 
-The program keeps the notes as playable osu! hit objects while providing a visual workspace to select, preview, move, transform, undo, redo, and export arrangements.
+Everything stays a playable osu! beatmap. Sections the editor does not model — storyboards, breaks, colours, editor bookmarks — are passed through byte-for-byte on save.
 
-> **Current release:** v1.0.3   
+> **Current release:** v2.0.0  
 > **Platform:** Windows x64  
 > **Author:** [jimmyreturnz](https://osu.ppy.sh/users/11306153)
 
@@ -14,40 +14,177 @@ The original idea came from a random chat with maruaki101. Other inspirations in
 
 ---
 
+## What is new in 2.0.0
+
+This is the largest release so far, and the first that changes what the program *is*.
+
+- **Song library.** The app now opens on your osu! Songs folder instead of an empty window. It scans for `Mode: 1` charts once, caches the index, and every later start shows the list immediately. Search, group by mapper or artist, sort, and toggle original-language metadata.
+- **Editor page.** A new primary page holding stackable views: chart, SV editor, gameplay viewer, and density — several difficulties open at once, each view labelled with its difficulty.
+- **Note editing.** Place and delete dons, kats, sliders and spinners on the beat grid. Sliders and spinners are click-dragged to length and can be resized afterwards.
+- **SV editor.** View, add, drag, retime, copy and delete inherited (green) points, with a live effective-SV graph over red lines. Function mode generates eased SV sweeps across a selected range using seven curves.
+- **Gameplay viewer.** A read-only preview where each object scrolls at the SV in force at its own time, with barlines — so an SV sweep can be judged without exporting.
+- **Real undo.** A command-based history per difficulty. A 400-point generated sweep is one Ctrl+Z.
+- **Rewritten file layer.** `[TimingPoints]` and `[HitObjects]` are modelled and regenerated; every other section is preserved verbatim. This also fixed a latent parser bug that discarded slider curve, slide count, length and spinner end times.
+- **First-run setup and configurable shortcuts.** Language is chosen on first start, then the Songs folder. Thirteen actions are rebindable in Settings, including copy, paste, save-all and the tool digits.
+
+Full detail lives in [`DEVELOPMENT_PLAN.md`](DEVELOPMENT_PLAN.md).
+
+---
+
 ## Windows SmartScreen notice
 
-Taiko Fancy Arranger v1.0.3 is a currently unsigned Windows application. The release includes additional source-level security hardening, input validation, safer file handling, automated tests, and published SHA-256 checksums.
+Taiko Fancy Arranger v2.0.0 is a currently unsigned Windows application. The release includes source-level security hardening, input validation, safer file handling, automated tests, and published SHA-256 checksums.
 
 Windows Defender SmartScreen may still display an "unrecognized app" warning because the executable has not yet established download reputation.
 
-## What can it do?
+---
 
-- Open an osu! song folder by selecting any `.osu` difficulty
-- Switch between difficulties in the same song folder
-- Play and seek through the song with a taiko gameplay timeline
-- View beat-snap lines, timing points, bookmarks, PreviewTime, Kiai sections, density, and the beatmap background
-- Drag-select part of a map or select the full difficulty
-- Preview a transformation before applying it
-- Arrange all selected notes together or split Don and Kat notes
-- Drag a generated pattern directly inside the transformation view
-- Adjust pattern position, size, rotation, spacing, margins, seeds, and other parameters
-- Choose a system font for Text transformations
-- Draw shapes using multiple independent strokes
-- Undo and redo committed transformations
-- Configure exported Approach Rate and Circle Size
-- Export an arranged difficulty without destroying the source map
-- Back up the original file before applying changes to it
+## Languages
+
+Currently supports English and Japanese. There is no Thai translation yet even though I am Thai myself 😂
+
+Language is chosen on first start and can be changed in **Settings**. Changing it asks you to restart, because Qt does not retranslate widgets that already exist.
 
 ---
 
-## What can it do?
-Currently supports English and Japanese, there is no Thai language translation yet even though I am Thai myself 😂
+## Download and run
+
+1. Open the repository's **Releases** page.
+2. Download:
+
+```text
+TaikoFancyArranger-Windows-x64.zip
+```
+
+3. Extract the entire ZIP.
+4. Run:
+
+```text
+TaikoFancyArranger.exe
+```
+
+Python and PySide6 are bundled with the portable Windows release. Players using the release ZIP do not need to install Python or run `pip`.
+
+> Windows may show a reputation warning for an unsigned new application. Review the repository and release files before running the program.
 
 ---
 
-## Transformations
+## First start
 
-Taiko Fancy Arranger includes transformations such as:
+1. **Choose a language.** English or 日本語. This screen is deliberately untranslated — it is the one screen that cannot know which language you read.
+2. **Choose your osu! Songs folder.** Pre-filled with `%LOCALAPPDATA%/osu!/Songs` when it exists. The folder is remembered, and can be changed later from the library page.
+3. **Wait for the scan.** The first scan reads every `.osu` file once and takes a while on a large collection. It runs in slices, so the window stays responsive. Later starts show the cached list before verifying it.
+
+Cancelling the folder picker leaves the library empty with a **Change folder** button rather than a dead end, and offers the setup again next launch.
+
+---
+
+## Song library
+
+The library page is the front door.
+
+- Left: songs, shown as `Artist - Title · mapper · difficulty count`.
+- Right: the difficulties of the selected song.
+- Double-click a difficulty, or press **Edit this difficulty**, to open it in the editor.
+
+Controls:
+
+- **Search** — matches artist, title, both Unicode variants, difficulty name, creator and tags at once.
+- **Group by** — nothing, mapper, or artist.
+- **Sort** — A→Z or Z→A, which reverses group order too.
+- **Original language metadata** — shows `ArtistUnicode`/`TitleUnicode` instead of the romanized fields, falling back to whichever the map actually has.
+
+Only taiko charts (`Mode: 1`) are listed.
+
+---
+
+## Editor page
+
+The Editor page stacks views vertically, grouped under their difficulty. Open one with **+** (view type + difficulty). Opening a difficulty automatically gives it a chart view and an SV view.
+
+View types:
+
+| View | What it is |
+|---|---|
+| Chart | Notes on a time axis, with a snap grid anchored to the top and bottom edges |
+| SV editor | Red, green and yellow timing lines plus an effective-SV graph |
+| Gameplay viewer | Read-only osu!taiko-style preview; objects scroll at their own SV |
+| Density | The white-to-yellow note density heatmap |
+
+Above the views: beat snap, the merged time and percentage readout, the timing bar (kiai, bookmarks, SV, BPM), play and speed buttons. The snap divisor is global across the page, so every view stays on the same grid. Zoom (`Ctrl+wheel`) is per difficulty and shared by that difficulty's views.
+
+Per-view chrome: **close**, **lock** (read-only), and the difficulty name at the right.
+
+### Note editing
+
+The tool row sits at the bottom of the page and acts on the focused chart view.
+
+```text
+1  Select
+2  Don
+3  Kat
+4  Slider
+5  Spinner
+6  New combo
+```
+
+- Left click places at the snapped time; a translucent ghost previews where it lands.
+- Sliders and spinners are **click-dragged** to their length. Press near the right edge of an existing one to resize it.
+- **Shift** at release places a big (finisher) note or slider.
+- Right click deletes the note under the cursor; **Delete** removes the whole selection.
+- One object per millisecond, spinners excepted — placing over a note replaces it, as a single undo step.
+
+### SV editing
+
+With an SV view focused, the tool row becomes:
+
+```text
+1  Select
+2  Green line
+3  Function
+```
+
+- Red lines are uninherited (BPM) points, green are inherited (SV), yellow means both share a millisecond.
+- Click a green line to select it; drag vertically to change its SV, horizontally to retime it, snapped to the grid. Which axis you get depends on how close the click was to the value dot.
+- Rubber-band select a range, `Ctrl+A` for everything visible, `Delete` to remove. Uninherited points are never deleted here.
+- The graph shows **effective** SV — green over red where both exist — with a fixed 0.1x floor and an autoscaling ceiling.
+
+**Function mode:** drag a range, then choose initial rate, final rate, position offset, whether to omit the first barline, and whether the sweep is relative to the final BPM. Seven curves are offered as tiles, each drawing the sweep you actually typed:
+
+```text
+linear   sin in   sin out   exp1.3   exp1.6   true exp   sin
+```
+
+Points are generated on the notes in range by default, or every N snaps. The default −5 ms offset makes sure the SV is already in force when the note it governs arrives. However many points it makes, it is one undo step.
+
+### Editor shortcuts
+
+```text
+Space               Play or pause
+Ctrl+Z / Ctrl+Y     Undo / redo (per difficulty)
+Ctrl+C / Ctrl+V     Copy / paste notes or SV points, snapped on paste
+Ctrl+S              Save every changed difficulty
+Ctrl+A              Select all in the focused view
+Delete              Delete the selection
+Esc                 Back to the song list
+1 - 6               Tools, routed to whichever tool row is showing
+Mouse wheel         Seek by one snap
+Shift+wheel         Seek by one beat
+Ctrl+wheel          Zoom
+Alt+wheel           Change beat snap
+```
+
+All of these are rebindable in **Settings**, except `Delete` and `Ctrl+A`, which belong to the focused view.
+
+Leaving the editor with unsaved work lists which difficulties are unsaved by name and offers **Save**, **Continue without saving**, or **Cancel**. Continuing without saving keeps the edits in the session — nothing is written and nothing is thrown away.
+
+---
+
+## Fancy Arranger page
+
+The original visual arranger, unchanged in behaviour and now on its own page with its own timeline, timing bar, density chart, difficulty selector, AR/CS controls and export buttons.
+
+### Transformations
 
 - Text
 - Drawing
@@ -62,15 +199,16 @@ Taiko Fancy Arranger includes transformations such as:
 - Spiral
 - Infinity
 - Arc
-- Straight line and polyline
+- Straight line
 - Wave and zigzag
-- Bézier path
 - Random
 - Random Walk
 - DVD Bouncing
 - Pinwheel
 
 Some transformations support chunking, direction controls, seeded randomness, or **Back and Forth** traversal.
+
+Polyline and Bézier path exist in the transformation engine but are not yet selectable in the interface, because both need a way to enter control points that the parameter panel does not have yet. Freehand shapes are covered by **Drawing** in the meantime.
 
 ### Text patterns
 
@@ -91,7 +229,7 @@ You can also select fonts from your computer as well!
 
 ### Drawing patterns
 
-Drawing accepts multiple independent strokes. The strokes are treated as one visual shape rather than being connected into an artificial path.
+Drawing accepts multiple independent strokes, treated as one visual shape rather than being connected into an artificial path. An image can be imported and traced into strokes.
 
 Drawing notes are ordered:
 
@@ -153,164 +291,31 @@ Its controls include:
 - Radius growth
 - Wander strength and seed
 
----
+### Arranger workflow
 
-## Download and run
+1. Drag across the timeline to select a section, or `Ctrl+A` for the whole map.
+2. Choose **All Notes** or **Split Don / Kat**, then a transformation.
+3. Adjust parameters, or drag the pattern directly inside the transformation view. In Split mode, dragging a Don moves the Don pattern and dragging a Kat moves the Kat pattern.
+4. Press **Transform selected notes** to commit it to the session. `Ctrl+Z` / `Ctrl+Y` still apply.
+5. Set **AR** and **CS** if needed — sliders from `0.00` to `10.00` in `0.01` steps, with a numeric field and pink `+` / `-` buttons. `AR 0.00` is the slowest approach rate and `CS 0.00` the biggest circle size. Left alone, `ApproachRate:10` and `CircleSize:7` remain.
+6. **Export applied map** writes a separate arranged difficulty. **Apply all changes to original file** overwrites the loaded `.osu`, after making a backup.
 
-1. Open the repository's **Releases** page.
-2. Download:
+The transformation pane is a preview. Nothing is written until you export or apply.
 
-```text
-TaikoFancyArranger-Windows-x64.zip
-```
-
-3. Extract the entire ZIP.
-4. Run:
-
-```text
-TaikoFancyArranger.exe
-```
-
-Python and PySide6 are bundled with the portable Windows release. Players using the release ZIP do not need to install Python or run `pip`.
-
-> Windows may show a reputation warning for an unsigned new application. Review the repository and release files before running the program.
+The beatmap background is shown in the transformation view; its opacity is adjustable and another image can be dragged in to replace it.
 
 ---
 
-## Quick start
+## Saving and exporting
 
-### 1. Open a difficulty
+| Action | Where | What it does |
+|---|---|---|
+| Save | Global header | Writes every changed difficulty at once, backing each one up first |
+| Export new difficulty | Global header | Writes a new difficulty file into the same song folder |
+| Export applied map | Fancy Arranger | Writes an arranged difficulty to a destination you choose |
+| Apply all changes to original file | Fancy Arranger | Overwrites the loaded `.osu`, after a backup |
 
-Click **Open .osu** and select a difficulty from an osu! song folder.
-
-The program reads the difficulty's:
-
-- Audio file
-- Hit objects
-- Inherited and uninherited timing points
-- Kiai sections
-- Bookmarks
-- PreviewTime
-- Background image
-- Other `.osu` difficulties in the same folder
-
-### 2. Select and navigate notes
-
-Drag across the gameplay timeline to select a section.
-
-Useful controls:
-
-```text
-Ctrl+A              Select the whole map while the gameplay view has focus
-Escape              Clear the current selection
-Space               Play or pause
-Mouse wheel         Seek by beat snap
-Shift+wheel         Seek by whole beats
-Ctrl+wheel          Zoom the gameplay timeline
-Alt+wheel           Change beat snap
-Shift+Left/Right    Move by one whole beat
-Alt+Left/Right      Move by one current snap division
-Ctrl+Left/Right     Jump to the nearest bookmark
-```
-
-Bookmark navigation does nothing when no bookmark exists in the requested direction.
-
-### 3. Choose a transformation
-
-Select either:
-
-```text
-All Notes
-Split Don / Kat
-```
-
-Then choose a transformation and adjust its parameters.
-
-The transformation pane shows a preview only. The `.osu` file is not changed until the transformation is applied and the map is exported or written.
-
-### 4. Position the result
-
-Use either:
-
-- Position X and Position Y controls
-- Direct dragging inside the transformation view
-
-In **Split Don / Kat** mode:
-
-- Dragging a Don moves the selected Don pattern
-- Dragging a Kat moves the selected Kat pattern
-
-### 5. Apply or undo
-
-Click **Transform selected notes** to commit the preview to the current editing session.
-
-```text
-Ctrl+Z    Undo
-Ctrl+Y    Redo
-```
-
-Undo and redo can be used repeatedly across committed transformations.
-
-### 6. Configure Approach Rate and Circle Size
-
-The top toolbar contains **AR** and **CS** controls next to **Export applied map**.
-
-Each control supports:
-
-- A slider from `0.00` to `10.00`
-- `0.01` increments
-- A numeric field for entering an exact value
-- Pink `+` and `-` buttons
-
-Meaning of the minimum values:
-
-```text
-AR 0.00    Slowest approach rate
-CS 0.00    Biggest circle size
-```
-
-If the controls are not changed, the existing defaults remain:
-
-```text
-ApproachRate:10
-CircleSize:7
-```
-
-The selected values are used by both **Export applied map** and **Apply all changes to original file**.
-
-### 7. Export
-
-Use **Export applied map** to create a separate arranged difficulty.
-
-Use **Apply all changes to original file** only when intentionally updating the loaded `.osu`. The program creates a backup before replacing the original.
-
----
-
-## Gameplay, timing, and density views
-
-The gameplay timeline displays visible notes around the current song position.
-
-The dedicated full-song timing bar includes:
-
-- A thin white horizontal center line
-- Kiai highlighting centered on the line
-- Green inherited timing-point markers above the line
-- Red uninherited timing-point markers above the line
-- Yellow markers where inherited and uninherited timing points overlap
-- Blue bookmark markers below the line
-- A yellow PreviewTime marker below the line
-- Current playback position
-- Visible gameplay viewport
-
-The density chart is separate and contains the white-to-yellow note-density visualization without timing points or Kiai highlighting.
-
-The playback row provides:
-
-- Moving time display
-- Play and pause
-- `25%`, `50%`, `75%`, and `100%` playback-rate buttons
-
-The beatmap background is displayed in the transformation view. Its opacity can be adjusted, and another image can be dragged into the transformation view to use as the beatmap background.
+Saving regenerates `[TimingPoints]` and `[HitObjects]` and passes every other section through unchanged. The only deliberate loss is `//` comments inside those two sections.
 
 ---
 
@@ -318,11 +323,17 @@ The beatmap background is displayed in the transformation view. Its opacity can 
 
 ### Always keep a backup
 
-Although the program provides export and backup behavior, keep a separate copy of important beatmaps before editing.
+Although the program backs up before overwriting, keep a separate copy of important beatmaps before editing.
 
-### Transformations change hit-object coordinates
+### Test the exported map in osu!
 
-Taiko Fancy Arranger changes the X and Y positions of selected hit objects. Note timing, hitsounds, and note order are preserved unless a future feature explicitly says otherwise.
+Always open the exported difficulty in the osu! editor and verify:
+
+- Note positions and timing
+- Timing points, SV and barlines
+- Hitsounds
+- Approach Rate and Circle Size
+- Background and difficulty name
 
 ### Visual readability depends on note count
 
@@ -335,20 +346,43 @@ Text, equations, drawings, and detailed shapes need enough selected notes to rem
 - Increasing equation resolution
 - Adjusting graph bounds or size
 
-### Test the exported map in osu!
+### Known approximation
 
-Always open the exported difficulty in the osu! editor and verify:
-
-- Note positions
-- Timing
-- Approach Rate
-- Circle Size
-- Background
-- Difficulty name
+Slider length is computed with osu!'s default `SliderMultiplier` of 1.4, because this program does not yet parse the `[Difficulty]` section's own value. Slider *timing* is exact; only the stored length field can be slightly off on a map that overrides the multiplier.
 
 ---
 
-A tagged GitHub release such as `v1.0.3` can use the included GitHub Actions workflow to build and attach the Windows ZIP automatically.
+## Building from source
+
+```text
+pip install -r requirements-build.txt
+pyside6-lrelease translations/taiko_ja.ts
+python -m unittest discover
+pyinstaller --noconfirm --clean TaikoFancyArranger.spec
+```
+
+Run from source with `python main.py`, or `run_from_source.bat` on Windows.
+
+Packaging files:
+
+| File | Purpose |
+|---|---|
+| `VERSION` | The release version, bundled into the build |
+| `TaikoFancyArranger.spec` | PyInstaller spec — bundles `assets/`, `VERSION` and the compiled `.qm` translations |
+| `requirements.txt` | Runtime dependency (PySide6) |
+| `requirements-build.txt` | The above plus PyInstaller |
+| `.env.example` | Documents that **no** environment variables are needed; never put secrets here |
+| `.github/workflows/release-windows.yml` | Builds the portable ZIP and SHA-256 checksums, and attaches them to a published release |
+
+Publishing a GitHub release tagged `vX.Y.Z` runs that workflow, which compiles translations, runs the test suite, builds, and uploads `TaikoFancyArranger-Windows-x64.zip` plus `SHA256SUMS.txt`. A matching `RELEASE_NOTES_vX.Y.Z.md` is bundled into the ZIP when present.
+
+The program reads no environment variables and needs no `.env` file. `.env` and key/certificate files are gitignored.
+
+Tests run headless:
+
+```text
+QT_QPA_PLATFORM=offscreen python -m unittest discover -v
+```
 
 ---
 
@@ -358,9 +392,8 @@ When reporting a bug, include:
 
 - Taiko Fancy Arranger version
 - Windows version
-- Transformation name
-- Selected-note count
-- Parameters used
+- Which page and view (Editor chart, SV editor, Fancy Arranger, …)
+- Transformation name, selected-note count and parameters, if relevant
 - Exact error message or traceback
 - Steps that reproduce the problem
 - A minimal `.osu` example if redistribution is allowed
@@ -371,26 +404,25 @@ Do not upload copyrighted audio or private beatmap assets unless permission has 
 
 ## Project status
 
-Version 1.0.3 is the current public release. The project focuses on creative single-player beatmap arrangement and previewing. Multiplayer and automatic difficulty calculation are outside the current scope.
+Version 2.0.0 is the current public release. The project focuses on creative single-player beatmap editing, arrangement and previewing. Multiplayer and automatic difficulty calculation are outside the current scope.
 
----
+Not yet implemented, and next in line:
+
+- **Gimmick editor** — a fourth page with a fake-slider lane, a chart lane and a barline lane, covering barlines, reverse barlines, invisible notes and slider gimmicks.
+- Multi-difficulty editing of maps that share audio is possible today, but has not been exercised hard.
 
 ## Further plans
 
 These ideas are exploratory and are not guaranteed for a specific release.
 
 - Add rotation controls to transformations that do not support rotation yet
-- Add Japanese localization 日本語版
-- Support editing multiple difficulties that share the same audio file
-- Add SV editing with configurable effect functions, with Alchyr's design used as a reference
 - Improve the usability of the Equation transformation
-- Add an image-based outline-tracing transformation
-- Develop a Gimmick SV tool with effects such as barlines, sliders, shiny effects, and reverse barlines
 - Experiment with additional SV and visual gimmick concepts
 - Improve the overall UI design
 - Explore a possible web version
 - Explore a possible full-alt transformation
 - Consider adding an updater in a later version
+- Thai localization ภาษาไทย
 
 ---
 
