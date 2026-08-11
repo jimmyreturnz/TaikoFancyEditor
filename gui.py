@@ -3094,7 +3094,6 @@ class EditorViewFrame(QWidget):
 
         chrome = QHBoxLayout()
         self.close_button = QPushButton("✕")
-        self.close_button.setFixedWidth(28)
         self.close_button.setToolTip(tr("MainWindow", "Close view"))
         self.close_button.setFocusPolicy(Qt.NoFocus)
         self.close_button.setStyleSheet(chrome_button_style)
@@ -3103,7 +3102,6 @@ class EditorViewFrame(QWidget):
 
         self.lock_button = QPushButton("🔒")
         self.lock_button.setCheckable(True)
-        self.lock_button.setFixedWidth(28)
         self.lock_button.setToolTip(tr("MainWindow", "Lock view (read-only)"))
         self.lock_button.setFocusPolicy(Qt.NoFocus)
         self.lock_button.setStyleSheet(chrome_button_style)
@@ -3120,6 +3118,14 @@ class EditorViewFrame(QWidget):
         self._content_layout = QVBoxLayout()
         self._content_layout.setContentsMargins(0, 0, 0, 0)
         layout.addLayout(self._content_layout, 1)
+
+    def showEvent(self, event) -> None:
+        # Both glyphs vanished when the window stylesheet's button padding grew
+        # to 8px 16px: a typed 28px width left the label negative room, so Qt
+        # drew nothing. Measured after polish (and after parenting, which is
+        # what makes the app-wide sheet apply), like the playback rows.
+        super().showEvent(event)
+        equalize_button_widths((self.close_button, self.lock_button))
 
     def set_content(self, widget: QWidget) -> None:
         self.content = widget
