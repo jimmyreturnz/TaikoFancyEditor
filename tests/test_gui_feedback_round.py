@@ -157,6 +157,15 @@ class FancyArrangerPageTests(unittest.TestCase):
         self.assertEqual(dialog.selected_difficulty_path(), Path("m.osu"))
         dialog.deleteLater()
 
+    def test_view_chrome_buttons_are_wide_enough_for_their_glyph(self):
+        """The window sheet's 8px 16px button padding is wider than the 28px
+        these used to be fixed at, so ✕ and 🔒 were clipped away entirely."""
+        frames = self.window.findChildren(gui.EditorViewFrame)
+        self.assertTrue(frames)
+        for frame in frames:
+            for button in (frame.close_button, frame.lock_button):
+                self.assertGreaterEqual(button.width(), button.sizeHint().width())
+
     def test_every_tool_button_is_the_same_width(self):
         """Both rows, not each: they swap into the same spot, so a per-label
         width made the whole row shift on every switch."""
