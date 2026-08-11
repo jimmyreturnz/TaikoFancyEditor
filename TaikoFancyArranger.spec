@@ -1,18 +1,41 @@
-
 # -*- mode: python ; coding: utf-8 -*-
+
 from pathlib import Path
 
+
 root = Path(SPECPATH)
-asset_entries = []
+
 assets = root / "assets"
+translations = root / "translations"
+version_file = root / "VERSION"
+
+data_entries = []
+
 if assets.exists():
-    asset_entries.append((str(assets), "assets"))
+    data_entries.append((str(assets), "assets"))
+
+if version_file.exists():
+    data_entries.append((str(version_file), "."))
+
+translation_files = sorted(translations.glob("*.qm"))
+
+if not translation_files:
+    raise FileNotFoundError(
+        "No compiled translation files were found in translations/. "
+        "Run tools\\compile_translations.bat before building."
+    )
+
+data_entries.extend(
+    (str(translation_file), "translations")
+    for translation_file in translation_files
+)
+
 
 analysis = Analysis(
     [str(root / "gui.py")],
     pathex=[str(root)],
     binaries=[],
-    datas=asset_entries + [(str(root / "VERSION"), ".")],
+    datas=data_entries,
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
@@ -21,14 +44,21 @@ analysis = Analysis(
     noarchive=False,
     optimize=0,
 )
+
 pyz = PYZ(analysis.pure)
+
 exe = EXE(
     pyz,
     analysis.scripts,
     [],
     exclude_binaries=True,
     name="TaikoFancyArranger",
-    icon=str(root / "assets" / "icons" / "FancyTaikoEditor_Logo.ico"),
+    icon=str(
+        root
+        / "assets"
+        / "icons"
+        / "FancyTaikoEditor_Logo.ico"
+    ),
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -40,6 +70,7 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
 )
+
 collection = COLLECT(
     exe,
     analysis.binaries,

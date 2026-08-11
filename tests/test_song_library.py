@@ -1,0 +1,519 @@
+"""Song-library scan, cache and the browse -> edit -> Esc-back flow."""
+from __future__ import annotations
+
+import os
+import tempfile
+import unittest
+from pathlib import Path
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QKeyEvent, QKeySequence
+from PySide6.QtWidgets import QApplication, QMessageBox
+
+from tests.osu_fixtures import write_fixture
+
+import song_library
+from song_library import group_by_song, load_cache, read_header, save_cache, scan
+
+_APP: QApplication | None = None
+_REAL_APPLICATION_NAME = ""
+
+
+def setUpModule() -> None:
+    """Point QSettings at a test-only application name.
+
+    These tests build real MainWindows, which read preferences (and, through
+    the library page, could write them) from QSettings. Without this they
+    would edit the running user's own settings -- which is exactly how a
+    stray `library/original_metadata` once ended up switched on for real.
+    """
+    global _APP, _REAL_APPLICATION_NAME
+    import settings as settings_module
+
+    _REAL_APPLICATION_NAME = settings_module.APPLICATION_NAME
+    settings_module.APPLICATION_NAME = "TaikoFancyArrangerTests"
+    _APP = QApplication.instance() or QApplication([])
+
+
+def tearDownModule() -> None:
+    import settings as settings_module
+
+    from PySide6.QtCore import QSettings
+
+    QSettings(settings_module.ORGANIZATION_NAME, settings_module.APPLICATION_NAME).clear()
+    settings_module.APPLICATION_NAME = _REAL_APPLICATION_NAME
+
+
+def make_song(root: Path, folder_name: str, fixture: str = "full_v14") -> Path:
+    folder = root / folder_name
+    folder.mkdir(parents=True, exist_ok=True)
+    return write_fixture(folder, fixture)
+
+
+class ScanTests(unittest.TestCase):
+    def setUp(self):
+        self._temp = tempfile.TemporaryDirectory()
+        self.root = Path(self._temp.name)
+
+    def tearDown(self):
+        self._temp.cleanup()
+
+    def test_header_reads_metadata_without_the_hit_objects(self):
+        path = make_song(self.root, "song")
+        header = read_header(path)
+        self.assertEqual(header["mode"], "1")
+        self.assertEqual(header["title"], "Test Song")
+        self.assertEqual(header["artist"], "Tester")
+        self.assertEqual(header["version"], "Oni")
+
+    def test_only_taiko_files_are_yielded(self):
+        taiko = make_song(self.root, "taiko song")
+        standard = make_song(self.root, "std song")
+        standard.write_bytes(standard.read_bytes().replace(b"Mode: 1", b"Mode: 0"))
+
+        cache: dict[str, list] = {}
+        found = [item for item in scan(self.root, cache) if item is not None]
+        self.assertEqual([item.path for item in found], [taiko])
+        # Both are cached, so the standard map is not re-read on every rescan.
+        self.assertEqual(len(cache), 2)
+
+    def test_unchanged_files_are_not_re_read(self):
+        make_song(self.root, "song")
+        cache: dict[str, list] = {}
+        list(scan(self.root, cache))
+
+        reads = []
+        original = song_library.read_header
+        song_library.read_header = lambda path: reads.append(path) or original(path)
+        try:
+            found = [item for item in scan(self.root, cache) if item is not None]
+        finally:
+            song_library.read_header = original
+        self.assertEqual(reads, [])
+        self.assertEqual(len(found), 1)
+
+    def test_edited_file_is_re_read(self):
+        path = make_song(self.root, "song")
+        cache: dict[str, list] = {}
+        list(scan(self.root, cache))
+        path.write_bytes(path.read_bytes().replace(b"Version:Oni", b"Version:Inner Oni"))
+        found = [item for item in scan(self.root, cache) if item is not None]
+        self.assertEqual(found[0].version, "Inner Oni")
+
+    def test_deleted_files_leave_the_cache(self):
+        path = make_song(self.root, "song")
+        cache: dict[str, list] = {}
+        list(scan(self.root, cache))
+        path.unlink()
+        list(scan(self.root, cache))
+        self.assertEqual(cache, {})
+
+    def test_cache_round_trip_and_version_guard(self):
+        cache_file = self.root / "index.json"
+        save_cache(cache_file, {"a": [1, 2, "1", "artist", "title", "Oni"]})
+        self.assertEqual(load_cache(cache_file)["a"][5], "Oni")
+
+        cache_file.write_text('{"version": 999, "files": {"a": []}}', encoding="utf-8")
+        self.assertEqual(load_cache(cache_file), {})
+        self.assertEqual(load_cache(self.root / "missing.json"), {})
+
+    def test_header_reads_mapper_tags_and_original_language(self):
+        path = make_song(self.root, "song")
+        path.write_bytes(path.read_bytes().replace(
+            b"Title:Test Song\r\n",
+            b"Title:Test Song\r\nTitleUnicode:\xe3\x83\x86\xe3\x82\xb9\xe3\x83\x88\r\n",
+        ))
+        header = read_header(path)
+        self.assertEqual(header["creator"], "jimmyreturnz")
+        self.assertEqual(header["tags"], "taiko")
+        self.assertEqual(header["title_unicode"], "テスト")
+
+        difficulty = next(item for item in scan(self.root, {}) if item is not None)
+        self.assertEqual(difficulty.display_title(original=True), "テスト")
+        self.assertEqual(difficulty.display_title(original=False), "Test Song")
+        # An empty ArtistUnicode falls back rather than showing a blank name.
+        self.assertEqual(difficulty.display_artist(original=True), "Tester")
+        self.assertIn("jimmyreturnz", difficulty.search_text())
+
+    def test_cache_rebuilds_songs_without_reading_the_files(self):
+        make_song(self.root, "song")
+        cache: dict[str, list] = {}
+        list(scan(self.root, cache))
+
+        # A different songs folder's leftovers: the cache outlives a folder
+        # change, so entries outside the current root must not show up.
+        elsewhere = self.root.parent / "not-my-songs" / "other.osu"
+        cache[str(elsewhere)] = [0, 0, "1", "A", "", "T", "", "Oni", "someone", ""]
+
+        from song_library import songs_from_cache
+
+        found = list(songs_from_cache(cache, self.root))
+        self.assertEqual([item.version for item in found], ["Oni"])
+        self.assertNotIn(elsewhere, [item.path for item in found])
+
+    def test_songs_group_by_folder(self):
+        make_song(self.root, "song one")
+        make_song(self.root, "song two")
+        songs = group_by_song(item for item in scan(self.root, {}) if item is not None)
+        self.assertEqual(len(songs), 2)
+
+
+class LibraryPageTests(unittest.TestCase):
+    def setUp(self):
+        import gui
+
+        self._temp = tempfile.TemporaryDirectory()
+        self.root = Path(self._temp.name)
+        self.song = make_song(self.root, "Tester - Test Song")
+        (self.root / "Tester - Test Song" / "audio.mp3").write_bytes(b"")
+
+        self.window = gui.MainWindow()
+        # Folder and cache both live in the temp dir: the test must never
+        # write the user's real settings or their real song index.
+        folder = str(self.root)
+        self.window.settings.string_value = (
+            lambda key, default="": folder if key == "library/songs_folder" else default
+        )
+        self.window.settings.set_value = lambda key, value: None
+        self.window.settings.sync = lambda: None
+        self.window._library_cache_path = lambda: self.root / "index.json"
+
+    def tearDown(self):
+        self.window.scan_timer.stop()
+        self.window.close()
+        self.window.deleteLater()
+        self._temp.cleanup()
+
+    def run_scan(self) -> None:
+        self.window._start_scan()
+        while self.window._scan_iterator is not None:
+            self.window._scan_step()
+
+    def test_scan_fills_the_song_list_and_the_difficulty_list(self):
+        self.run_scan()
+        self.assertEqual(self.window.song_list.count(), 1)
+        self.assertIn("Tester - Test Song", self.window.song_list.item(0).text())
+        self.window.song_list.setCurrentRow(0)
+        self.assertEqual(self.window.difficulty_list.item(0).text(), "Oni")
+
+    def test_search_filters_by_artist_title_difficulty_mapper_and_tags(self):
+        self.run_scan()
+        for needle in ("tester", "test song", "oni", "jimmyreturnz", "taiko"):
+            with self.subTest(needle=needle):
+                self.window.library_search.setText(needle)
+                self.assertEqual(self.window.song_list.count(), 1)
+        self.window.library_search.setText("nothing here")
+        self.assertEqual(self.window.song_list.count(), 0)
+
+    def test_song_row_shows_the_mapper(self):
+        self.run_scan()
+        self.assertIn("jimmyreturnz", self.window.song_list.item(0).text())
+
+    def test_grouping_and_sort_order(self):
+        make_song(self.root, "Other - Second Song")
+        (self.root / "Other - Second Song" / "audio.mp3").write_bytes(b"")
+        second = self.root / "Other - Second Song" / "full_v14.osu"
+        second.write_bytes(second.read_bytes()
+                           .replace(b"Artist:Tester", b"Artist:Another")
+                           .replace(b"Creator:jimmyreturnz", b"Creator:someone else"))
+        self.run_scan()
+
+        rows = lambda: [self.window.song_list.item(i) for i in range(self.window.song_list.count())]
+        songs = lambda: [i.text() for i in rows() if i.data(Qt.UserRole) is not None]
+
+        self.window.library_group_combo.setCurrentIndex(
+            self.window.library_group_combo.findData("none")
+        )
+        self.assertEqual(len(rows()), 2)
+        ascending = songs()
+        self.assertTrue(ascending[0].startswith("Another"))
+
+        self.window.library_sort_combo.setCurrentIndex(
+            self.window.library_sort_combo.findData("za")
+        )
+        self.assertEqual(songs(), list(reversed(ascending)))
+
+        self.window.library_sort_combo.setCurrentIndex(
+            self.window.library_sort_combo.findData("az")
+        )
+        self.window.library_group_combo.setCurrentIndex(
+            self.window.library_group_combo.findData("mapper")
+        )
+        headers = [i.text() for i in rows() if i.data(Qt.UserRole) is None]
+        self.assertEqual(headers, ["jimmyreturnz", "someone else"])
+
+    def test_original_language_metadata_switches_the_labels(self):
+        self.song.write_bytes(self.song.read_bytes().replace(
+            b"Title:Test Song\r\n",
+            b"Title:Test Song\r\nTitleUnicode:\xe3\x83\x86\xe3\x82\xb9\xe3\x83\x88\r\n",
+        ))
+        self.run_scan()
+        self.assertIn("Test Song", self.window.song_list.item(0).text())
+        self.window.original_metadata_check.setChecked(True)
+        self.assertIn("テスト", self.window.song_list.item(0).text())
+
+    def test_opening_a_difficulty_switches_to_the_editor(self):
+        import gui
+
+        self.run_scan()
+        self.window.song_list.setCurrentRow(0)
+        self.window._open_selected_difficulty()
+        self.assertEqual(self.window.state.source_path, self.song.resolve())
+        self.assertEqual(self.window.page_stack.currentIndex(), gui.PAGE_EDITOR)
+        self.assertTrue(self.window.editor_page_button.isChecked())
+
+    def test_escape_returns_to_the_song_list_when_nothing_is_dirty(self):
+        import gui
+
+        self.run_scan()
+        self.window.song_list.setCurrentRow(0)
+        self.window._open_selected_difficulty()
+        self.window.keyPressEvent(QKeyEvent(QKeyEvent.KeyPress, Qt.Key_Escape, Qt.NoModifier))
+        self.assertEqual(self.window.page_stack.currentIndex(), gui.PAGE_LIBRARY)
+        self.assertTrue(self.window.library_page_button.isChecked())
+
+    def test_escape_in_a_view_with_a_selection_clears_it_instead_of_leaving(self):
+        import gui
+
+        self.run_scan()
+        self.window.song_list.setCurrentRow(0)
+        self.window._open_selected_difficulty()
+        view = self.window._chart_views[-1]
+        view.selected = {0}
+        view.keyPressEvent(QKeyEvent(QKeyEvent.KeyPress, Qt.Key_Escape, Qt.NoModifier))
+        self.assertEqual(view.selected, set())
+        self.assertEqual(self.window.page_stack.currentIndex(), gui.PAGE_EDITOR)
+
+        # Second Esc has nothing to clear, so the view leaves it unaccepted
+        # and Qt hands it up to the window.
+        event = QKeyEvent(QKeyEvent.KeyPress, Qt.Key_Escape, Qt.NoModifier)
+        view.keyPressEvent(event)
+        self.assertFalse(event.isAccepted())
+        self.window.keyPressEvent(event)
+        self.assertEqual(self.window.page_stack.currentIndex(), gui.PAGE_LIBRARY)
+
+    def test_first_start_explains_the_folder_picker_then_scans(self):
+        import gui
+
+        shown = []
+        chosen = str(self.root)
+
+        class ExplainBox:
+            information = staticmethod(lambda parent, title, text: shown.append(text))
+
+        # Settings that start empty and remember the pick, like the real ones:
+        # start_library must take the "nothing stored" branch, and the scan
+        # that follows must read back what _choose_songs_folder just wrote.
+        stored = {"library/songs_folder": ""}
+        self.window.settings.string_value = lambda key, default="": stored.get(key, default)
+        self.window.settings.bool_value = lambda key, default=False: bool(stored.get(key, default))
+        self.window.settings.set_value = lambda key, value: stored.__setitem__(key, value)
+
+        original_box, original_dialog = gui.QMessageBox, gui.QFileDialog
+        gui.QMessageBox = ExplainBox
+        gui.QFileDialog = type("FakeDialog", (), {
+            "getExistingDirectory": staticmethod(lambda *args, **kwargs: chosen)
+        })
+        try:
+            self.window.start_library()
+        finally:
+            gui.QMessageBox, gui.QFileDialog = original_box, original_dialog
+        self.assertEqual(stored["library/songs_folder"], chosen)
+        self.assertTrue(shown, "no explanation before the folder picker")
+        self.assertIsNotNone(self.window._scan_iterator)
+        # Setup counts as done only once a folder was really chosen.
+        self.assertIs(stored["setup/completed"], True)
+        self.window.scan_timer.stop()
+
+    def test_setup_runs_again_when_a_folder_was_stored_but_setup_never_finished(self):
+        """An install that predates the library still gets the first-run flow."""
+        import gui
+
+        stored = {"library/songs_folder": str(self.root)}  # no setup/completed
+        self.window.settings.string_value = lambda key, default="": stored.get(key, default)
+        self.window.settings.bool_value = lambda key, default=False: bool(stored.get(key, default))
+        self.window.settings.set_value = lambda key, value: stored.__setitem__(key, value)
+
+        shown = []
+        original_box, original_dialog = gui.QMessageBox, gui.QFileDialog
+        gui.QMessageBox = type("ExplainBox", (), {
+            "information": staticmethod(lambda parent, title, text: shown.append(text))
+        })
+        gui.QFileDialog = type("FakeDialog", (), {
+            "getExistingDirectory": staticmethod(lambda *args, **kwargs: "")  # cancelled
+        })
+        try:
+            self.window.start_library()
+        finally:
+            gui.QMessageBox, gui.QFileDialog = original_box, original_dialog
+        self.assertTrue(shown)
+        self.assertNotIn("setup/completed", stored)
+
+    def test_second_start_lists_the_songs_before_the_walk_begins(self):
+        self.run_scan()  # writes the index
+        self.window._start_scan()
+        try:
+            # Not one file reopened yet, and the list is already complete.
+            self.assertEqual(self.window._scan_files, 0)
+            self.assertEqual(self.window.song_list.count(), 1)
+        finally:
+            self.window.scan_timer.stop()
+
+    def test_a_song_deleted_since_the_last_scan_leaves_the_list(self):
+        self.run_scan()
+        for path in self.root.rglob("*.osu"):
+            path.unlink()
+        self.run_scan()
+        self.assertEqual(self.window.song_list.count(), 0)
+
+    def test_group_headers_are_bold_accent_and_unselectable(self):
+        import gui
+
+        self.run_scan()
+        self.window.library_group_combo.setCurrentIndex(
+            self.window.library_group_combo.findData("mapper")
+        )
+        header = self.window.song_list.item(0)
+        self.assertIsNone(header.data(Qt.UserRole))
+        self.assertTrue(header.font().bold())
+        self.assertEqual(header.foreground().color().name(), gui.ACCENT_PINK)
+        self.assertFalse(bool(header.flags() & Qt.ItemIsSelectable))
+
+    def test_going_back_closes_the_views_and_reopening_starts_fresh(self):
+        self.run_scan()
+        self.window.song_list.setCurrentRow(0)
+        self.window._open_selected_difficulty()
+        opened = [frame.view_type for frame in self.window._editor_views]
+        self.assertEqual(sorted(opened), ["chart", "sv"])
+
+        self.window._back_to_library()
+        self.assertEqual(self.window._editor_views, [])
+        self.assertEqual(self.window._sv_views, [])
+        self.assertEqual(self.window._active_chart_view, None)
+
+        self.window._open_selected_difficulty()
+        self.assertEqual(sorted(frame.view_type for frame in self.window._editor_views), ["chart", "sv"])
+
+    def test_every_configurable_shortcut_is_wired(self):
+        from settings import SHORTCUT_DEFINITIONS
+
+        wired = {
+            "play_pause": self.window.play_shortcut,
+            "undo": self.window.undo_shortcut,
+            "redo": self.window.redo_shortcut,
+            "save_all": self.window.save_shortcut,
+            "copy": self.window.copy_shortcut,
+            "paste": self.window.paste_shortcut,
+            **self.window.tool_shortcuts,
+        }
+        # back_to_songs is compared inside keyPressEvent instead of being
+        # registered, so Escape still reaches the views first.
+        expected = {d.action_id for d in SHORTCUT_DEFINITIONS} - {"back_to_songs"}
+        self.assertEqual(set(wired), expected)
+        for action_id, shortcut in wired.items():
+            with self.subTest(action_id=action_id):
+                self.assertEqual(
+                    shortcut.key(), QKeySequence(self.window.shortcuts.sequence(action_id))
+                )
+
+    def test_tool_digits_do_not_eat_typing_in_the_search_box(self):
+        self.run_scan()
+        self.window.song_list.setCurrentRow(0)
+        self.window._open_selected_difficulty()
+        view = self.window._chart_views[-1]
+
+        self.window._editor_view_focus_changed(view, self.window.library_search)
+        self.assertFalse(any(s.isEnabled() for s in self.window.tool_shortcuts.values()))
+
+        self.window._editor_view_focus_changed(self.window.library_search, view)
+        self.assertTrue(all(s.isEnabled() for s in self.window.tool_shortcuts.values()))
+
+    def test_rebound_shortcuts_take_effect(self):
+        import gui
+
+        sequences = {"tool_2": "F2", "back_to_songs": "Ctrl+B"}
+        self.window.shortcuts.sequence = lambda action_id: sequences.get(
+            action_id, {"undo": "Ctrl+Z", "redo": "Ctrl+Y", "play_pause": "Space",
+                        "copy": "Ctrl+C", "paste": "Ctrl+V", "save_all": "Ctrl+S"}.get(action_id, "")
+        )
+        self.window._reload_shortcuts()
+        self.assertEqual(self.window.tool_shortcuts["tool_2"].key(), QKeySequence("F2"))
+
+        self.run_scan()
+        self.window.song_list.setCurrentRow(0)
+        self.window._open_selected_difficulty()
+        self.window.keyPressEvent(
+            QKeyEvent(QKeyEvent.KeyPress, Qt.Key_B, Qt.ControlModifier)
+        )
+        self.assertEqual(self.window.page_stack.currentIndex(), gui.PAGE_LIBRARY)
+
+    def _open_and_dirty(self):
+        self.run_scan()
+        self.window.song_list.setCurrentRow(0)
+        self.window._open_selected_difficulty()
+        self.window._place_note(self.window.state.source_path, "don", 3000, False)
+        self.assertTrue(self.window.state.history.dirty)
+
+    def test_leaving_with_unsaved_edits_asks_and_can_be_cancelled(self):
+        import gui
+
+        self._open_and_dirty()
+        answers = {"role": QMessageBox.RejectRole}
+        self._fake_message_box(answers)
+        self.window._back_to_library()
+        self.assertEqual(self.window.page_stack.currentIndex(), gui.PAGE_EDITOR)
+        self.assertTrue(self.window.state.history.dirty)
+
+    def test_leaving_with_unsaved_edits_can_save(self):
+        import gui
+
+        self._open_and_dirty()
+        self._fake_message_box({"role": QMessageBox.AcceptRole})
+        self.window._back_to_library()
+        self.assertEqual(self.window.page_stack.currentIndex(), gui.PAGE_LIBRARY)
+        self.assertFalse(self.window.state.history.dirty)
+
+    def test_leaving_with_unsaved_edits_can_discard(self):
+        import gui
+
+        self._open_and_dirty()
+        self._fake_message_box({"role": QMessageBox.DestructiveRole})
+        self.window._back_to_library()
+        self.assertEqual(self.window.page_stack.currentIndex(), gui.PAGE_LIBRARY)
+        # Nothing was written; the edit is still there in this session.
+        self.assertTrue(self.window.state.history.dirty)
+
+    def _fake_message_box(self, answers: dict) -> None:
+        """Answer the unsaved-changes prompt by role instead of by clicking.
+
+        A subclass, so every QMessageBox constant the prompt uses still
+        resolves; only exec() and clickedButton() are replaced.
+        """
+        import gui
+
+        class FakeBox(QMessageBox):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self._roles = []
+
+            def addButton(self, text, role):
+                button = super().addButton(text, role)
+                self._roles.append((button, role))
+                return button
+
+            def exec(self):
+                self._clicked = next(b for b, role in self._roles if role == answers["role"])
+                return 0
+
+            def clickedButton(self):
+                return self._clicked
+
+        original = gui.QMessageBox
+        gui.QMessageBox = FakeBox
+        self.addCleanup(lambda: setattr(gui, "QMessageBox", original))
+
+
+if __name__ == "__main__":
+    unittest.main()

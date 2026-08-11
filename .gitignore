@@ -11,7 +11,8 @@
 *.pfx
 *.p12
 *.cer
-*.crt*
+*.crt
+
 # ============================================================
 # Python
 # ============================================================
@@ -55,28 +56,30 @@ releases/
 *.rar
 *.tar
 *.tar.gz
-*.t*z
+*.tgz
 
 *.spec.bak
 *.manifest
 
-# Keep t*e actual PyInstaller specification*!TaikoFancyArranger.spec
+# Keep the actual PyInstaller specification
+!TaikoFancyArranger.spec
 
-# ======*==================================*==================
-# Temporary rel*ase and security-review files
-# ==*==================================*======================
+# ============================================================
+# Temporary release and security-review files
+# ============================================================
 
-FEATURES_A*DED.md
+FEATURES_ADDED.md
 REFACTOR_PLAN.md
-SECURITY.m*
+SECURITY.md
 WINDOWS_DEFENDER_RESPONSE.md
 
 build_source_release.bat
 check_release_clean.py
 generate_release_evidence.py
 
-security_utils.py
-test_security.py
+# security_utils.py and tests/test_security.py are tracked source, not review
+# artifacts. They were caught by these patterns, which meant those two tests
+# never ran in CI.
 
 security-reports/
 release-evidence/
@@ -95,38 +98,50 @@ patch-backup/
 
 *.bak
 *.bak.*
-*.before**.bak
+*.before*.bak
 *.backup
 *.orig
 *.rej
-*.patc*
+*.patch
+*.diff
 
-# ==============================*=============================
-# AI*and repository packing output
-# ==*=========================================================
+# ============================================================
+# Generated localization reports
+# ============================================================
+# The reviewed catalog translations/taiko_ja.ts is tracked. These are
+# regenerated artifacts and must never be committed.
+
+translations/generated_strings.py
+translations/coverage_report.txt
+translations/missing_ja_strings.txt
+
+# ============================================================
+# AI and repository packing output
+# ============================================================
 
 repomix-output*.md
 repomix-output*.xml
 repomix-output*.txt
 repomix-output*.json
 
-# =========================*==================================*# Logs and runtime files
-# =======*==================================*=================
+# ============================================================
+# Logs and runtime files
+# ============================================================
 
 *.log
 *.tmp
-*.t*mp
+*.temp
 *.lock
 *.pid
 *.cache
 
 logs/
-tem*/
+temp/
 tmp/
 
-# ========================*==================================*
+# ============================================================
 # IDE and editor files
-# ========*==================================*================
+# ============================================================
 
 .vscode/
 .idea/
@@ -135,11 +150,11 @@ tmp/
 *.swp
 *.swo
 *~
-.p*oject
+.project
 .pydevproject
 
-# ===========*==================================*=============
-# Windows and operat*ng-system files
+# ============================================================
+# Windows and operating-system files
 # ============================================================
 
 Thumbs.db
@@ -156,8 +171,8 @@ $RECYCLE.BIN/
 !assets/icons/*.ico
 !assets/icons/*.png
 
-# ==========================*=================================
-* macOS and Linux desktop files
+# ============================================================
+# macOS and Linux desktop files
 # ============================================================
 
 .DS_Store
