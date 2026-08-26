@@ -135,22 +135,40 @@ class SettingsDialog(QDialog):
     def _shortcuts_page(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
-        self.shortcuts_table = QTableWidget(0, 3)
-        self.shortcuts_table.setHorizontalHeaderLabels([self.tr("Action"), self.tr("Category"), self.tr("Shortcut")])
+        self.shortcuts_table = QTableWidget(0, 2)
+        self.shortcuts_table.setHorizontalHeaderLabels([self.tr("Action"), self.tr("Shortcut")])
         header = self.shortcuts_table.horizontalHeader()
-        # Action and Category size to their longest label -- which is a
-        # translation, so no fixed width can be right in both languages -- and
-        # the editor column takes what is left.
+        # Action sizes to its longest label -- which is a translation, so no
+        # fixed width can be right in both languages -- and the editor column
+        # takes what is left.
         header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
         header.setStretchLastSection(True)
-        for row, definition in enumerate(self.shortcuts.definitions.values()):
+        # The category is a spanned header row rather than a column: with a
+        # tool set per gimmick layer the list is long enough that repeating
+        # "Tools -- Fake sliders" on nine consecutive rows says less than one
+        # heading above them does. The table scrolls, so the page stays the
+        # same height however many layers exist.
+        self.shortcuts_table.verticalHeader().setVisible(False)
+        current_category = None
+        for definition in self.shortcuts.definitions.values():
+            if definition.category != current_category:
+                current_category = definition.category
+                row = self.shortcuts_table.rowCount()
+                self.shortcuts_table.insertRow(row)
+                heading = QTableWidgetItem(self.tr(definition.category))
+                font = heading.font()
+                font.setBold(True)
+                heading.setFont(font)
+                # A heading is not a row anyone edits or picks.
+                heading.setFlags(Qt.NoItemFlags)
+                self.shortcuts_table.setItem(row, 0, heading)
+                self.shortcuts_table.setSpan(row, 0, 1, 2)
+            row = self.shortcuts_table.rowCount()
             self.shortcuts_table.insertRow(row)
             self.shortcuts_table.setItem(row, 0, QTableWidgetItem(self.tr(definition.label)))
-            self.shortcuts_table.setItem(row, 1, QTableWidgetItem(self.tr(definition.category)))
             editor = QKeySequenceEdit()
             editor.setProperty("action_id", definition.action_id)
-            self.shortcuts_table.setCellWidget(row, 2, editor)
+            self.shortcuts_table.setCellWidget(row, 1, editor)
             self._shortcut_editors[definition.action_id] = editor
         self.validation_label = QLabel("")
         self.validation_label.setStyleSheet("color: #b00020;")
@@ -165,7 +183,7 @@ class SettingsDialog(QDialog):
         storage_label = QLabel(self.tr("Settings storage location:"))
         self.storage_value = QLabel(self.settings.storage_name())
         self.storage_value.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.reset_all_button = QPushButton(self.tr("Reset all settings"))
+        self.reset_all_button = QPushButton(self.tr("Reset All Settings"))
         self.reset_all_button.clicked.connect(self._reset_all_settings)
         layout.addWidget(storage_label)
         layout.addWidget(self.storage_value)
@@ -201,7 +219,7 @@ class SettingsDialog(QDialog):
             for action_id, editor in self._shortcut_editors.items():
                 editor.setKeySequence(QKeySequence(self.shortcuts.default_sequence(action_id)))
         elif page == 4:
-            QMessageBox.information(self, self.tr("Settings"), self.tr("Use Reset all settings to clear every saved setting."))
+            QMessageBox.information(self, self.tr("Settings"), self.tr("Use Reset All Settings to clear every saved setting."))
 
     def _reset_all_settings(self) -> None:
         if QMessageBox.question(self, self.tr("Reset all settings"), self.tr("Clear every saved setting and restore defaults?")) != QMessageBox.Yes:
@@ -262,8 +280,8 @@ class SettingsDialog(QDialog):
         box.setIcon(QMessageBox.Information)
         box.setWindowTitle(self.tr("Restart required"))
         box.setText(self.tr("Please restart Taiko Fancy Arranger to apply the language change."))
-        restart_button = box.addButton(self.tr("Restart now"), QMessageBox.AcceptRole)
-        box.addButton(self.tr("Restart later"), QMessageBox.RejectRole)
+        restart_button = box.addButton(self.tr("Restart Now"), QMessageBox.AcceptRole)
+        box.addButton(self.tr("Restart Later"), QMessageBox.RejectRole)
         box.exec()
         if box.clickedButton() is restart_button:
             self._restart_application()

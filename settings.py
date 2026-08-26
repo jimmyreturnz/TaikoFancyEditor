@@ -78,7 +78,17 @@ class ShortcutDefinition:
     label: str
     category: str
     default: str
+    # Which toolbox owns this binding, "" for one that is live everywhere.
+    # Only one toolbox is ever reachable at a time -- the Editor page's, or
+    # the one gimmick layer that has focus -- so every one of them can bind
+    # its first tool to "1" without those being conflicts. `duplicate_shortcuts`
+    # and the QShortcut enabling in gui.py both key off this.
+    scope: str = ""
 
+
+# The Editor page's own toolbox. A per-layer category is built the same way
+# in gui.py, so every toolbox reads as "Tools -- <the toolbox>" in Settings.
+TOOLS_EDITOR_CATEGORY = "Tools — Editor"
 
 # Every keyboard action the app registers as a real QShortcut, so the Settings
 # dialog's list is the whole truth rather than three of them. Keys handled
@@ -95,13 +105,46 @@ SHORTCUT_DEFINITIONS: tuple[ShortcutDefinition, ...] = (
     ShortcutDefinition("paste", "Paste", "Editing", "Ctrl+V"),
     ShortcutDefinition("save_all", "Save all changed difficulties", "File", "Ctrl+S"),
     ShortcutDefinition("back_to_songs", "Back to the song list", "Navigation", "Esc"),
-    ShortcutDefinition("tool_1", "Tool 1: Select", "Tools", "1"),
-    ShortcutDefinition("tool_2", "Tool 2: Don / Green line", "Tools", "2"),
-    ShortcutDefinition("tool_3", "Tool 3: Kat / Function", "Tools", "3"),
-    ShortcutDefinition("tool_4", "Tool 4: Slider", "Tools", "4"),
-    ShortcutDefinition("tool_5", "Tool 5: Spinner", "Tools", "5"),
-    ShortcutDefinition("tool_6", "Tool 6: New combo", "Tools", "6"),
+    ShortcutDefinition("tool_1", "Tool 1: Select", TOOLS_EDITOR_CATEGORY, "1", "editor"),
+    ShortcutDefinition("tool_2", "Tool 2: Don / Green line", TOOLS_EDITOR_CATEGORY, "2", "editor"),
+    ShortcutDefinition("tool_3", "Tool 3: Kat / Function", TOOLS_EDITOR_CATEGORY, "3", "editor"),
+    ShortcutDefinition("tool_4", "Tool 4: Slider", TOOLS_EDITOR_CATEGORY, "4", "editor"),
+    ShortcutDefinition("tool_5", "Tool 5: Spinner", TOOLS_EDITOR_CATEGORY, "5", "editor"),
+    ShortcutDefinition("tool_6", "Tool 6: New combo", TOOLS_EDITOR_CATEGORY, "6", "editor"),
 )
+
+# Definitions owned by a module this one must not import. gui.py imports
+# settings, so the gimmick page's per-layer toolboxes -- one set of tool keys
+# per layer, derived from the layer tables that live in gui.py -- can only be
+# handed over in this direction. Registering them rather than restating them
+# here is what makes a seventh layer arrive with its own keys for free.
+_REGISTERED_DEFINITIONS: list[ShortcutDefinition] = []
+
+
+def register_shortcut_definitions(definitions) -> None:
+    """Add definitions to the set Settings shows and the registry stores.
+
+    Called at import time, before any ShortcutRegistry is built. Ignores an
+    action_id that is already known, so a re-import cannot double a category.
+    """
+    known = {item.action_id for item in all_shortcut_definitions()}
+    for definition in definitions:
+        if definition.action_id not in known:
+            known.add(definition.action_id)
+            _REGISTERED_DEFINITIONS.append(definition)
+
+
+def all_shortcut_definitions() -> tuple[ShortcutDefinition, ...]:
+    """Built-in definitions first, then whatever registered itself."""
+    return SHORTCUT_DEFINITIONS + tuple(_REGISTERED_DEFINITIONS)
+
+
+def shortcut_scope(action_id: str) -> str:
+    """The scope of a known action; "" for an unknown or unscoped one."""
+    for definition in all_shortcut_definitions():
+        if definition.action_id == action_id:
+            return definition.scope
+    return ""
 
 
 class ShortcutRegistry:
@@ -109,7 +152,7 @@ class ShortcutRegistry:
 
     def __init__(self, settings: SettingsManager) -> None:
         self.settings = settings
-        self.definitions = {item.action_id: item for item in SHORTCUT_DEFINITIONS}
+        self.definitions = {item.action_id: item for item in all_shortcut_definitions()}
 
     @staticmethod
     def key(action_id: str) -> str:
@@ -140,16 +183,30 @@ def normalize_sequence(value: str | QKeySequence) -> str:
 
 
 def duplicate_shortcuts(values: dict[str, str]) -> list[tuple[str, str, str]]:
-    seen: dict[str, str] = {}
+    """Conflicting bindings, ignoring pairs that can never both be live.
+
+    Scope-aware because the toolboxes overlap on purpose: the Editor page and
+    each of the gimmick layers number their own tools from 1, and only one
+    toolbox is reachable at a time, so "1 = Select" in seven places is seven
+    working bindings rather than six conflicts. Two actions still clash when
+    they share a scope, and an unscoped action clashes with everything -- a
+    global Play/Pause moved onto "1" really would take the key from every
+    toolbox.
+    """
+    seen: dict[str, list[str]] = {}
     duplicates: list[tuple[str, str, str]] = []
     for action_id, raw_sequence in values.items():
         sequence = normalize_sequence(raw_sequence)
         if not sequence:
             continue
-        if sequence in seen:
-            duplicates.append((sequence, seen[sequence], action_id))
-        else:
-            seen[sequence] = action_id
+        scope = shortcut_scope(action_id)
+        holders = seen.setdefault(sequence, [])
+        for other in holders:
+            other_scope = shortcut_scope(other)
+            if not scope or not other_scope or scope == other_scope:
+                duplicates.append((sequence, other, action_id))
+                break
+        holders.append(action_id)
     return duplicates
 
 
