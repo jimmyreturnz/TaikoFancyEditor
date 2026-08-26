@@ -397,7 +397,7 @@ class LibraryPageTests(unittest.TestCase):
         self.assertEqual(sorted(frame.view_type for frame in self.window._editor_views), ["chart", "sv"])
 
     def test_every_configurable_shortcut_is_wired(self):
-        from settings import SHORTCUT_DEFINITIONS
+        from settings import all_shortcut_definitions
 
         wired = {
             "play_pause": self.window.play_shortcut,
@@ -408,9 +408,12 @@ class LibraryPageTests(unittest.TestCase):
             "paste": self.window.paste_shortcut,
             **self.window.tool_shortcuts,
         }
+        # all_shortcut_definitions, not SHORTCUT_DEFINITIONS: every gimmick
+        # layer registers its own toolbox keys at gui import time, and they
+        # have to be wired too.
         # back_to_songs is compared inside keyPressEvent instead of being
         # registered, so Escape still reaches the views first.
-        expected = {d.action_id for d in SHORTCUT_DEFINITIONS} - {"back_to_songs"}
+        expected = {d.action_id for d in all_shortcut_definitions()} - {"back_to_songs"}
         self.assertEqual(set(wired), expected)
         for action_id, shortcut in wired.items():
             with self.subTest(action_id=action_id):
@@ -428,7 +431,18 @@ class LibraryPageTests(unittest.TestCase):
         self.assertFalse(any(s.isEnabled() for s in self.window.tool_shortcuts.values()))
 
         self.window._editor_view_focus_changed(self.window.library_search, view)
-        self.assertTrue(all(s.isEnabled() for s in self.window.tool_shortcuts.values()))
+        # Only the Editor page's own toolbox comes back: every gimmick layer
+        # numbers its tools from 1 as well, and two enabled shortcuts on one
+        # key would make Qt fire neither (see _refresh_tool_shortcut_scope).
+        editor_tools = [f"tool_{digit}" for digit in "123456"]
+        self.assertTrue(all(self.window.tool_shortcuts[a].isEnabled() for a in editor_tools))
+        self.assertFalse(
+            any(
+                shortcut.isEnabled()
+                for action_id, shortcut in self.window.tool_shortcuts.items()
+                if action_id not in editor_tools
+            )
+        )
 
     def test_rebound_shortcuts_take_effect(self):
         import gui

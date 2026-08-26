@@ -224,7 +224,7 @@ class JapaneseLookupTests(unittest.TestCase):
         from i18n import tr
 
         cases = [
-            ("MainWindow", "Reset applied transforms"),
+            ("MainWindow", "Reset Applied Transforms"),
             ("MainWindow", "All Notes"),
             ("MainWindow", "Split Don / Kat"),
             ("MainWindow", "Duration"),

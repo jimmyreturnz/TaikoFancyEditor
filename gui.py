@@ -13,7 +13,7 @@ from time import perf_counter
 from typing import Any
 
 from PySide6.QtCore import (
-    QElapsedTimer, QEvent, QObject, QPointF, QPropertyAnimation, QRectF, QSize, QStandardPaths, Qt, QTimer,
+    QElapsedTimer, QEvent, QObject, QPointF, QPropertyAnimation, QRect, QRectF, QSize, QStandardPaths, Qt, QTimer,
     QUrl, Signal,
 )
 from PySide6.QtGui import QImageReader, QColor, QFont, QFontDatabase, QKeySequence, QPainter, QPen, QPixmap, QPolygonF, QShortcut, QIcon
@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
     QGraphicsOpacityEffect, QGridLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QMainWindow, QMessageBox,
     QProgressBar, QPushButton, QScrollArea,
-    QSlider, QSpacerItem, QSpinBox, QSplitter, QStackedWidget, QTabWidget, QToolButton, QVBoxLayout, QWidget, QDialog, QDialogButtonBox, QFontComboBox, QSizePolicy
+    QSlider, QSpacerItem, QSpinBox, QSplitter, QStackedWidget, QStyle, QStyleOptionButton, QTabWidget, QToolButton, QVBoxLayout, QWidget, QDialog, QDialogButtonBox, QFontComboBox, QSizePolicy
 )
 
 from gui_draft import PARAMETERS
@@ -36,7 +36,8 @@ from model.commands import (
 from model.editor_state import DifficultyState
 from model.hit_object import HITSOUND_CLAP, HITSOUND_FINISH, HitObject, TYPE_CIRCLE, TYPE_NEW_COMBO, TYPE_SLIDER, TYPE_SPINNER
 from settings import (
-    APPLICATION_NAME, ORGANIZATION_NAME, SettingsManager, ShortcutRegistry, should_ignore_shortcut_focus,
+    APPLICATION_NAME, ORGANIZATION_NAME, SettingsManager, ShortcutDefinition, ShortcutRegistry,
+    register_shortcut_definitions, should_ignore_shortcut_focus,
 )
 from settings_dialog import SettingsDialog
 from osu_io.parser import parse_osu
@@ -212,12 +213,79 @@ if not any(item.get("key")=="reverse" for item in PARAMETERS.get("text",[])):
 GUI_TRANSFORMATIONS=[name for name in ("text","drawn_path","equation") if name in PARAMETERS]+[name for name in available_transformations() if name in PARAMETERS and name not in {"text","drawn_path","equation"}]
 
 
+# The compact +/- pair. Three controls build one by hand (`ParameterControl`
+# twice, `DifficultyValueControl`, `pink_spin_buttons`) and they now agree on
+# how it looks: the window stylesheet's 8px/16px is far too much padding for
+# a single glyph, and overriding only `padding` and `font-size` leaves the
+# inherited pink background, hover and disabled states alone -- a leaf
+# widget's own QPushButton{} rule overrides just the properties it names.
+STEP_BUTTON_STYLE = "QPushButton { padding: 2px 6px; font-weight: 700; font-size: 15px; }"
+
+
+def button_chrome_width(button: QPushButton) -> int:
+    """Pixels `button` spends on padding and border before any text at all.
+
+    Measured, not assumed: the gap between a rect and the contents rect the
+    button's *own current style* hands back for it, which is where the window
+    stylesheet's `padding: 8px 16px` and any per-button override of it
+    actually show up. Measured against a rect widened by the label, because
+    the buttons this exists for are exactly the ones currently too narrow to
+    hold their own padding, and a style clamps the contents rect at zero
+    rather than reporting the overflow.
+    """
+    button.ensurePolished()
+    option = QStyleOptionButton()
+    option.initFrom(button)
+    text_width = button.fontMetrics().horizontalAdvance(button.text())
+    option.rect = QRect(0, 0, option.rect.width() + text_width, max(1, option.rect.height()))
+    contents = button.style().subElementRect(QStyle.SE_PushButtonContents, option, button)
+    return max(0, option.rect.width() - contents.width())
+
+
+def button_text_width(button: QPushButton) -> int:
+    """The width `button` needs before its own body starts covering its label.
+
+    This is the fix for the typed widths that used to clip. A 28px "+" under
+    the app-wide 16px of padding either side has -4px left for the glyph, so
+    Qt drew the pink body straight over both ends of it -- the "buttons eat
+    their own text at the left and right" report -- and every attempt to nudge
+    the number was a guess at a total the stylesheet already decides. Both
+    halves are read back instead: the label from the button's font metrics,
+    the padding and border from its style. A longer translation, a bigger font
+    or a different padding each widen the button by exactly their cost.
+
+    sizeHint() is still the floor, so an icon, a menu indicator or a style
+    minimum is never sized away.
+    """
+    return max(
+        button.sizeHint().width(),
+        button.fontMetrics().horizontalAdvance(button.text()) + button_chrome_width(button),
+    )
+
+
+def fit_button_width(button: QPushButton) -> None:
+    """Pin `button` to the width its own label needs. See button_text_width."""
+    button.setFixedWidth(button_text_width(button))
+
+
+def step_button(text: str, on_click, parent: QWidget | None = None) -> QPushButton:
+    """A compact, glyph-sized +/- button, wired to `on_click`."""
+    button = QPushButton(text, parent)
+    button.setStyleSheet(STEP_BUTTON_STYLE)
+    button.setAutoRepeat(True)
+    button.setFocusPolicy(Qt.NoFocus)
+    button.clicked.connect(on_click)
+    fit_button_width(button)
+    return button
+
+
 def equalize_button_widths(buttons, heights: bool = False, widths: bool = True) -> None:
     """Give every button the width of the widest one.
 
     Polished first: before the style has been applied a button reports the
     unpadded hint, and the widest label is exactly the one that then no longer
-    fits.
+    fits. The width itself comes from `button_text_width`, which measures the
+    label and the real padding separately rather than trusting that hint.
 
     `heights` does the same for the tallest, and is how the tool rows are sized:
     a typed height clipped descenders once the window stylesheet's padding was
@@ -235,7 +303,9 @@ def equalize_button_widths(buttons, heights: bool = False, widths: bool = True) 
     for button in buttons:
         button.ensurePolished()
     hints = [button.sizeHint() for button in buttons]
-    width = max((hint.width() for hint in hints), default=0)
+    # button_text_width rather than the hint: the hint is what let the widest
+    # label clip, since it is the one that then has no padding left over.
+    width = max((button_text_width(button) for button in buttons), default=0)
     height = max((hint.height() for hint in hints), default=0)
     for button in buttons:
         if widths:
@@ -250,9 +320,13 @@ def pink_spin_buttons(root: QWidget) -> None:
     Qt's native spin arrows are two grey triangles a few pixels tall: the
     app-wide pink QPushButton rule does not reach them, they are the hardest
     thing in any of these dialogs to hit, and next to the pink buttons around
-    them they read as disabled. The two controls that were built by hand
-    (`ParameterControl`, `DifficultyValueControl`) already solved this the same
-    way; this is that solution applied to the rest rather than a third one.
+    them they read as disabled. Two controls built the pair by hand first
+    (`ParameterControl`, `DifficultyValueControl`); this used to claim they
+    had "already solved this the same way", which was the one thing they had
+    not done -- both typed a width (30px, 28px) under the window stylesheet's
+    32px of horizontal padding, so their glyphs had negative room and Qt
+    painted blank pink squares. All three now build the pair through
+    `step_button`, so the fix cannot go missing from one of them again.
 
     Called once per dialog, after its layout is built. Spin boxes that already
     carry their own pair say so by having no buttons, and are left alone.
@@ -282,21 +356,10 @@ def pink_spin_buttons(root: QWidget) -> None:
         # every font this ships against, and a missing glyph here is exactly
         # the blank button this pair exists to stop being.
         for text, step in (("+", spin.stepUp), ("-", spin.stepDown)):
-            button = QPushButton(text, container)
-            # Padding, not a typed width. The window stylesheet gives every
-            # QPushButton 10px 18px of it, so a 26px button had negative room
-            # left for its label and Qt drew a blank pink square -- the same
-            # trap EditorViewFrame's chrome buttons fell into. Overriding the
-            # padding here and sizing from the polished hint puts the glyph back.
-            button.setStyleSheet(
-                "QPushButton { padding: 2px 6px; font-weight: 700; font-size: 15px; }"
-            )
-            button.setAutoRepeat(True)
-            button.setFocusPolicy(Qt.NoFocus)
-            button.clicked.connect(step)
-            button.ensurePolished()
-            button.setFixedWidth(max(24, button.sizeHint().width()))
-            row.addWidget(button)
+            # Padding, not a typed width -- the same trap EditorViewFrame's
+            # chrome buttons fell into. `step_button` overrides the padding
+            # and then measures the glyph against what it actually costs.
+            row.addWidget(step_button(text, step, container))
 
 
 def set_row_visible(layout: QFormLayout, widget: QWidget, visible: bool) -> None:
@@ -771,13 +834,10 @@ class ParameterControl(QWidget):
             self.spin.setButtonSymbols(QAbstractSpinBox.NoButtons)
             random_button = QPushButton(tr("Parameters", "Random Seed"))
             random_button.clicked.connect(self.randomize)
-            increase_button = QPushButton("+")
-            decrease_button = QPushButton("-")
-            for button in (increase_button, decrease_button):
-                button.setFixedWidth(30)
-                button.setAutoRepeat(True)
-            increase_button.clicked.connect(self.spin.stepUp)
-            decrease_button.clicked.connect(self.spin.stepDown)
+            # A typed 30px here left the glyph negative room under the window
+            # stylesheet's padding, so the button covered its own "+".
+            increase_button = step_button("+", self.spin.stepUp)
+            decrease_button = step_button("-", self.spin.stepDown)
             layout.addWidget(self.spin)
             layout.addWidget(random_button, 1)
             layout.addWidget(increase_button)
@@ -793,14 +853,8 @@ class ParameterControl(QWidget):
             self.spin=QDoubleSpinBox(); self.spin.setRange(float(definition["min"]),float(definition["max"])); self.spin.setSingleStep(step); self.spin.setDecimals(2)
         self.spin.setMinimumWidth(104)
         self.spin.setButtonSymbols(QAbstractSpinBox.NoButtons)
-        decrease_button=QPushButton("-")
-        increase_button=QPushButton("+")
-        decrease_button.setFixedWidth(30)
-        increase_button.setFixedWidth(30)
-        decrease_button.setAutoRepeat(True)
-        increase_button.setAutoRepeat(True)
-        decrease_button.clicked.connect(self.spin.stepDown)
-        increase_button.clicked.connect(self.spin.stepUp)
+        decrease_button=step_button("-", self.spin.stepDown)
+        increase_button=step_button("+", self.spin.stepUp)
         layout.addWidget(self.slider,1)
         layout.addWidget(self.spin)
         layout.addWidget(increase_button)
@@ -855,9 +909,11 @@ class DifficultyValueControl(QWidget):
         caption=QLabel(label);caption.setToolTip(tooltip);layout.addWidget(caption)
         self.slider=QSlider(Qt.Horizontal);self.slider.setRange(0,1000);self.slider.setSingleStep(1);self.slider.setPageStep(10);self.slider.setFixedWidth(200);self.slider.setToolTip(tooltip);layout.addWidget(self.slider)
         self.value_box=QDoubleSpinBox();self.value_box.setRange(0.0,10.0);self.value_box.setDecimals(2);self.value_box.setSingleStep(0.01);self.value_box.setFixedWidth(62);self.value_box.setButtonSymbols(QAbstractSpinBox.NoButtons);self.value_box.setToolTip(tooltip);layout.addWidget(self.value_box)
-        decrease=QPushButton("-");increase=QPushButton("+")
-        for button in (decrease,increase):button.setFixedSize(28,28);button.setAutoRepeat(True);button.setFocusPolicy(Qt.NoFocus);button.setToolTip(tr("MainWindow", "Adjust by 0.01"))
-        decrease.clicked.connect(self.value_box.stepDown);increase.clicked.connect(self.value_box.stepUp);layout.addWidget(increase);layout.addWidget(decrease)
+        decrease=step_button("-", self.value_box.stepDown);increase=step_button("+", self.value_box.stepUp)
+        # Height typed, width measured: 28px was wide enough for the glyph
+        # only until the window stylesheet's horizontal padding landed on it.
+        for button in (decrease,increase):button.setFixedHeight(28);button.setToolTip(tr("MainWindow", "Adjust by 0.01"))
+        layout.addWidget(increase);layout.addWidget(decrease)
         self.slider.valueChanged.connect(self._slider_changed);self.value_box.valueChanged.connect(self._box_changed);self.set_value(default)
     def _slider_changed(self, raw: int) -> None:
         value=raw/100.0;self.value_box.blockSignals(True);self.value_box.setValue(value);self.value_box.blockSignals(False);self.changed.emit(value)
@@ -4056,7 +4112,6 @@ class AddViewDialog(QDialog):
         self.type_combo.addItem(tr("MainWindow", "Fake Sliders Only"), "chart_fake_slider")
         self.type_combo.addItem(tr("MainWindow", "Barlines Only"), "chart_barline")
         self.type_combo.addItem(tr("MainWindow", "SV Editor"), "sv")
-        self.type_combo.addItem(tr("MainWindow", "Gimmick Editor"), "gimmick")
         self.type_combo.addItem(tr("MainWindow", "Gameplay Viewer"), "gameplay")
         self.type_combo.addItem(tr("MainWindow", "Gameplay: Regular Chart Only"), "gameplay_regular")
         self.type_combo.addItem(tr("MainWindow", "Gameplay: Fake Sliders Only"), "gameplay_fake_slider")
@@ -4122,7 +4177,7 @@ class GimmickEntryDialog(QDialog):
                 "MainWindow",
                 "Yes creates a new difficulty called \"{0}\" in this song folder, "
                 "copied from the one you have open, and edits that.\n\n"
-                "Use this one edits the difficulty you already have open, without "
+                "Use This One edits the difficulty you already have open, without "
                 "making a copy.\n\n"
                 "Either way, keep an un-gimmicked version of the chart: gimmick "
                 "timing cannot be cleanly undone once the file is saved.",
@@ -4174,7 +4229,7 @@ class GimmickEntryDialog(QDialog):
         # to different questions, and only Cancel actually leaves.
         create = buttons.addButton(tr("MainWindow", "Yes"), QDialogButtonBox.AcceptRole)
         use_current = buttons.addButton(
-            tr("MainWindow", "Use this one"), QDialogButtonBox.ActionRole
+            tr("MainWindow", "Use This One"), QDialogButtonBox.ActionRole
         )
         buttons.addButton(tr("MainWindow", "No"), QDialogButtonBox.RejectRole)
         create.clicked.connect(lambda: self._finish(self.CREATE))
@@ -6150,11 +6205,11 @@ class MainWindow(QMainWindow):
         self.play_button.clicked.connect(self.toggle_playback)
         self.play_button.setFocusPolicy(Qt.NoFocus)
 
-        self.reset_button = QPushButton(tr("MainWindow", "Reset applied transforms"))
+        self.reset_button = QPushButton(tr("MainWindow", "Reset Applied Transforms"))
         self.reset_button.clicked.connect(self.reset_applied)
         self.reset_button.setFocusPolicy(Qt.NoFocus)
 
-        self.export_button = QPushButton(tr("MainWindow", "Export applied map"))
+        self.export_button = QPushButton(tr("MainWindow", "Export Applied Map"))
         self.export_button.clicked.connect(self.export_map)
         self.export_button.setFocusPolicy(Qt.NoFocus)
 
@@ -6229,12 +6284,12 @@ class MainWindow(QMainWindow):
         self.control_tabs = QTabWidget()
         right_layout.addWidget(self.control_tabs, 1)
 
-        self.apply_button = QPushButton(tr("MainWindow", "Transform selected notes"))
+        self.apply_button = QPushButton(tr("MainWindow", "Transform Selected Notes"))
         self.apply_button.clicked.connect(self.apply_selection)
         self.apply_button.setFocusPolicy(Qt.NoFocus)
         self.apply_button.setEnabled(False)
         right_layout.addWidget(self.apply_button)
-        self.apply_original_button=QPushButton(tr("MainWindow", "Apply all changes to original file"))
+        self.apply_original_button=QPushButton(tr("MainWindow", "Apply All Changes to Original File"))
         self.apply_original_button.clicked.connect(self.apply_to_original_file)
         self.apply_original_button.setFocusPolicy(Qt.NoFocus); self.apply_original_button.setEnabled(False)
         right_layout.addWidget(self.apply_original_button)
@@ -6352,6 +6407,8 @@ class MainWindow(QMainWindow):
         button = self.page_button_group.button(index)
         if button is not None:
             button.setChecked(True)
+        # Which toolbox owns the number keys is a property of the page.
+        self._refresh_tool_shortcut_scope()
         if index == PAGE_LIBRARY and self.player.playbackState() == QMediaPlayer.PlayingState:
             self.toggle_playback()
 
@@ -6410,7 +6467,7 @@ class MainWindow(QMainWindow):
             + "\n".join(f"• {state.source_path.name}" for state in dirty)
         )
         save_button = box.addButton(tr("MainWindow", "Save"), QMessageBox.AcceptRole)
-        leave_button = box.addButton(tr("MainWindow", "Continue without saving"), QMessageBox.DestructiveRole)
+        leave_button = box.addButton(tr("MainWindow", "Continue Without Saving"), QMessageBox.DestructiveRole)
         box.addButton(tr("MainWindow", "Cancel"), QMessageBox.RejectRole)
         box.setDefaultButton(save_button)
         box.exec()
@@ -6461,7 +6518,7 @@ class MainWindow(QMainWindow):
         self.library_folder_label.setStyleSheet("color: #97a3b4;")
         top.addWidget(self.library_folder_label)
 
-        change_folder_button = QPushButton(tr("MainWindow", "Change folder"))
+        change_folder_button = QPushButton(tr("MainWindow", "Change Folder"))
         change_folder_button.setFocusPolicy(Qt.NoFocus)
         change_folder_button.clicked.connect(self._choose_songs_folder)
         top.addWidget(change_folder_button)
@@ -6516,7 +6573,7 @@ class MainWindow(QMainWindow):
         self.difficulty_list = QListWidget()
         self.difficulty_list.itemActivated.connect(lambda _item: self._open_selected_difficulty())
         right_layout.addWidget(self.difficulty_list, 1)
-        self.open_difficulty_button = QPushButton(tr("MainWindow", "Edit this difficulty"))
+        self.open_difficulty_button = QPushButton(tr("MainWindow", "Edit This Difficulty"))
         self.open_difficulty_button.clicked.connect(self._open_selected_difficulty)
         right_layout.addWidget(self.open_difficulty_button)
         split.addWidget(right)
@@ -6932,7 +6989,7 @@ class MainWindow(QMainWindow):
         # The entry question is asked once and then remembered forever, so
         # without this there was no way to correct the answer -- including the
         # common one of pairing before the properly-timed difficulty existed.
-        self.gimmick_reference_button = QPushButton(tr("MainWindow", "Timing reference..."))
+        self.gimmick_reference_button = QPushButton(tr("MainWindow", "Timing Reference..."))
         self.gimmick_reference_button.setFocusPolicy(Qt.NoFocus)
         self.gimmick_reference_button.clicked.connect(self._change_gimmick_reference)
         status_row.addWidget(self.gimmick_reference_button)
@@ -7080,6 +7137,7 @@ class MainWindow(QMainWindow):
         for layer_id, row in self.gimmick_tool_rows.items():
             row.setVisible(layer_id == layer)
         self._active_gimmick_layer = layer
+        self._refresh_tool_shortcut_scope()
 
     def _set_gimmick_tool(self, layer_id: str, tool_id: str) -> None:
         """Set a tool on the one layer that owns it.
@@ -7375,7 +7433,7 @@ class MainWindow(QMainWindow):
         snapshot is taken *before* any of that, so its timing is still the
         song's at the moment it is read. Excluding it meant the common case --
         "this map is already timed, just use it" -- had no answer at all, and
-        "Use this one" had to silently pick something else.
+        "Use This One" had to silently pick something else.
         """
         source_resolved = source.resolve()
         choices = [
@@ -8242,6 +8300,7 @@ class MainWindow(QMainWindow):
             for row in self.gimmick_tool_rows.values():
                 row.setVisible(False)
             self._active_gimmick_layer = None
+            self._refresh_tool_shortcut_scope()
         # ...and something has to be the focused layer afterwards, or the tool
         # digits, copy and paste are all aimed at nothing -- the same reason
         # _open_gimmick_layers picks one on the way in.
@@ -9114,17 +9173,6 @@ class MainWindow(QMainWindow):
             frame.set_content(view)
             frame.density_view = view
             self._density_views.append(view)
-        else:
-            # Literal tr() calls, one per type -- see the note in
-            # AddViewDialog about why a dict lookup here would silently
-            # escape the i18n coverage gate.
-            placeholder_text = {
-                "gimmick": tr("MainWindow", "Gimmick tools arrive in a later milestone."),
-            }[view_type]
-            placeholder = QLabel(placeholder_text)
-            placeholder.setAlignment(Qt.AlignCenter)
-            placeholder.setStyleSheet("color:#7d8794;padding:24px;border:0;")
-            frame.set_content(placeholder)
 
         self._editor_views.append(frame)
         if container is not None:
@@ -9268,22 +9316,67 @@ class MainWindow(QMainWindow):
         tool rows is currently visible, since both use keys 1-3 for
         different tools and only one is ever relevant at a time.
 
-        The bound key comes from the shortcut registry (`tool_1` ... `tool_6`)
-        so Settings can rebind it; the digit passed to the handler stays the
-        logical tool number regardless of which key ends up on it.
+        The bound key comes from the shortcut registry so Settings can rebind
+        it; the digit passed to the handler stays the logical tool number
+        regardless of which key ends up on it.
+
+        One shortcut per *scoped* definition, not a fixed six: the Editor
+        page's toolbox is `tool_1`...`tool_6`, and each gimmick layer has its
+        own set derived from its own toolbox (see the registration at the foot
+        of this module), because the layers do not agree on what tool 2 is or
+        even on how many tools there are.
         """
         self.tool_shortcuts: dict[str, QShortcut] = {}
-        for digit in "123456":
-            action_id = f"tool_{digit}"
-            shortcut = QShortcut(QKeySequence(self.shortcuts.sequence(action_id)), self)
+        self._tool_shortcuts_by_scope: dict[str, list[QShortcut]] = {}
+        # Set before any toolbox exists, so the first refresh has an answer.
+        self._tool_shortcuts_allowed = True
+        for definition in self.shortcuts.definitions.values():
+            # A scope is what marks a definition as a toolbox binding; the
+            # global actions each have their own QShortcut already.
+            if not definition.scope:
+                continue
+            digit = definition.action_id.rsplit("_", 1)[-1]
+            shortcut = QShortcut(QKeySequence(self.shortcuts.sequence(definition.action_id)), self)
             shortcut.setContext(Qt.ApplicationShortcut)
             shortcut.activated.connect(lambda d=digit: self._activate_tool_digit(d))
-            self.tool_shortcuts[action_id] = shortcut
+            self.tool_shortcuts[definition.action_id] = shortcut
+            self._tool_shortcuts_by_scope.setdefault(definition.scope, []).append(shortcut)
+        self._refresh_tool_shortcut_scope()
 
     def _set_tool_shortcuts_enabled(self, enabled: bool) -> None:
-        # getattr: focusChanged is connected before the shortcuts are built.
-        for shortcut in getattr(self, "tool_shortcuts", {}).values():
-            shortcut.setEnabled(enabled)
+        self._tool_shortcuts_allowed = enabled
+        self._refresh_tool_shortcut_scope()
+
+    def _refresh_tool_shortcut_scope(self) -> None:
+        """Leave only the reachable toolbox's keys enabled.
+
+        Every toolbox numbers its tools from 1, so seven of them want the key
+        "1" -- which is correct, since only one toolbox is reachable at a
+        time. Qt does not see it that way: two enabled ApplicationShortcuts on
+        one key fire `activatedAmbiguously` and *neither* acts, so the digit
+        has to belong to exactly one toolbox at any moment. The focused
+        gimmick layer's while that page is up, the Editor page's otherwise,
+        and none of them while a text widget has focus (see
+        `_editor_view_focus_changed`: an ApplicationShortcut consumes its key,
+        so the only way a digit reaches a search box is for no tool shortcut
+        to be enabled).
+
+        getattr throughout: focusChanged and _show_page both run before the
+        shortcuts and the pages exist.
+        """
+        by_scope = getattr(self, "_tool_shortcuts_by_scope", None)
+        if not by_scope:
+            return
+        stack = getattr(self, "page_stack", None)
+        if not self._tool_shortcuts_allowed:
+            active = ""
+        elif stack is not None and stack.currentIndex() == PAGE_GIMMICK:
+            active = getattr(self, "_active_gimmick_layer", None) or ""
+        else:
+            active = "editor"
+        for scope, shortcuts in by_scope.items():
+            for shortcut in shortcuts:
+                shortcut.setEnabled(scope == active)
 
     def _activate_tool_digit(self, digit: str) -> None:
         if should_ignore_shortcut_focus(QApplication.focusWidget()):
@@ -10467,7 +10560,10 @@ class MainWindow(QMainWindow):
         equation_keyboard_button = QPushButton("⌨")
         equation_keyboard_button.setToolTip(tr("MainWindow", "Show or hide equation keyboard"))
         equation_keyboard_button.setCheckable(True)
-        equation_keyboard_button.setFixedWidth(38)
+        # No typed width. 38px was narrower than the window stylesheet's own
+        # 16px of padding either side left room for, so the button covered its
+        # keyboard glyph; AlignLeft below already keeps it to its own hint,
+        # which is recomputed once that stylesheet lands.
         equation_keyboard_button.setVisible(False)
         equation_keyboard = self._create_equation_keyboard(group)
         equation_keyboard_button.toggled.connect(equation_keyboard.setVisible)
@@ -11351,7 +11447,7 @@ class MainWindow(QMainWindow):
 
         destination, _ = QFileDialog.getSaveFileName(
             self,
-            tr("MainWindow", "Export applied map"),
+            tr("MainWindow", "Export Applied Map"),
             str(candidate),
             tr("MainWindow", "osu! beatmaps (*.osu)"),
         )
@@ -11396,6 +11492,28 @@ class MainWindow(QMainWindow):
             tr("MainWindow", "Export complete"),
             tr("MainWindow", "Created:") + "\n" + str(destination_path),
         )
+
+
+# Every gimmick layer's toolbox gets its own numbered keys, derived from the
+# tables above rather than restated: adding a layer to GIMMICK_LAYERS and
+# GIMMICK_TOOLSETS is all it takes for that layer's tools to turn up in
+# Settings with their own group header. settings.py cannot reach in for them
+# (gui.py imports settings, not the other way round), so the tables are
+# handed over instead.
+#
+# The scope is the layer id, which is what stops the seven toolboxes that all
+# start at "1" being reported as conflicts -- see `duplicate_shortcuts`.
+register_shortcut_definitions(
+    ShortcutDefinition(
+        f"tool_{layer_id}_{index}",
+        f"Tool {index}: {tool_label}",
+        f"Tools — {layer_label}",
+        str(index),
+        layer_id,
+    )
+    for layer_id, _view_type, layer_label in MainWindow.GIMMICK_LAYERS
+    for index, (_tool_id, tool_label) in enumerate(MainWindow.GIMMICK_TOOLSETS[layer_id], start=1)
+)
 
 
 def main() -> None:
