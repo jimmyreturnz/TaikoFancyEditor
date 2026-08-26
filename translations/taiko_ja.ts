@@ -1150,6 +1150,10 @@ Every beatmap in it is checked once for taiko difficulties, and the result is re
             <translation>最終BPMに対して相対的</translation>
         </message>
         <message>
+            <source>Only red lines at this BPM</source>
+            <translation>このBPMの赤線のみ</translation>
+        </message>
+        <message>
             <source>Linear</source>
             <translation>直線</translation>
         </message>
