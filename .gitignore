@@ -200,3 +200,6 @@ output/
 beatmaps/
 test-beatmaps/
 test_beatmaps/
+
+# Claude Code agent worktrees and local session state
+.claude/
