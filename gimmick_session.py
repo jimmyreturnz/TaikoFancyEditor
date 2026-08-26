@@ -428,6 +428,7 @@ def fake_slider(
     y: int = 192,
     shiny: bool = False,
     copies: int | None = None,
+    big: bool = False,
 ) -> tuple[list[TimingPoint], list[HitObject]]:
     """A drumroll of negative length -- what draws without ever being hittable.
 
@@ -464,6 +465,12 @@ def fake_slider(
     sharing its millisecond: osu! resolves a shared timestamp by file order,
     and an uninherited point resets SV to 1.0x, so the other way round would
     silently cancel it.
+
+    `big` is Shift-placement, exactly the finisher bit a Shift-clicked Don or
+    Kat gets in a normal chart -- here it makes the drawn object the big one.
+    Only `kind="regular"` (the plain fake slider and the shiny both) honours
+    it: a Don or Kat already spends that bit saying which of the two it is
+    (see `_SLIDER_HITSOUND`), so its size is not free to mean anything else.
 
     `copies` overrides the slider count for one call; otherwise it is
     `shiny_count` for a shiny and 1 otherwise. The note, where there is one, is
@@ -513,10 +520,14 @@ def fake_slider(
             TimingPoint.uninherited_at(slider_at, restore_bpm, omit_first_barline=omit),
         ]
 
+    slider_hitsound = _SLIDER_HITSOUND[kind]
+    if big and kind == "regular":
+        slider_hitsound |= HITSOUND_FINISH
+
     notes = [] if kind == "regular" else [_circle(time_ms, _KIND_HITSOUND[kind])]
     notes.extend(
         HitObject(
-            x=x, y=y, time=slider_at, type=TYPE_SLIDER, hit_sound=_SLIDER_HITSOUND[kind],
+            x=x, y=y, time=slider_at, type=TYPE_SLIDER, hit_sound=slider_hitsound,
             extras=(f"L|{x + 100}:{y}", "1", _format_length(config.fake_slider_length)),
             hit_sample="0:0:0:0:",
         )
