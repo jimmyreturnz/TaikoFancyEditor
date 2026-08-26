@@ -43,7 +43,70 @@ Turning the visual arranger into a full osu!taiko editor.
 > then a cached, non-blocking scan for `Mode: 1` charts, then song → difficulty
 > → editor, with Esc back to the library and an unsaved-changes prompt on the
 > way out.
-> **Current release:** v1.0.3 · **Tests:** 427
+> **Current release:** v3.1.0
+
+---
+
+## Refactor backlog
+
+Opened 2026-08-27 while shipping v3.1.0. None of these is a bug; all of them
+are things the v3.1.0 work kept tripping over. Ordered by how much pain each
+one causes per week, not by size.
+
+1. **Split `gui.py`.** It is ~11,600 lines in one file, and five parallel
+   workstreams on it in one day had to be run in separate git worktrees purely
+   to avoid lost updates. The natural seams are already visible: the view
+   widgets (`TimelineGameplay`, `SVEditorView`, `GameplayViewerView`,
+   `TimingOverviewBar`, `DensityOverview`), the dozen-plus `QDialog`
+   subclasses, and the gimmick page's `MainWindow` methods. Do the dialogs
+   first — they are the cleanest cut and touch the least shared state.
+
+2. **`MainWindow` is a god object** at roughly 6,000 lines. Extracting the
+   gimmick page into its own controller is the biggest single win and falls
+   out of item 1.
+
+3. **Rename `gui_draft.py`.** It is not a draft: `gui.py` imports `PARAMETERS`
+   from it and the i18n gate reads it. It is the Fancy Arranger's parameter
+   registry and should be named for that. Three references to update.
+
+4. **`translations/taiko_ja.qm` is a tracked build artifact** and conflicts on
+   every branch that adds a string — it conflicted twice in one day. It cannot
+   simply be untracked, because running from source would then ship no
+   Japanese at all. Either commit to generating it in `run_from_source.bat`,
+   or add a merge driver that regenerates it from the `.ts`.
+
+5. **Delete `transformer.py`'s `_timing_point_values`** (the `len(fields) < 7`
+   / `fields[6]` string parser). It is the last surviving ad-hoc timing reader
+   and is already dead — `gui.py` hands it real `TimingPoint` objects. Carried
+   over from the M5 notes, still true.
+
+6. **`patches_backup/`** holds ~60 one-shot patch scripts from before the
+   project used branches. Untracked, so it never reached GitHub, but it
+   pollutes every local code search. Delete it.
+
+7. **Entry-point inconsistency.** `TaikoFancyArranger.spec` builds from
+   `gui.py`; `main.py` also exists and is what `run_from_source.bat` uses. One
+   of them should go, or the spec should build from `main.py`.
+
+8. **Flaky test teardown.** `NotADirectoryError` on the fixture's
+   `audio.mp3` surfaced once in three consecutive runs: Qt's media backend still
+   holds the file when `TemporaryDirectory` cleans up. It is a teardown race,
+   not a product bug, but it makes a red run ambiguous. Close the player
+   explicitly in `tearDown`.
+
+9. **Test suite runtime.** The full suite is slow enough that it was removed
+   from the release workflow in v3.1.0 (see `tools/run_tests.bat`).
+   `tests/test_gimmick_editor.py` alone runs for roughly 19 minutes. Most of
+   the cost is constructing a real `MainWindow` per test; a shared
+   class-scoped window would cut it hard. Until this lands, CI cannot be
+   given the gate back.
+
+10. **`HitsoundPlayer.offset_ms` is calibrated in song time** but the output
+    latency it compensates for is wall-clock, so a value tuned at 1.0x is
+    wrong at 0.25x. Not changed in v3.1.0 because it would invalidate every
+    existing user's calibration on an unmeasured guess — it needs a real
+    audio device to settle.
+
 
 ## Progress
 
