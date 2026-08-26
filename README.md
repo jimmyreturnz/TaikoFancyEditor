@@ -2,11 +2,13 @@
 
 **An osu!taiko editor with a visual pattern arranger built in.**
 
-Taiko Fancy Arranger started as a tool for turning osu!taiko notes into visual patterns — text, shapes, equations, drawings, spirals — without placing every circle by hand. Version 2.0.0 grows it into an editor: browse your osu! Songs folder, open a difficulty, edit notes, edit scroll velocity, preview the chart the way osu! renders it, and still arrange notes into patterns when you want to.
+*日本語版は [README_JP.md](README_JP.md) をご覧ください。*
+
+Taiko Fancy Arranger started as a tool for turning osu!taiko notes into visual patterns — text, shapes, equations, drawings, spirals — without placing every circle by hand. Version 2.0.0 grew it into an editor: browse your osu! Songs folder, open a difficulty, edit notes, edit scroll velocity, preview the chart the way osu! renders it, and still arrange notes into patterns when you want to. Version 3.0.0 adds a dedicated gimmick editor, for the fake sliders, barline tricks and extreme-SV effects that osu!taiko mappers build out of timing points rather than notes.
 
 Everything stays a playable osu! beatmap. Sections the editor does not model — storyboards, breaks, colours, editor bookmarks — are passed through byte-for-byte on save.
 
-> **Current release:** v2.0.0  
+> **Current release:** v3.0.0  
 > **Platform:** Windows x64  
 > **Author:** [jimmyreturnz](https://osu.ppy.sh/users/11306153)
 
@@ -14,18 +16,18 @@ The original idea came from a random chat with maruaki101. Other inspirations in
 
 ---
 
-## What is new in 2.0.0
+## What is new in 3.0.0
 
-This is the largest release so far, and the first that changes what the program *is*.
+This release adds a fourth editor page for gimmicks — visual effects built out of timing points rather than notes — plus hitsounds and a run of precision fixes across the whole editor.
 
-- **Song library.** The app now opens on your osu! Songs folder instead of an empty window. It scans for `Mode: 1` charts once, caches the index, and every later start shows the list immediately. Search, group by mapper or artist, sort, and toggle original-language metadata.
-- **Editor page.** A new primary page holding stackable views: chart, SV editor, gameplay viewer, and density — several difficulties open at once, each view labelled with its difficulty.
-- **Note editing.** Place and delete dons, kats, sliders and spinners on the beat grid. Sliders and spinners are click-dragged to length and can be resized afterwards.
-- **SV editor.** View, add, drag, retime, copy and delete inherited (green) points, with a live effective-SV graph over red lines. Function mode generates eased SV sweeps across a selected range using seven curves.
-- **Gameplay viewer.** A read-only preview where each object scrolls at the SV in force at its own time, with barlines — so an SV sweep can be judged without exporting.
-- **Real undo.** A command-based history per difficulty. A 400-point generated sweep is one Ctrl+Z.
-- **Rewritten file layer.** `[TimingPoints]` and `[HitObjects]` are modelled and regenerated; every other section is preserved verbatim. This also fixed a latent parser bug that discarded slider curve, slide count, length and spinner end times.
-- **First-run setup and configurable shortcuts.** Language is chosen on first start, then the Songs folder. Thirteen actions are rebindable in Settings, including copy, paste, save-all and the tool digits.
+- **Gimmick editor page.** Six stacked layers over one difficulty: the normal chart, fake sliders, barline gimmicks, and an SV layer for each of the three. Entering it asks once whether to edit the difficulty in place or copy it to a new `[Gimmick]` difficulty, and takes a base timing snapshot so the grid stays put while thousands of 60000 BPM gimmick lines pile into the file.
+- **Fake sliders and shiny notes.** Dedicated tools for fake sliders, shiny notes, runs of fake sliders at a fixed spacing, converting the chart's own notes into gimmick structures, and painting kiai over a dragged range.
+- **Barline gimmicks.** Notes drawn out of red lines, mirrored around the note or trailing it, with a Function tool that fills a range with red lines on a millisecond count or the beat grid, including a BPM ramp.
+- **Per-structure SV.** Chart, fake slider and barline layers each get their own SV layer that owns only its own structures' green lines, with index-based copy/paste and an oscillating curve added to the generator.
+- **Hitsounds.** Notes sound during playback, using samples shipped in `assets/se/` — don, kat, big don and big kat. A new Audio settings page carries hitsound enable/volume, a latency offset, and music volume.
+- **Millisecond-exact editing.** The grid, playhead and every placement now agree on one whole millisecond, rounded the way osu! rounds. Holding **Ctrl** places at 1ms precision regardless of snap, with a live millisecond readout.
+- **Kiai everywhere.** Kiai sections draw as a translucent orange band in every gimmick layer, generated timing points carry the section's kiai state instead of silently ending it, and the gameplay viewer's kiai flash reaches every visible note.
+- **Smaller editing improvements.** Slider and spinner tails drag with the Select tool, right-click on the timing bar scrubs the playhead without ending a drag-selection, refused actions show a toast instead of doing nothing, and every spin box has pink +/- buttons.
 
 Full detail lives in [`DEVELOPMENT_PLAN.md`](DEVELOPMENT_PLAN.md).
 
@@ -33,7 +35,7 @@ Full detail lives in [`DEVELOPMENT_PLAN.md`](DEVELOPMENT_PLAN.md).
 
 ## Windows SmartScreen notice
 
-Taiko Fancy Arranger v2.0.0 is a currently unsigned Windows application. The release includes source-level security hardening, input validation, safer file handling, automated tests, and published SHA-256 checksums.
+Taiko Fancy Arranger v3.0.0 is a currently unsigned Windows application. The release includes source-level security hardening, input validation, safer file handling, automated tests, and published SHA-256 checksums.
 
 Windows Defender SmartScreen may still display an "unrecognized app" warning because the executable has not yet established download reputation.
 
@@ -44,6 +46,14 @@ Windows Defender SmartScreen may still display an "unrecognized app" warning bec
 Currently supports English and Japanese. There is no Thai translation yet even though I am Thai myself 😂
 
 Language is chosen on first start and can be changed in **Settings**. Changing it asks you to restart, because Qt does not retranslate widgets that already exist.
+
+---
+
+## Audio settings
+
+Notes make sound during playback, using hitsound samples shipped in `assets/se/`: don, kat, big don and big kat each have their own sample. Only circles are voiced — fake sliders and barline gimmicks stay silent.
+
+The **Audio** settings page carries hitsound enable and volume, a latency offset in milliseconds, and music volume, which previously had no UI at all.
 
 ---
 
@@ -111,9 +121,13 @@ View types:
 | Gameplay viewer | Read-only osu!taiko-style preview; objects scroll at their own SV |
 | Density | The white-to-yellow note density heatmap |
 
-Above the views: beat snap, the merged time and percentage readout, the timing bar (kiai, bookmarks, SV, BPM), play and speed buttons. The snap divisor is global across the page, so every view stays on the same grid. Zoom (`Ctrl+wheel`) is per difficulty and shared by that difficulty's views.
+The gameplay viewer's kiai flash reaches every visible note, not just whichever ones happened to be on screen when kiai started.
+
+Above the views: beat snap, the merged time and percentage readout, the timing bar (kiai, bookmarks, SV, BPM), play and speed buttons. The snap divisor is global across the page, so every view stays on the same grid. Zoom (`Ctrl+wheel`) is per difficulty and shared by that difficulty's views. Right-clicking the timing bar while drag-selecting scrubs the playhead without ending the selection.
 
 Per-view chrome: **close**, **lock** (read-only), and the difficulty name at the right.
+
+An action the editor refuses — pasting into the wrong kind of view, for instance — shows a transient toast instead of silently doing nothing.
 
 ### Note editing
 
@@ -129,8 +143,8 @@ The tool row sits at the bottom of the page and acts on the focused chart view.
 ```
 
 - Left click places at the snapped time; a translucent ghost previews where it lands.
-- Sliders and spinners are **click-dragged** to their length. Press near the right edge of an existing one to resize it.
-- **Shift** at release places a big (finisher) note or slider.
+- Sliders and spinners are **click-dragged** to their length. Press near the right edge of an existing one to resize it, or drag its tail with the **Select** tool afterwards.
+- Holding **Shift** resizes the note preview immediately; releasing it places a big (finisher) note or slider.
 - Right click deletes the note under the cursor; **Delete** removes the whole selection.
 - One object per millisecond, spinners excepted — placing over a note replaces it, as a single undo step.
 
@@ -147,6 +161,7 @@ With an SV view focused, the tool row becomes:
 - Red lines are uninherited (BPM) points, green are inherited (SV), yellow means both share a millisecond.
 - Click a green line to select it; drag vertically to change its SV, horizontally to retime it, snapped to the grid. Which axis you get depends on how close the click was to the value dot.
 - Rubber-band select a range, `Ctrl+A` for everything visible, `Delete` to remove. Uninherited points are never deleted here.
+- Double-clicking a timing line toggles kiai or the line's omit-barline flag.
 - The graph shows **effective** SV — green over red where both exist — with a fixed 0.1x floor and an autoscaling ceiling.
 
 **Function mode:** drag a range, then choose initial rate, final rate, position offset, whether to omit the first barline, and whether the sweep is relative to the final BPM. Seven curves are offered as tiles, each drawing the sweep you actually typed:
@@ -156,6 +171,12 @@ linear   sin in   sin out   exp1.3   exp1.6   true exp   sin
 ```
 
 Points are generated on the notes in range by default, or every N snaps. The default −5 ms offset makes sure the SV is already in force when the note it governs arrives. However many points it makes, it is one undo step.
+
+### Millisecond precision
+
+osu! stores whole milliseconds while the beat grid is fractional, so at deep zoom an object could sit visibly off its own gridline. The grid, the playhead and every placement now agree on one whole millisecond, rounded the way osu! rounds (halves up, where Python rounds halves to even).
+
+Holding **Ctrl** places at 1ms precision regardless of the snap divisor, with a guide line and a live millisecond readout in the corner of every view.
 
 ### Editor shortcuts
 
@@ -177,6 +198,47 @@ Alt+wheel           Change beat snap
 All of these are rebindable in **Settings**, except `Delete` and `Ctrl+A`, which belong to the focused view.
 
 Leaving the editor with unsaved work lists which difficulties are unsaved by name and offers **Save**, **Continue without saving**, or **Cancel**. Continuing without saving keeps the edits in the session — nothing is written and nothing is thrown away.
+
+---
+
+## Gimmick editor page
+
+A "gimmick" in osu!taiko is a visual effect built out of timing points rather than notes: drumrolls of negative length that are drawn but never hittable ("fake sliders"), notes drawn out of barlines, and extreme BPM/SV values used to move objects around the screen.
+
+The gimmick page stacks six layers over one difficulty: the normal chart, a fake slider layer, a barline gimmick layer, and an SV layer for each of the three.
+
+Entering it for a difficulty asks once whether to edit that difficulty in place or copy it into a new `[Gimmick]` difficulty, and remembers the answer permanently. It also takes a **base timing snapshot** at that moment: a gimmick fills a file with 60000 BPM lines, every one of which collapses the snap grid, so the grid, wheel scroll and BPM overlay are all driven from the snapshot instead of the file being edited — the grid never moves under the cursor as gimmick timing points pile up.
+
+Kiai sections draw as a translucent orange band in every layer. Every timing point a gimmick tool generates carries the kiai state of the section it lands in, instead of silently ending it.
+
+### Fake sliders and shiny notes
+
+The fake slider layer places fake sliders, and "shiny" notes — several fake sliders stacked on one millisecond, which reads in-game as a bright white glow beside a note. The two are told apart by position: an object one millisecond after the note or line it hangs off is a shiny, two milliseconds after is a fake slider. The layer draws them on two rows, fake sliders on the ceiling and shiny below, with the snap grid down the middle, because at gimmick zoom they sit one pixel column apart.
+
+Tools:
+
+```text
+Fake Slider
+Don / Kat
+Shiny
+Multiple Fake Slider
+Function
+Convert Notes
+Kiai
+```
+
+- **Multiple Fake Slider** writes a whole run of fake sliders at a configured spacing in one click.
+- **Function** fills a dragged range.
+- **Convert Notes** turns the chart's own notes into fake slider or shiny structures.
+- **Kiai** drags a range and turns every timing point inside it into one kiai section.
+
+### Barline gimmicks
+
+Notes drawn out of red lines — a Don is one mirrored pair of bars, a Kat is three, and each pair is independently configurable. Bars can be mirrored around the note or trail it. A red line tool has its own configurable BPM, and a Function tool fills a range with red lines on a millisecond count or the beat grid, with an optional BPM ramp and a chosen SV.
+
+### Per-structure SV
+
+Each of the three object layers (chart, fake slider, barline) has its own SV layer, and each owns exactly its own structures' milliseconds — the three no longer show each other's green lines. Copy and paste inside them maps by object index rather than by millisecond, so an SV shape lifted off four fake sliders lands on the next four whatever their spacing. Oscillating SV joins the seven easing curves in the generator.
 
 ---
 
@@ -297,7 +359,7 @@ Its controls include:
 2. Choose **All Notes** or **Split Don / Kat**, then a transformation.
 3. Adjust parameters, or drag the pattern directly inside the transformation view. In Split mode, dragging a Don moves the Don pattern and dragging a Kat moves the Kat pattern.
 4. Press **Transform selected notes** to commit it to the session. `Ctrl+Z` / `Ctrl+Y` still apply.
-5. Set **AR** and **CS** if needed — sliders from `0.00` to `10.00` in `0.01` steps, with a numeric field and pink `+` / `-` buttons. `AR 0.00` is the slowest approach rate and `CS 0.00` the biggest circle size. Left alone, `ApproachRate:10` and `CircleSize:7` remain.
+5. Set **AR** and **CS** if needed — sliders from `0.00` to `10.00` in `0.01` steps, with a numeric field and pink `+` / `-` buttons (as on every spin box in the app now). `AR 0.00` is the slowest approach rate and `CS 0.00` the biggest circle size. Left alone, `ApproachRate:10` and `CircleSize:7` remain.
 6. **Export applied map** writes a separate arranged difficulty. **Apply all changes to original file** overwrites the loaded `.osu`, after making a backup.
 
 The transformation pane is a preview. Nothing is written until you export or apply.
@@ -392,7 +454,7 @@ When reporting a bug, include:
 
 - Taiko Fancy Arranger version
 - Windows version
-- Which page and view (Editor chart, SV editor, Fancy Arranger, …)
+- Which page and view (Editor chart, SV editor, Gimmick editor, Fancy Arranger, …)
 - Transformation name, selected-note count and parameters, if relevant
 - Exact error message or traceback
 - Steps that reproduce the problem
@@ -404,11 +466,10 @@ Do not upload copyrighted audio or private beatmap assets unless permission has 
 
 ## Project status
 
-Version 2.0.0 is the current public release. The project focuses on creative single-player beatmap editing, arrangement and previewing. Multiplayer and automatic difficulty calculation are outside the current scope.
+Version 3.0.0 is the current public release. The project focuses on creative single-player beatmap editing, arrangement and previewing. Multiplayer and automatic difficulty calculation are outside the current scope.
 
 Not yet implemented, and next in line:
 
-- **Gimmick editor** — a fourth page with a fake-slider lane, a chart lane and a barline lane, covering barlines, reverse barlines, invisible notes and slider gimmicks.
 - Multi-difficulty editing of maps that share audio is possible today, but has not been exercised hard.
 
 ## Further plans

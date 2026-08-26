@@ -119,11 +119,16 @@ class FlashRenderTests(unittest.TestCase):
 
     def test_the_chart_editor_does_not_flash(self):
         """Gameplay viewer only: the chart view is for editing, and a pulsing
-        note there fights the selection and snap colours."""
+        note there fights the selection and snap colours.
+
+        It does *tint* -- every layer draws a flat orange band behind a kiai
+        section, which is the point: it says which sections are choruses without
+        moving. So the test is that the picture does not change with the beat,
+        not that kiai is invisible."""
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
 
-        def brightness(kiai: bool) -> int:
+        def brightness(kiai: bool, band: bool = True) -> int:
             document = parse_osu(write_fixture(Path(temp.name), "full_v14"))
             document.timing_points = [TimingPoint(time=0.0, beat_length=500.0, effects=1 if kiai else 0)]
             document.hit_objects = [HitObject(x=256, y=192, time=2000, type=1, hit_sound=0)]
@@ -131,6 +136,8 @@ class FlashRenderTests(unittest.TestCase):
             view.resize(800, 200)
             view.load_document(document)
             view.current_time = 2000.0
+            if not band:
+                view.kiai_bands = []
             image = view.grab().toImage()
             return sum(
                 (image.pixel(x, y) & 0xFF) + ((image.pixel(x, y) >> 8) & 0xFF) + ((image.pixel(x, y) >> 16) & 0xFF)
@@ -138,7 +145,29 @@ class FlashRenderTests(unittest.TestCase):
                 for y in range(0, view.height())
             )
 
-        self.assertEqual(brightness(True), brightness(False))
+        # With the band taken away there is nothing left that kiai changes --
+        # no flash on the beat, which is the whole claim.
+        self.assertEqual(brightness(True, band=False), brightness(False, band=False))
+        # ...and the band itself is the only difference, so it does show.
+        self.assertNotEqual(brightness(True), brightness(False))
+
+    def test_the_chart_editor_marks_a_kiai_section(self):
+        """The band is background information and is drawn in every layer, so a
+        kiai section reads as one wherever you are looking."""
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        document = parse_osu(write_fixture(Path(temp.name), "full_v14"))
+        document.timing_points = [
+            TimingPoint(time=0.0, beat_length=500.0, effects=1),
+            TimingPoint(time=3000.0, beat_length=-100.0, uninherited_flag=0, effects=0),
+        ]
+        view = gui.TimelineGameplay()
+        view.load_document(document)
+        self.assertIn((0, 3000), view.kiai_bands)
+
+        sv_view = gui.SVEditorView()
+        sv_view.load_document(document)
+        self.assertIn((0, 3000), sv_view.kiai_bands)
 
 
 if __name__ == "__main__":

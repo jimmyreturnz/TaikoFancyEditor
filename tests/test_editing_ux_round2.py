@@ -472,15 +472,18 @@ class TimingBarStutterFixTests(WindowTestCase):
     def test_placing_a_note_does_not_reload_the_timing_bars(self):
         view = self._chart_view()
         calls = []
-        original = gui.TimingOverviewBar.load_document
+        # Spied on `apply_document_data`, not `load_document`: the three bars
+        # are now handed data derived once per edit instead of each deriving
+        # it, so this is the entry point every reload goes through.
+        original = gui.TimingOverviewBar.apply_document_data
         def spy(self, *args, **kwargs):
             calls.append(self)
             return original(self, *args, **kwargs)
-        gui.TimingOverviewBar.load_document = spy
+        gui.TimingOverviewBar.apply_document_data = spy
         try:
             view.note_place_requested.emit("don", 12345.0, False, False)
         finally:
-            gui.TimingOverviewBar.load_document = original
+            gui.TimingOverviewBar.apply_document_data = original
         self.assertEqual(calls, [], "note placement must not reload any TimingOverviewBar")
 
     def test_sv_edit_still_reloads_the_timing_bars(self):
@@ -488,15 +491,15 @@ class TimingBarStutterFixTests(WindowTestCase):
         still need to refresh kiai/bookmarks/markers."""
         sv_view = self._sv_view()
         calls = []
-        original = gui.TimingOverviewBar.load_document
+        original = gui.TimingOverviewBar.apply_document_data
         def spy(self, *args, **kwargs):
             calls.append(self)
             return original(self, *args, **kwargs)
-        gui.TimingOverviewBar.load_document = spy
+        gui.TimingOverviewBar.apply_document_data = spy
         try:
             sv_view.point_add_requested.emit(15000.0, 1.5)
         finally:
-            gui.TimingOverviewBar.load_document = original
+            gui.TimingOverviewBar.apply_document_data = original
         self.assertGreater(len(calls), 0)
 
 

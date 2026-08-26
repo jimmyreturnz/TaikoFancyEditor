@@ -106,6 +106,10 @@
     <context>
         <name>MainWindow</name>
         <message>
+            <source>4. Red Line</source>
+            <translation>4. 赤線</translation>
+        </message>
+        <message>
             <source>A to Z</source>
             <translation>A → Z</translation>
         </message>
@@ -158,6 +162,10 @@
             <translation>キャンセル</translation>
         </message>
         <message>
+            <source>Cannot place this</source>
+            <translation>配置できません</translation>
+        </message>
+        <message>
             <source>Change folder</source>
             <translation>フォルダを変更</translation>
         </message>
@@ -166,8 +174,20 @@
             <translation>別のファイル名を選択してください。</translation>
         </message>
         <message>
+            <source>Cluster spacing n (ms)</source>
+            <translation>クラスター間隔 n (ms)</translation>
+        </message>
+        <message>
+            <source>Config</source>
+            <translation>設定</translation>
+        </message>
+        <message>
             <source>Continue without saving</source>
             <translation>保存せずに続行</translation>
+        </message>
+        <message>
+            <source>Could not create the difficulty</source>
+            <translation>難易度を作成できませんでした</translation>
         </message>
         <message>
             <source>Created:</source>
@@ -194,8 +214,16 @@
             <translation>曲の長さ</translation>
         </message>
         <message>
+            <source>Edit gimmicks on a new difficulty?</source>
+            <translation>新しい難易度でギミックを編集しますか？</translation>
+        </message>
+        <message>
             <source>Edit this difficulty</source>
             <translation>この難易度を編集</translation>
+        </message>
+        <message>
+            <source>Editing: {0}</source>
+            <translation>編集中: {0}</translation>
         </message>
         <message>
             <source>Export applied map</source>
@@ -210,8 +238,272 @@
             <translation>エクスポートに失敗しました</translation>
         </message>
         <message>
+            <source>Fake Slider</source>
+            <translation>フェイクスライダー</translation>
+        </message>
+        <message>
+            <source>Mirror bars on both sides</source>
+            <translation>バーを両側に対称に配置</translation>
+        </message>
+        <message>
+            <source>Current speed</source>
+            <translation>現在の速度</translation>
+        </message>
+        <message>
+            <source>SV</source>
+            <translation>SV</translation>
+        </message>
+        <message>
+            <source>Don Spacing (ms)</source>
+            <translation>ドンの間隔 (ms)</translation>
+        </message>
+        <message>
+            <source>Cannot save this</source>
+            <translation>保存できません</translation>
+        </message>
+        <message>
+            <source>Caution: one of the barline spacings (Don or Kat) is the same as the fake slider offset. A fake slider writes 60000 BPM at its own millisecond and the chart's BPM one offset later, so a barline note placed on the same snap will fight it for that line.</source>
+            <translation>注意: バーラインの間隔（ドンまたはカツ）のいずれかがフェイクスライダーのオフセットと同じです。フェイクスライダーは自身のミリ秒に60000 BPMを、そのオフセット後に譜面のBPMを書き込むため、同じスナップに置いたバーラインノーツはその線を奪い合います。</translation>
+        </message>
+        <message>
+            <source>Kat Spacing 1 (ms)</source>
+            <translation>カツの間隔 1 (ms)</translation>
+        </message>
+        <message>
+            <source>Kat Spacing 2 (ms)</source>
+            <translation>カツの間隔 2 (ms)</translation>
+        </message>
+        <message>
+            <source>Kat Spacing 3 (ms)</source>
+            <translation>カツの間隔 3 (ms)</translation>
+        </message>
+        <message>
+            <source>Distance (ms)</source>
+            <translation>間隔 (ms)</translation>
+        </message>
+        <message>
+            <source>End offset (ms)</source>
+            <translation>終了オフセット (ms)</translation>
+        </message>
+        <message>
+            <source>Fake slider redline BPM</source>
+            <translation>フェイクスライダーの赤線BPM</translation>
+        </message>
+        <message>
+            <source>Include shiny notes</source>
+            <translation>シャイニーノーツを含める</translation>
+        </message>
+        <message>
+            <source>Multiple fake slider</source>
+            <translation>複数フェイクスライダー</translation>
+        </message>
+        <message>
+            <source>No milliseconds after the cursor in this layer to paste onto.</source>
+            <translation>このレイヤーにはカーソル以降に貼り付け先のミリ秒がありません。</translation>
+        </message>
+        <message>
+            <source>Pasted {count} of {total} SV points -- this layer had no more milliseconds of its own after the cursor.</source>
+            <translation>SVポイントを {total} 個中 {count} 個貼り付けました。カーソル以降、このレイヤーが持つミリ秒がこれ以上ありませんでした。</translation>
+        </message>
+        <message>
+            <source>Shiny only: the red line is written at {0}x the chart's BPM, with a green line right after it dividing SV by the same amount, so the shiny travels at the speed it already did. A fake slider's restore line has no such green line, so retiming it there is a plain speed change with nothing to compensate.</source>
+            <translation>シャイニー専用: 赤線を譜面BPMの{0}倍で書き込み、その直後の緑線でSVを同じ値で割るため、シャイニーの見かけの速度は元のままになります。フェイクスライダーの復帰用赤線にはこの緑線がないため、そこでの変更は補正のない純粋な速度変更になります。</translation>
+        </message>
+        <message>
+            <source>Start offset (ms)</source>
+            <translation>開始オフセット (ms)</translation>
+        </message>
+        <message>
+            <source>This layer holds the speed of plain fake sliders. Shiny notes are left out by default -- their gimmick line sits on the note, so the normal chart SV layer already moves the note and its shine together -- but this sweep can add them in as well.</source>
+            <translation>このレイヤーは通常のフェイクスライダーの速度を扱います。シャイニーは既定では対象外です（シャイニーのギミック線はノーツ上にあるため、通常譜面のSVレイヤーでノーツと輝きをまとめて調整できます）。ただしこのスイープでは含めることもできます。</translation>
+        </message>
+        <message>
+            <source>Multiple Fake Slider</source>
+            <translation>複数フェイクスライダー</translation>
+        </message>
+        <message>
+            <source>Shiny Notes can only be placed inside kiai section, add it before placing them</source>
+            <translation>シャイニーノーツはキアイ区間の中にのみ配置できます。先にキアイを追加してください。</translation>
+        </message>
+        <message>
+            <source>There is already a gimmick here.</source>
+            <translation>ここには既にギミックがあります。</translation>
+        </message>
+        <message>
+            <source>2x</source>
+            <translation>2倍</translation>
+        </message>
+        <message>
+            <source>3x</source>
+            <translation>3倍</translation>
+        </message>
+        <message>
+            <source>4x</source>
+            <translation>4倍</translation>
+        </message>
+        <message>
+            <source>8x</source>
+            <translation>8倍</translation>
+        </message>
+        <message>
+            <source>At each note</source>
+            <translation>各ノーツ位置</translation>
+        </message>
+        <message>
+            <source>Current BPM</source>
+            <translation>現在のBPM</translation>
+        </message>
+        <message>
+            <source>Custom multiplier</source>
+            <translation>任意の倍率</translation>
+        </message>
+        <message>
+            <source>Half</source>
+            <translation>半分</translation>
+        </message>
+        <message>
+            <source>Shiny redline BPM</source>
+            <translation>シャイニーの赤線BPM</translation>
+        </message>
+        <message>
+            <source>The restore line is written at {0}x the chart's BPM with its SV divided by the same, so the shiny travels at the speed it already did.</source>
+            <translation>復帰用の赤線を譜面BPMの{0}倍で書き込み、SVを同じ値で割ります。これによりシャイニーの見かけの速度は元のままになります。</translation>
+        </message>
+        <message>
+            <source>Fake slider</source>
+            <translation>フェイクスライダー</translation>
+        </message>
+        <message>
+            <source>Generate fake sliders</source>
+            <translation>フェイクスライダーを生成</translation>
+        </message>
+        <message>
+            <source>Note count</source>
+            <translation>ノーツ数</translation>
+        </message>
+        <message>
+            <source>Object</source>
+            <translation>オブジェクト</translation>
+        </message>
+        <message>
+            <source>Shiny</source>
+            <translation>シャイニー</translation>
+        </message>
+        <message>
+            <source>Shiny note count</source>
+            <translation>シャイニーのノーツ数</translation>
+        </message>
+        <message>
+            <source>Shiny offset (ms)</source>
+            <translation>シャイニーのオフセット (ms)</translation>
+        </message>
+        <message>
+            <source>{0} objects</source>
+            <translation>{0} 個のオブジェクト</translation>
+        </message>
+        <message>
+            <source>Caution: the shiny offset is the same as the fake slider offset. Both are drawn on the snap plus their offset, so they would land on the same millisecond -- and a stack of fake sliders on one millisecond is what a shiny note is, so the two become indistinguishable.</source>
+            <translation>注意: シャイニーのオフセットがフェイクスライダーのオフセットと同じです。どちらもスナップ＋オフセットの位置に描かれるため同じミリ秒に重なります。1ミリ秒に重なったフェイクスライダーの束こそがシャイニーなので、両者を区別できなくなります。</translation>
+        </message>
+        <message>
+            <source>This layer holds the speed of plain fake sliders only. Shiny notes are left out on purpose: their gimmick line sits on the note, so the normal chart SV layer already moves the note and its shine together.</source>
+            <translation>このレイヤーは通常のフェイクスライダーの速度のみを扱います。シャイニーは意図的に対象外です。シャイニーのギミック線はノーツ上にあるため、通常譜面のSVレイヤーでノーツと輝きをまとめて調整できます。</translation>
+        </message>
+        <message>
+            <source>Convert Notes</source>
+            <translation>ノーツを変換</translation>
+        </message>
+        <message>
+            <source>Custom</source>
+            <translation>カスタム</translation>
+        </message>
+        <message>
+            <source>Kiai</source>
+            <translation>キアイ</translation>
+        </message>
+        <message>
+            <source>Mode</source>
+            <translation>モード</translation>
+        </message>
+        <message>
+            <source>No notes in the selected range to convert.</source>
+            <translation>選択範囲に変換できるノーツがありません。</translation>
+        </message>
+        <message>
+            <source>Oscillate (per pair)</source>
+            <translation>振動（ペアごと）</translation>
+        </message>
+        <message>
+            <source>Oscillate (per point)</source>
+            <translation>振動（ポイントごと）</translation>
+        </message>
+        <message>
+            <source>Redline BPM</source>
+            <translation>赤線BPM</translation>
+        </message>
+        <message>
+            <source>Sweep</source>
+            <translation>スイープ</translation>
+        </message>
+        <message>
+            <source>Fake slider length</source>
+            <translation>フェイクスライダーの長さ</translation>
+        </message>
+        <message>
+            <source>Don/Kat gimmick SV</source>
+            <translation>ドン/カツのギミックSV</translation>
+        </message>
+        <message>
+            <source>BPM growth</source>
+            <translation>BPMの増加</translation>
+        </message>
+        <message>
+            <source>Base timing BPM</source>
+            <translation>ベースタイミングのBPM</translation>
+        </message>
+        <message>
+            <source>Start BPM</source>
+            <translation>開始BPM</translation>
+        </message>
+        <message>
+            <source>End BPM</source>
+            <translation>終了BPM</translation>
+        </message>
+        <message>
+            <source>Gimmick</source>
+            <translation>ギミック</translation>
+        </message>
+        <message>
+            <source>Gimmick BPM</source>
+            <translation>ギミックBPM</translation>
+        </message>
+        <message>
+            <source>Gimmick difficulty already exists</source>
+            <translation>ギミック難易度は既に存在します</translation>
+        </message>
+        <message>
+            <source>Gimmick difficulty is missing</source>
+            <translation>ギミック難易度が見つかりません</translation>
+        </message>
+        <message>
+            <source>Gimmick editor</source>
+            <translation>ギミックエディター</translation>
+        </message>
+        <message>
+            <source>Gimmick settings</source>
+            <translation>ギミック設定</translation>
+        </message>
+        <message>
+            <source>Gimmick tools:</source>
+            <translation>ギミックツール:</translation>
+        </message>
+        <message>
             <source>Group by</source>
             <translation>グループ化</translation>
+        </message>
+        <message>
+            <source>Its timing is being used as the snap and scroll reference, so both may behave erratically. Pairing a clean difficulty instead avoids this.</source>
+            <translation>このタイミングがスナップとスクロールの基準として使われるため、どちらも不安定になることがあります。ギミックのない難易度を指定すれば回避できます。</translation>
         </message>
         <message>
             <source>Kat</source>
@@ -224,6 +516,10 @@
         <message>
             <source>Mapper</source>
             <translation>マッパー</translation>
+        </message>
+        <message>
+            <source>No</source>
+            <translation>いいえ</translation>
         </message>
         <message>
             <source>No songs folder selected yet.</source>
@@ -250,6 +546,10 @@
             <translation>背景を追加する前に譜面を開いてください。</translation>
         </message>
         <message>
+            <source>Open a beatmap before using the gimmick editor.</source>
+            <translation>ギミックエディターを使う前にビートマップを開いてください。</translation>
+        </message>
+        <message>
             <source>Open a map first</source>
             <translation>先に譜面を開いてください</translation>
         </message>
@@ -274,12 +574,56 @@
             <translation type="vanished">設定を開く</translation>
         </message>
         <message>
+            <source>Opening the existing file instead of creating a second one:</source>
+            <translation>新しく作成せず、既存のファイルを開きます:</translation>
+        </message>
+        <message>
             <source>Original language metadata</source>
             <translation>原語のメタデータ</translation>
         </message>
         <message>
             <source>Original updated</source>
             <translation>元のファイルを更新しました</translation>
+        </message>
+        <message>
+            <source>Red Line</source>
+            <translation>赤線</translation>
+        </message>
+        <message>
+            <source>Red line offset (ms)</source>
+            <translation>赤線オフセット (ms)</translation>
+        </message>
+        <message>
+            <source>Slider</source>
+            <translation>スライダー</translation>
+        </message>
+        <message>
+            <source>Spinner</source>
+            <translation>スピナー</translation>
+        </message>
+        <message>
+            <source>This difficulty already has gimmicks</source>
+            <translation>この難易度には既にギミックがあります</translation>
+        </message>
+        <message>
+            <source>Use this one</source>
+            <translation>これを使う</translation>
+        </message>
+        <message>
+            <source>Yes</source>
+            <translation>はい</translation>
+        </message>
+        <message>
+            <source>Yes creates a new difficulty called "{0}" in this song folder, copied from the one you have open, and edits that.
+
+Use this one edits the difficulty you already have open, without making a copy.
+
+Either way, keep an un-gimmicked version of the chart: gimmick timing cannot be cleanly undone once the file is saved.</source>
+            <translation>「はい」を選ぶと、この曲のフォルダーに「{0}」という新しい難易度を、開いている難易度からコピーして作成し、それを編集します。
+
+「これを使う」を選ぶと、コピーを作らずに現在開いている難易度をそのまま編集します。
+
+どちらの場合も、ギミックのないバージョンを必ず残してください。保存後のギミックタイミングはきれいに元へ戻せません。</translation>
         </message>
         <message>
             <source>osu! beatmaps (*.osu)</source>
@@ -482,6 +826,158 @@ Every beatmap in it is checked once for taiko difficulties, and the result is re
             <translation>ギミックエディター</translation>
         </message>
         <message>
+            <source>Every n (ms)</source>
+            <translation>間隔 n (ms)</translation>
+        </message>
+        <message>
+            <source>Every n snaps</source>
+            <translation>間隔 n スナップ</translation>
+        </message>
+        <message>
+            <source>Allow on existing notes</source>
+            <translation>既存のノート上にも配置する</translation>
+        </message>
+        <message>
+            <source>SV layer settings</source>
+            <translation>SVレイヤー設定</translation>
+        </message>
+        <message>
+            <source>How far ahead of its object this layer&apos;s green lines sit. An SV point governs what comes after it, so a note needs its line slightly early; a timing line needs it on the same millisecond, which is why the two gimmick SV layers default to 0.</source>
+            <translation>このレイヤーの緑線を対象からどれだけ手前に置くかです。SVポイントはその後ろに続くものを制御するため、ノートには少し手前に線が必要ですが、タイミング線には同じミリ秒上に必要です。ギミックSVレイヤー2つが既定で0なのはそのためです。</translation>
+        </message>
+        <message>
+            <source>Timing reference...</source>
+            <translation>タイミング参照...</translation>
+        </message>
+        <message>
+            <source>Take snaps, scrolling and the BPM overlay from:</source>
+            <translation>スナップ・スクロール・BPM表示の取得元:</translation>
+        </message>
+        <message>
+            <source>Timing reference</source>
+            <translation>タイミング参照</translation>
+        </message>
+        <message>
+            <source>Timing from: {0}</source>
+            <translation>タイミング元: {0}</translation>
+        </message>
+        <message>
+            <source>This difficulty (no other one exists)</source>
+            <translation>この難易度（他に存在しません）</translation>
+        </message>
+        <message>
+            <source>Snaps, scrolling and the BPM overlay follow this difficulty&apos;s timing for the life of the pairing, so the barlines you place here never move the grid you place them against.</source>
+            <translation>スナップ、スクロール、BPM表示は、この連携が続くかぎりこの難易度のタイミングに従います。ここで配置した小節線が、その基準となるグリッドを動かすことはありません。</translation>
+        </message>
+        <message>
+            <source>There is no other difficulty in this song folder to take timing from. The one you have open will be used, which works until it has gimmicks of its own -- making a plain, correctly-timed difficulty first is worth the minute it costs.</source>
+            <translation>この曲フォルダーには、タイミングを取得できる他の難易度がありません。現在開いている難易度を使用しますが、それ自体にギミックが入るまでしか機能しません。先に正しいタイミングの通常難易度を作っておくことをおすすめします。</translation>
+        </message>
+        <message>
+            <source>Could not read the timing reference</source>
+            <translation>タイミング参照を読み込めませんでした</translation>
+        </message>
+        <message>
+            <source>{0} could not be read, so this difficulty&apos;s own timing is used instead.</source>
+            <translation>{0} を読み込めなかったため、この難易度自身のタイミングを使用します。</translation>
+        </message>
+        <message>
+            <source>Generate red lines</source>
+            <translation>赤線を生成</translation>
+        </message>
+        <message>
+            <source>Offset m (ms)</source>
+            <translation>オフセット m (ms)</translation>
+        </message>
+        <message>
+            <source>Range: {0} to {1}</source>
+            <translation>範囲: {0} 〜 {1}</translation>
+        </message>
+        <message>
+            <source>{0} red lines</source>
+            <translation>赤線 {0} 本</translation>
+        </message>
+        <message>
+            <source>Also place the note itself</source>
+            <translation>ノーツ自体も配置する</translation>
+        </message>
+        <message>
+            <source>Barline Note Tool:</source>
+            <translation>小節線ノーツツール:</translation>
+        </message>
+        <message>
+            <source>Barline settings</source>
+            <translation>小節線ギミック設定</translation>
+        </message>
+        <message>
+            <source>Caution: the barline red line spacing is the same as the fake slider offset. A fake slider writes 60000 BPM at its own millisecond and the chart's BPM one offset later, so a barline note placed on the same snap will fight it for that line.</source>
+            <translation>注意: 小節線の赤線間隔がフェイクスライダーのオフセットと同じです。フェイクスライダーはその位置に60000 BPM、オフセット分あとに元のBPMを書き込むため、同じスナップに小節線ノーツを置くとその赤線を奪い合います。</translation>
+        </message>
+        <message>
+            <source>Fake Slider Note Tool:</source>
+            <translation>フェイクスライダーノーツツール:</translation>
+        </message>
+        <message>
+            <source>Fake slider offset (ms)</source>
+            <translation>フェイクスライダーオフセット (ms)</translation>
+        </message>
+        <message>
+            <source>Fake slider settings</source>
+            <translation>フェイクスライダー設定</translation>
+        </message>
+        <message>
+            <source>Gameplay: Barlines Only</source>
+            <translation>ゲームプレイ: 小節線のみ</translation>
+        </message>
+        <message>
+            <source>Gameplay: Fake Sliders Only</source>
+            <translation>ゲームプレイ: フェイクスライダーのみ</translation>
+        </message>
+        <message>
+            <source>Gameplay: Regular Chart Only</source>
+            <translation>ゲームプレイ: 通常ノーツのみ</translation>
+        </message>
+        <message>
+            <source>Green line</source>
+            <translation>緑線</translation>
+        </message>
+        <message>
+            <source>Red line</source>
+            <translation>赤線</translation>
+        </message>
+        <message>
+            <source>Redline Spacing (ms)</source>
+            <translation>赤線間隔 (ms)</translation>
+        </message>
+        <message>
+            <source>SV multiplier</source>
+            <translation>SV倍率</translation>
+        </message>
+        <message>
+            <source>Time (ms)</source>
+            <translation>時間 (ms)</translation>
+        </message>
+        <message>
+            <source>Regular Chart Only</source>
+            <translation>通常ノーツのみ</translation>
+        </message>
+        <message>
+            <source>Fake Sliders Only</source>
+            <translation>フェイクスライダーのみ</translation>
+        </message>
+        <message>
+            <source>Barlines Only</source>
+            <translation>小節線のみ</translation>
+        </message>
+        <message>
+            <source>Red line BPM</source>
+            <translation>赤線のBPM</translation>
+        </message>
+        <message>
+            <source>BPM</source>
+            <translation>BPM</translation>
+        </message>
+        <message>
             <source>Gameplay Viewer</source>
             <translation>プレイビューアー</translation>
         </message>
@@ -544,6 +1040,10 @@ Every beatmap in it is checked once for taiko difficulties, and the result is re
         <message>
             <source>Save failed</source>
             <translation>保存に失敗しました</translation>
+        </message>
+        <message>
+            <source>Close the beatmap in osu! (or any editor holding it) and save again.</source>
+            <translation>osu!（またはこのファイルを開いている他のエディタ）で譜面を閉じてから、もう一度保存してください。</translation>
         </message>
         <message>
             <source>Saved all changed difficulties.</source>
@@ -724,6 +1224,10 @@ Every beatmap in it is checked once for taiko difficulties, and the result is re
         <message>
             <source>Z to A</source>
             <translation>Z → A</translation>
+        </message>
+        <message>
+            <source>{0} is no longer in the song folder, so its pairing was forgotten.</source>
+            <translation>{0} は曲フォルダーに存在しないため、ペアリングを解除しました。</translation>
         </message>
         <message>
             <source>{songs} taiko songs from the saved index. Checking for new maps...</source>
@@ -1210,6 +1714,30 @@ Every beatmap in it is checked once for taiko difficulties, and the result is re
         <message>
             <source>Action</source>
             <translation>操作</translation>
+        </message>
+        <message>
+            <source>Audio</source>
+            <translation>オーディオ</translation>
+        </message>
+        <message>
+            <source>Hitsounds</source>
+            <translation>ヒットサウンド</translation>
+        </message>
+        <message>
+            <source>Hitsound volume</source>
+            <translation>ヒットサウンドの音量</translation>
+        </message>
+        <message>
+            <source>Hitsound offset (ms)</source>
+            <translation>ヒットサウンドのオフセット (ms)</translation>
+        </message>
+        <message>
+            <source>Music volume</source>
+            <translation>音楽の音量</translation>
+        </message>
+        <message>
+            <source>Shift hitsounds earlier or later to compensate for your audio device's latency.</source>
+            <translation>オーディオデバイスの遅延を補正するため、ヒットサウンドを前後にずらします。</translation>
         </message>
         <message>
             <source>Advanced</source>
