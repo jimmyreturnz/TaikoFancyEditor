@@ -1922,6 +1922,12 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
         if self.tool in ("function", "convert", "kiai"):
             self.releaseMouse()
             start, end = sorted((self.drag_anchor_time, self.time_for_x(event.position().x())))
+            if self.tool == "kiai":
+                # Snapped here rather than by the handler -- see
+                # SVEditorView.mouseReleaseEvent, which owns the same gesture
+                # in the Kiai and Sound Effect layer and for the same reason:
+                # only the view knows Ctrl means whole milliseconds.
+                start, end = self.snap_ms(start), self.snap_ms(end)
             self.drag_start_x = None
             self.drag_anchor_time = None
             self.update()
@@ -3014,7 +3020,10 @@ class SVEditorView(TimeAxisMixin, QWidget):
         if event.button() != Qt.LeftButton:
             return
 
-        if self.tool == "function":
+        if self.tool in ("function", "kiai", "volume"):
+            # Same gesture for all three: drag a range, then the owner decides
+            # what to do with it. Kiai and Volume are the Kiai and Sound Effect
+            # layer's tools -- see MainWindow._sv_range_action.
             self.drag_start_x = event.position().x()
             self.drag_mouse_x = self.drag_start_x
             self.drag_anchor_time = self.time_for_x(self.drag_start_x)
@@ -3146,6 +3155,13 @@ class SVEditorView(TimeAxisMixin, QWidget):
         if self.drag_anchor_time is not None:
             self.releaseMouse()
             a, b = sorted((self.drag_anchor_time, self.time_for_x(self.drag_mouse_x)))
+            if self.tool == "kiai":
+                # A kiai section starts and ends on the grid the mapper is
+                # looking at, not on whatever fraction of a millisecond the
+                # cursor happened to be over -- and `snap_ms` is also where
+                # Ctrl means "whole milliseconds instead", which is the
+                # override this tool needs for sections that dodge a line.
+                a, b = self.snap_ms(a), self.snap_ms(b)
             self.drag_start_x = None
             self.drag_anchor_time = None
             self.update()
@@ -4191,6 +4207,7 @@ class AddViewDialog(QDialog):
         self.type_combo.addItem(tr("MainWindow", "Fake Sliders Only"), "chart_fake_slider")
         self.type_combo.addItem(tr("MainWindow", "Barlines Only"), "chart_barline")
         self.type_combo.addItem(tr("MainWindow", "SV Editor"), "sv")
+        self.type_combo.addItem(tr("MainWindow", "Kiai and Sound Effect"), "kiai_sound")
         self.type_combo.addItem(tr("MainWindow", "Gameplay Viewer"), "gameplay")
         self.type_combo.addItem(tr("MainWindow", "Gameplay: Regular Chart Only"), "gameplay_regular")
         self.type_combo.addItem(tr("MainWindow", "Gameplay: Fake Sliders Only"), "gameplay_fake_slider")
@@ -5351,6 +5368,7 @@ class SVFunctionDialog(QDialog):
         gimmick_layer: str | bool | None = False,
         position_offset: int | None = None,
         base_timing: list[TimingPoint] | None = None,
+        volume: bool = False,
     ) -> None:
         super().__init__(parent)
         self.start_ms = start_ms
@@ -5361,13 +5379,21 @@ class SVFunctionDialog(QDialog):
         # gimmick difficulty is full of 60000 BPM lines, so its own timing is
         # the worst possible answer to "what BPM are we at".
         self.base_timing = base_timing or []
+        # The Kiai and Sound Effect layer's Volume tool is this same generator
+        # pointed at TimingPoint.volume: same functions, same modes, same
+        # placement. Only the quantity differs -- whole percent in 0..100
+        # instead of a scroll rate -- so it is a flag rather than a second
+        # dialog with three hundred copied lines behind it.
+        self.volume = volume
         # A gimmick SV layer owns exactly one structure's green lines, matched
         # by millisecond (MainWindow._sv_layer_times). A point generated
         # anywhere else is invisible in the layer that made it *and* silently
         # wiped by the next uninherited line, so the two controls that can move
         # a point off its object are taken away rather than merely defaulted.
         self.gimmick_layer = gimmick_layer
-        self.setWindowTitle(tr("MainWindow", "Generate SV"))
+        self.setWindowTitle(
+            tr("MainWindow", "Generate Volume") if volume else tr("MainWindow", "Generate SV")
+        )
         icon = application_icon()
         if not icon.isNull():
             self.setWindowIcon(icon)
@@ -5390,21 +5416,33 @@ class SVFunctionDialog(QDialog):
         layout = QFormLayout()
         columns.addLayout(layout)
 
+        # Volume is a whole percent in 0..100 (what the .osu field holds and
+        # what the writer validates), so the same two spin boxes are told to
+        # carry integers rather than a second pair being built beside them.
+        low, high = (0.0, 100.0) if volume else (0.1, self.MAX_RATE)
+        step, decimals = (1.0, 0) if volume else (0.05, 2)
+
         self.initial_rate_spin = QDoubleSpinBox()
-        self.initial_rate_spin.setRange(0.1, self.MAX_RATE)
-        self.initial_rate_spin.setSingleStep(0.05)
-        self.initial_rate_spin.setDecimals(2)
-        self.initial_rate_spin.setValue(round(float(initial_rate), 2))
+        self.initial_rate_spin.setRange(low, high)
+        self.initial_rate_spin.setSingleStep(step)
+        self.initial_rate_spin.setDecimals(decimals)
+        self.initial_rate_spin.setValue(round(float(initial_rate), decimals))
         self.initial_rate_spin.valueChanged.connect(self._update_preview)
-        layout.addRow(tr("MainWindow", "Initial rate"), self.initial_rate_spin)
+        layout.addRow(
+            tr("MainWindow", "Initial volume") if volume else tr("MainWindow", "Initial rate"),
+            self.initial_rate_spin,
+        )
 
         self.final_rate_spin = QDoubleSpinBox()
-        self.final_rate_spin.setRange(0.1, self.MAX_RATE)
-        self.final_rate_spin.setSingleStep(0.05)
-        self.final_rate_spin.setDecimals(2)
-        self.final_rate_spin.setValue(round(float(final_rate), 2))
+        self.final_rate_spin.setRange(low, high)
+        self.final_rate_spin.setSingleStep(step)
+        self.final_rate_spin.setDecimals(decimals)
+        self.final_rate_spin.setValue(round(float(final_rate), decimals))
         self.final_rate_spin.valueChanged.connect(self._update_preview)
-        layout.addRow(tr("MainWindow", "Final rate"), self.final_rate_spin)
+        layout.addRow(
+            tr("MainWindow", "Final volume") if volume else tr("MainWindow", "Final rate"),
+            self.final_rate_spin,
+        )
 
         # Sweep or oscillation. The same growth function drives both: a sweep
         # eases the rate from Initial to Final, an oscillation eases the
@@ -5458,8 +5496,14 @@ class SVFunctionDialog(QDialog):
         # local_bpm / start_bpm, and a gimmick's local BPM is 60000 against a
         # chart's 180 -- so a "1.0x to 2.0x" sweep came out in the hundreds and
         # neither end landed on the number that was typed.
-        self.relative_to_final_bpm_check.setChecked(not gimmick_layer)
+        self.relative_to_final_bpm_check.setChecked(not gimmick_layer and not volume)
         layout.addRow(tr("MainWindow", "Relative to final BPM"), self.relative_to_final_bpm_check)
+        if volume:
+            # It scales the generated value by local_bpm / start_bpm, which is
+            # a statement about scroll speed. A hitsound is as loud as it is
+            # whatever the BPM is doing, so the option is not offered rather
+            # than merely defaulted off.
+            set_row_visible(layout, self.relative_to_final_bpm_check, False)
 
         self.include_shiny_check = QCheckBox()
         self.include_shiny_check.setChecked(False)
@@ -7202,7 +7246,6 @@ class MainWindow(QMainWindow):
             ("don", "Don"), ("kat", "Kat"), ("shiny", "Shiny"),
             ("multi", "Multiple Fake Slider"),
             ("function", "Function"), ("convert", "Convert Notes"),
-            ("kiai", "Kiai"),
         ),
         "barline": (
             ("select", "Select"), ("don", "Don"), ("kat", "Kat"),
@@ -7217,6 +7260,13 @@ class MainWindow(QMainWindow):
         ),
         "sv_barline": (
             ("select", "Select"), ("green_line", "Green Line"), ("function", "Function"),
+        ),
+        # Both tools act on a dragged range rather than on a click: Kiai sets
+        # the flag across it, Volume sweeps hitsound volume over it. Kiai used
+        # to live in the fake-slider layer, which was never where it belonged --
+        # a kiai section is read against every layer at once.
+        "kiai_sound": (
+            ("select", "Select"), ("kiai", "Kiai"), ("volume", "Volume"),
         ),
     }
 
@@ -7241,6 +7291,8 @@ class MainWindow(QMainWindow):
             caption = tr("MainWindow", "Fake Slider Note Tool:")
         elif layer_id == "barline":
             caption = tr("MainWindow", "Barline Note Tool:")
+        elif layer_id == "kiai_sound":
+            caption = tr("MainWindow", "Kiai / Volume tools:")
         else:
             caption = tr("MainWindow", "Note tools:")
         layout.addWidget(QLabel(caption))
@@ -7628,15 +7680,21 @@ class MainWindow(QMainWindow):
                 )
         return snapshot_timing(document.timing_points), None
 
-    # Six layers have to share one screen, so each is a band rather than a
+    # Every layer has to share one screen, so each is a band rather than a
     # full-height view. Tall enough for a note and its snap ticks; anything
     # less and the SV graph has no room to say anything. This is the *view's*
     # height -- its frame adds a chrome row on top -- and the views scale their
     # drawing to it against TimelineGameplay.DESIGN_HEIGHT.
     GIMMICK_LAYER_HEIGHT = 88
 
-    # The six layers, top to bottom: the three object layers, then an SV layer
-    # for each. (id, view type, label).
+    # The layers, top to bottom: the three object layers, an SV layer for each,
+    # and last the one that spans them all. (id, view type, label).
+    #
+    # "kiai_sound" is an SV view with no `point_times` filter, so it draws every
+    # timing point in the map -- red, green, and yellow where both share a
+    # millisecond. That whole-map picture is the point of it: kiai and hitsound
+    # volume are properties of the active timing point, so they are read against
+    # every layer at once rather than against one structure's lines.
     GIMMICK_LAYERS = (
         ("chart", "chart", "Normal chart"),
         ("fake_slider", "chart", "Fake sliders"),
@@ -7644,6 +7702,7 @@ class MainWindow(QMainWindow):
         ("sv_chart", "sv", "SV (normal chart)"),
         ("sv_fake_slider", "sv", "SV (fake sliders)"),
         ("sv_barline", "sv", "SV (barlines)"),
+        ("kiai_sound", "sv", "Kiai and Sound Effect"),
     )
 
     @staticmethod
@@ -8235,11 +8294,11 @@ class MainWindow(QMainWindow):
         return None
 
     def _open_gimmick_layers(self) -> None:
-        """(Re)build the six layers for the current pairing.
+        """(Re)build the gimmick layers for the current pairing.
 
         Every layer shows the same document -- the gimmick editor edits exactly
         one difficulty -- and differs only in which objects it shows and which
-        toolbox drives it. All six snap against the base timing snapshot rather
+        toolbox drives it. They all snap against the base timing snapshot rather
         than the document's own, which the gimmick lines make unusable.
         """
         pairing = self._gimmick_pairing
@@ -8318,8 +8377,8 @@ class MainWindow(QMainWindow):
                 # `lid` routes Generate to the layer's own objects, so a sweep
                 # in layer 5 lands on fake sliders and nothing else.
                 view.function_range_requested.connect(
-                    lambda start_ms, end_ms, dp=pairing.target, lid=layer_id:
-                        self._open_sv_function_dialog(dp, start_ms, end_ms, layer_id=lid)
+                    lambda start_ms, end_ms, dp=pairing.target, v=view, lid=layer_id:
+                        self._sv_range_action(dp, v.tool, start_ms, end_ms, layer_id=lid)
                 )
                 view.point_add_requested.connect(
                     lambda time_ms, sv, dp=pairing.target: self._add_sv_point(dp, time_ms, sv)
@@ -8413,7 +8472,7 @@ class MainWindow(QMainWindow):
             # while they are all on one scale.
             view.gimmick_layer = layer_id
             view.zoom_changed.connect(self._gimmick_zoom_changed)
-            # Six layers on one screen: each gets a slice of the window rather
+            # Every layer on one screen: each gets a slice of the window rather
             # than the Editor page's full-height view, so the whole stack is
             # visible without scrolling between related layers.
             # The band is set on the *view*, not on the frame: a maximum on the
@@ -8728,6 +8787,23 @@ class MainWindow(QMainWindow):
         else:
             self._generate_barlines(difficulty_path, start_ms, end_ms)
 
+    def _sv_range_action(
+        self, difficulty_path: Path, tool: str, start_ms: float, end_ms: float,
+        layer_id: str | None = None,
+    ) -> None:
+        """The same routing for an SV view's dragged range.
+
+        One signal, three tools: the SV layers' Function, and the Kiai and
+        Sound Effect layer's Kiai and Volume. Which one it was is a property of
+        the view rather than of the drag -- see _gimmick_range_action.
+        """
+        if tool == "kiai":
+            self._set_kiai_range(difficulty_path, start_ms, end_ms)
+        elif tool == "volume":
+            self._open_volume_function_dialog(difficulty_path, start_ms, end_ms)
+        else:
+            self._open_sv_function_dialog(difficulty_path, start_ms, end_ms, layer_id=layer_id)
+
     def _set_kiai_range(
         self, difficulty_path: Path, start_ms: float, end_ms: float,
     ) -> None:
@@ -8744,14 +8820,15 @@ class MainWindow(QMainWindow):
         exactly where the drag did rather than at whatever line happened to be
         nearest. Both are inherited points restating the SV already in force, so
         they change nothing except the flag they carry.
+
+        The range arrives already snapped: the view that dragged it owns the
+        grid (and the Ctrl override that trades it for whole milliseconds), so
+        snapping a second time here would quietly undo that override.
         """
-        pairing = self._gimmick_pairing
         state = self._states.get(difficulty_path)
-        if state is None or pairing is None:
+        if state is None:
             return
-        divisor = self._gimmick_snap_divisor()
-        start = round(snap_time(pairing.base_timing, start_ms, divisor))
-        end = round(snap_time(pairing.base_timing, end_ms, divisor))
+        start, end = round(start_ms), round(end_ms)
         if end <= start:
             return
 
@@ -9201,6 +9278,11 @@ class MainWindow(QMainWindow):
             view_type = "chart"
         elif gameplay_layer is not None:
             view_type = "gameplay"
+        # ...and so is the Kiai and Sound Effect layer: an unfiltered SV view,
+        # differing only in which range tools its drag can be holding, which
+        # every SV view now routes through _sv_range_action anyway.
+        if view_type == "kiai_sound":
+            view_type = "sv"
 
         if view_type == "chart":
             view = TimelineGameplay()
@@ -9299,7 +9381,8 @@ class MainWindow(QMainWindow):
             )
             view.seek_requested.connect(self.seek_audio)
             view.function_range_requested.connect(
-                lambda start_ms, end_ms, dp=difficulty_path: self._open_sv_function_dialog(dp, start_ms, end_ms)
+                lambda start_ms, end_ms, dp=difficulty_path, v=view:
+                    self._sv_range_action(dp, v.tool, start_ms, end_ms)
             )
             view.point_add_requested.connect(
                 lambda time_ms, sv, dp=difficulty_path: self._add_sv_point(dp, time_ms, sv)
@@ -10332,6 +10415,36 @@ class MainWindow(QMainWindow):
             self._gimmick_config(layer_id).sv_offset_ms = params["position_offset"]
         self._generate_sv(difficulty_path, start_ms, end_ms, params, layer_id=layer_id)
 
+    def _open_volume_function_dialog(
+        self, difficulty_path: Path, start_ms: float, end_ms: float,
+    ) -> None:
+        """The Kiai and Sound Effect layer's Volume tool: the SV generator
+        aimed at hitsound volume.
+
+        No `layer_id` is passed on: the SV layers each own one structure's
+        milliseconds, and this layer owns them all, so "Each note" / "Every
+        snap" is a real choice here and the dialog keeps offering it.
+        """
+        state = self._states.get(difficulty_path)
+        if state is None:
+            return
+        ordered = sorted_by_time(state.document.timing_points)
+        # Prefilled with the volume already in force at each end, so Generate
+        # with nothing changed is a no-op -- same reasoning as the SV dialog.
+        initial = active_point_at(ordered, start_ms)
+        final = active_point_at(ordered, end_ms)
+        dialog = SVFunctionDialog(
+            start_ms, end_ms, self, snap_divisor=self._gimmick_snap_divisor(),
+            initial_rate=initial.volume if initial else 100,
+            final_rate=final.volume if final else 100,
+            volume=True,
+        )
+        if dialog.exec() != QDialog.Accepted:
+            return
+        self._generate_sv(
+            difficulty_path, start_ms, end_ms, dialog.parameters(), volume=True,
+        )
+
     def _sv_generation_times(
         self, state: DifficultyState, start_ms: float, end_ms: float, params: dict,
         layer_id: str | None = None,
@@ -10424,8 +10537,16 @@ class MainWindow(QMainWindow):
 
     def _generate_sv(
         self, difficulty_path: Path, start_ms: float, end_ms: float, params: dict,
-        layer_id: str | None = None,
+        layer_id: str | None = None, volume: bool = False,
     ) -> None:
+        """Fill a range with generated inherited points.
+
+        `volume` swaps what the eased curve *is*: hitsound volume (whole
+        percent, 0..100) instead of a scroll rate. Everything else -- where the
+        points go, the growth function, the two oscillation modes, the position
+        offset -- is the same machinery, which is why it is a flag here rather
+        than a parallel generator that would drift out of step with this one.
+        """
         state = self._states.get(difficulty_path)
         if state is None:
             return
@@ -10468,12 +10589,27 @@ class MainWindow(QMainWindow):
             else:
                 eased = sv_ease(params["function"], t)
                 rate = params["initial_rate"] + (params["final_rate"] - params["initial_rate"]) * eased
-            if params["relative_to_final_bpm"] and start_bpm:
+            if params["relative_to_final_bpm"] and start_bpm and not volume:
                 # Compensate for a BPM change across the range so the
                 # perceived scroll speed matches `rate` regardless of where
                 # the local BPM lands, not just the raw multiplier.
                 local_bpm = active_uninherited_at(state.document.timing_points, time_ms).bpm or start_bpm
                 rate = rate * (local_bpm / start_bpm)
+            if volume:
+                # The point restates the SV already in force rather than
+                # writing one: this sweep is about loudness, and a green line
+                # that quietly reset scroll speed to 1.0x under every note in
+                # the range is exactly what it must not do. osu! stores volume
+                # as a whole percent in 0..100, and an oscillation around 95
+                # fans past that by design, so the curve is clamped.
+                point = TimingPoint.inherited_at(
+                    time_ms, sv_at(ordered, source_time),
+                    omit_first_barline=(params["omit_barline"] and index == 0),
+                    template=template,
+                )
+                point.volume = max(0, min(100, round(rate)))
+                points.append(point)
+                continue
             # Kiai belongs to the active point, so a generated sweep that
             # doesn't carry it forward switches kiai off for the whole range
             # it covers. Read per point, not once: a range can cross a kiai
@@ -10486,9 +10622,14 @@ class MainWindow(QMainWindow):
                 template=template,
             ))
 
+        if volume:
+            # Same rule, read at the point's own millisecond: a run of lines
+            # written without the flag ends the chorus they were drawn across.
+            preserve_kiai(points, state.document.timing_points)
+
         # One undo step regardless of point count, and regardless of how many
         # existing green lines the sweep replaces.
-        self._insert_sv_points(state, points, "generate_sv")
+        self._insert_sv_points(state, points, "generate_volume" if volume else "generate_sv")
         self._refresh_difficulty_sv_views(difficulty_path)
 
     def _refresh_difficulty_sv_views(self, difficulty_path: Path) -> None:
