@@ -29,7 +29,7 @@ This release adds a fourth editor page for gimmicks — visual effects built out
 - **Kiai everywhere.** Kiai sections draw as a translucent orange band in every gimmick layer, generated timing points carry the section's kiai state instead of silently ending it, and the gameplay viewer's kiai flash reaches every visible note.
 - **Smaller editing improvements.** Slider and spinner tails drag with the Select tool, right-click on the timing bar scrubs the playhead without ending a drag-selection, refused actions show a toast instead of doing nothing, and every spin box has pink +/- buttons.
 
-Full detail lives in [`DEVELOPMENT_PLAN.md`](DEVELOPMENT_PLAN.md).
+Full detail lives in [`docs/DEVELOPMENT_PLAN.md`](docs/DEVELOPMENT_PLAN.md).
 
 ---
 
@@ -436,7 +436,7 @@ Packaging files:
 | `.env.example` | Documents that **no** environment variables are needed; never put secrets here |
 | `.github/workflows/release-windows.yml` | Builds the portable ZIP and SHA-256 checksums, and attaches them to a published release |
 
-Publishing a GitHub release tagged `vX.Y.Z` runs that workflow, which compiles translations, runs the test suite, builds, and uploads `TaikoFancyArranger-Windows-x64.zip` plus `SHA256SUMS.txt`. A matching `RELEASE_NOTES_vX.Y.Z.md` is bundled into the ZIP when present.
+Publishing a GitHub release tagged `vX.Y.Z` runs that workflow, which compiles translations, builds, and uploads `TaikoFancyArranger-Windows-x64.zip` plus `SHA256SUMS.txt`. A matching `docs/releases/vX.Y.Z.md` is bundled into the ZIP when present.
 
 The program reads no environment variables and needs no `.env` file. `.env` and key/certificate files are gitignored.
 
