@@ -134,7 +134,7 @@
             <translation>確定したすべての変更を次に適用しました:</translation>
         </message>
         <message>
-            <source>Apply all changes to original file</source>
+            <source>Apply All Changes to Original File</source>
             <translation>すべての変更を元のファイルに適用</translation>
         </message>
         <message>
@@ -166,7 +166,7 @@
             <translation>配置できません</translation>
         </message>
         <message>
-            <source>Change folder</source>
+            <source>Change Folder</source>
             <translation>フォルダを変更</translation>
         </message>
         <message>
@@ -182,7 +182,7 @@
             <translation>設定</translation>
         </message>
         <message>
-            <source>Continue without saving</source>
+            <source>Continue Without Saving</source>
             <translation>保存せずに続行</translation>
         </message>
         <message>
@@ -218,7 +218,7 @@
             <translation>新しい難易度でギミックを編集しますか？</translation>
         </message>
         <message>
-            <source>Edit this difficulty</source>
+            <source>Edit This Difficulty</source>
             <translation>この難易度を編集</translation>
         </message>
         <message>
@@ -226,7 +226,7 @@
             <translation>編集中: {0}</translation>
         </message>
         <message>
-            <source>Export applied map</source>
+            <source>Export Applied Map</source>
             <translation>適用済み譜面をエクスポート</translation>
         </message>
         <message>
@@ -606,7 +606,7 @@
             <translation>この難易度には既にギミックがあります</translation>
         </message>
         <message>
-            <source>Use this one</source>
+            <source>Use This One</source>
             <translation>これを使う</translation>
         </message>
         <message>
@@ -616,7 +616,7 @@
         <message>
             <source>Yes creates a new difficulty called "{0}" in this song folder, copied from the one you have open, and edits that.
 
-Use this one edits the difficulty you already have open, without making a copy.
+Use This One edits the difficulty you already have open, without making a copy.
 
 Either way, keep an un-gimmicked version of the chart: gimmick timing cannot be cleanly undone once the file is saved.</source>
             <translation>「はい」を選ぶと、この曲のフォルダーに「{0}」という新しい難易度を、開いている難易度からコピーして作成し、それを編集します。
@@ -662,7 +662,7 @@ Every beatmap in it is checked once for taiko difficulties, and the result is re
             <translation>再スキャン</translation>
         </message>
         <message>
-            <source>Reset applied transforms</source>
+            <source>Reset Applied Transforms</source>
             <translation>適用した変形をリセット</translation>
         </message>
         <message>
@@ -746,7 +746,7 @@ Every beatmap in it is checked once for taiko difficulties, and the result is re
             <translation>確定したすべての変形を元の.osuファイルに書き込みます。続行しますか？</translation>
         </message>
         <message>
-            <source>Transform selected notes</source>
+            <source>Transform Selected Notes</source>
             <translation>選択したノーツを変形</translation>
         </message>
         <message>
@@ -846,7 +846,7 @@ Every beatmap in it is checked once for taiko difficulties, and the result is re
             <translation>このレイヤーの緑線を対象からどれだけ手前に置くかです。SVポイントはその後ろに続くものを制御するため、ノートには少し手前に線が必要ですが、タイミング線には同じミリ秒上に必要です。ギミックSVレイヤー2つが既定で0なのはそのためです。</translation>
         </message>
         <message>
-            <source>Timing reference...</source>
+            <source>Timing Reference...</source>
             <translation>タイミング参照...</translation>
         </message>
         <message>
@@ -1870,6 +1870,10 @@ Taiko Fancy Arranger を閉じて、そのフォルダーの TaikoFancyArranger.
             <translation>やり直す</translation>
         </message>
         <message>
+            <source>Reset All Settings</source>
+            <translation>すべての設定をリセット</translation>
+        </message>
+        <message>
             <source>Reset all settings</source>
             <translation>すべての設定をリセット</translation>
         </message>
@@ -1878,11 +1882,11 @@ Taiko Fancy Arranger を閉じて、そのフォルダーの TaikoFancyArranger.
             <translation>再起動が必要です</translation>
         </message>
         <message>
-            <source>Restart now</source>
+            <source>Restart Now</source>
             <translation>今すぐ再起動</translation>
         </message>
         <message>
-            <source>Restart later</source>
+            <source>Restart Later</source>
             <translation>後で再起動</translation>
         </message>
         <message>
@@ -1954,7 +1958,7 @@ Taiko Fancy Arranger を閉じて、そのフォルダーの TaikoFancyArranger.
             <translation>元に戻す</translation>
         </message>
         <message>
-            <source>Use Reset all settings to clear every saved setting.</source>
+            <source>Use Reset All Settings to clear every saved setting.</source>
             <translation>保存済みの設定をすべて消去するには「すべての設定をリセット」を使用してください。</translation>
         </message>
         <message>
