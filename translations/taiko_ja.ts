@@ -1246,6 +1246,14 @@ Every beatmap in it is checked once for taiko difficulties, and the result is re
             <translation>2. 緑線</translation>
         </message>
         <message>
+            <source>2. Kiai</source>
+            <translation>2. キアイ</translation>
+        </message>
+        <message>
+            <source>3. Volume</source>
+            <translation>3. 音量</translation>
+        </message>
+        <message>
             <source>3. Function</source>
             <translation>3. 関数</translation>
         </message>

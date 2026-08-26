@@ -9281,7 +9281,8 @@ class MainWindow(QMainWindow):
         # ...and so is the Kiai and Sound Effect layer: an unfiltered SV view,
         # differing only in which range tools its drag can be holding, which
         # every SV view now routes through _sv_range_action anyway.
-        if view_type == "kiai_sound":
+        kiai_sound = view_type == "kiai_sound"
+        if kiai_sound:
             view_type = "sv"
 
         if view_type == "chart":
@@ -9371,6 +9372,10 @@ class MainWindow(QMainWindow):
             self.global_sv_tool_row.setVisible(False)
         elif view_type == "sv":
             view = SVEditorView()
+            # Marks the Kiai and Sound Effect view for the global SV tool row,
+            # which is the one place an unfiltered SV view still has to be told
+            # apart from an ordinary one (see _sv_tools_for).
+            view.kiai_sound = kiai_sound
             view.timing_bar = self.gimmick_timing_bar if band else self.timing_bar
             view.load_document(state.document)
             view.set_snap_divisor(int(self.editor_snap_combo.currentData()))
@@ -9543,10 +9548,17 @@ class MainWindow(QMainWindow):
         self.sv_tool_buttons: dict[str, QPushButton] = {}
         tool_group = QButtonGroup(row)
         tool_group.setExclusive(True)
+        # Two sets sharing slot 1: an ordinary SV view builds green lines and
+        # sweeps, the Kiai and Sound Effect view sets kiai and note volume over
+        # the same drag. Both are built here and _sync_global_sv_tool_row shows
+        # whichever the focused view wants, so the digits keep meaning the
+        # button in the same position -- the rule the gimmick rows already use.
         tools = (
             ("1", "select", tr("MainWindow", "1. Select")),
             ("2", "green_line", tr("MainWindow", "2. Green Line")),
             ("3", "function", tr("MainWindow", "3. Function")),
+            ("2", "kiai", tr("MainWindow", "2. Kiai")),
+            ("3", "volume", tr("MainWindow", "3. Volume")),
         )
         for number, tool_id, label in tools:
             button = QPushButton(label)
@@ -9558,6 +9570,11 @@ class MainWindow(QMainWindow):
             tool_group.addButton(button)
             self.sv_tool_buttons[tool_id] = button
             layout.addWidget(button)
+
+        self.SV_TOOLS_DEFAULT = ("select", "green_line", "function")
+        self.SV_TOOLS_KIAI_SOUND = ("select", "kiai", "volume")
+        for tool_id in self.SV_TOOLS_KIAI_SOUND[1:]:
+            self.sv_tool_buttons[tool_id].setVisible(False)
 
         layout.addStretch(1)
         self.global_sv_tool_row = row
@@ -9644,7 +9661,7 @@ class MainWindow(QMainWindow):
         if should_ignore_shortcut_focus(QApplication.focusWidget()):
             return
         note_tools = {"1": "select", "2": "don", "3": "kat", "4": "slider", "5": "spinner"}
-        sv_tools = {"1": "select", "2": "green_line", "3": "function"}
+        sv_tools = dict(zip("123", self._sv_tools_for(self._active_sv_view)))
         # The gimmick page has its own row and its own meanings for 1-4, and it
         # is checked first: its row is always visible while that page is up,
         # where the Editor page's two rows are only visible on theirs.
@@ -9744,12 +9761,21 @@ class MainWindow(QMainWindow):
         if self._active_sv_view is not None:
             self._active_sv_view.set_tool(tool_id)
 
+    def _sv_tools_for(self, view) -> tuple[str, ...]:
+        """Which of the two SV tool sets `view` is driven by."""
+        if getattr(view, "kiai_sound", False):
+            return self.SV_TOOLS_KIAI_SOUND
+        return self.SV_TOOLS_DEFAULT
+
     def _sync_global_sv_tool_row(self) -> None:
         view = self._active_sv_view
         enabled = view is not None and view.isEnabled()
         self.global_sv_tool_row.setEnabled(enabled)
         if view is None:
             return
+        wanted = self._sv_tools_for(view)
+        for tool_id, button in self.sv_tool_buttons.items():
+            button.setVisible(tool_id in wanted)
         button = self.sv_tool_buttons.get(view.tool)
         if button is not None:
             button.blockSignals(True)
