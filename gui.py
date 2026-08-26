@@ -93,7 +93,14 @@ PLAYFIELD_HEIGHT = 384
 # without a visible jump. At or above it, something discontinuous happened
 # (stall, external seek) and snapping immediately is the correct response.
 POSITION_CORRECTION_FACTOR = 0.3
-POSITION_HARD_RESYNC_THRESHOLD_MS = 200.0
+# **Wall** milliseconds, converted to song milliseconds at the point of use by
+# multiplying by the playback rate. The events it separates -- a backend stall,
+# a dropped buffer -- and the jitter it must stay above are both real-time
+# things: at 0.25x, 200ms of real time is only 50ms of song. Held as a song-time
+# constant (as it was) the threshold was four times too loose at 0.25x, so a
+# genuine discontinuity there never snapped and instead crawled in over a dozen
+# reports, which is a visibly wrong playhead for most of a second.
+POSITION_HARD_RESYNC_WALL_MS = 200.0
 
 # The song-folder scan runs on the UI thread, sliced by time rather than by a
 # file count: one frame's worth of work per timer tick, so a folder with a few
@@ -5113,6 +5120,24 @@ def sv_ease(function_id: str, t: float) -> float:
     return t  # "linear" and any unrecognized id
 
 
+# Relative, not absolute, because the BPMs compared here span five orders of
+# magnitude: a chart line at 176.9 and a gimmick line at 60000 cannot share one
+# millisecond-scale epsilon. A red line's BPM is never stored -- it is
+# 60000/beat_length, recomputed from a beat_length that has been through a text
+# file with a handful of decimals -- so an authored 60000 and a computed one
+# differ in the last few digits and `==` says no. One part in a million is far
+# tighter than any two red lines a human would ever want to tell apart, and far
+# looser than the round trip's error.
+BPM_MATCH_RELATIVE_EPSILON = 1e-6
+
+
+def bpm_matches(bpm: float | None, wanted: float) -> bool:
+    """Is `bpm` the same red-line BPM as `wanted`, allowing for float drift?"""
+    if bpm is None:
+        return False
+    return abs(bpm - wanted) <= BPM_MATCH_RELATIVE_EPSILON * max(abs(bpm), abs(wanted), 1.0)
+
+
 class SVFunctionPreview(QWidget):
     """20 dots showing what Generate would actually produce.
 
@@ -5254,10 +5279,17 @@ class SVFunctionDialog(QDialog):
         initial_rate: float = 1.0, final_rate: float = 1.0,
         gimmick_layer: str | bool | None = False,
         position_offset: int | None = None,
+        base_timing: list[TimingPoint] | None = None,
     ) -> None:
         super().__init__(parent)
         self.start_ms = start_ms
         self.end_ms = end_ms
+        # Only for the BPM filter's default, and only layer 6 asks for it. The
+        # *base* snapshot rather than the document's own timing for the same
+        # reason BarlineFunctionDialog uses it: by the second placement the
+        # gimmick difficulty is full of 60000 BPM lines, so its own timing is
+        # the worst possible answer to "what BPM are we at".
+        self.base_timing = base_timing or []
         # A gimmick SV layer owns exactly one structure's green lines, matched
         # by millisecond (MainWindow._sv_layer_times). A point generated
         # anywhere else is invisible in the layer that made it *and* silently
@@ -5373,6 +5405,26 @@ class SVFunctionDialog(QDialog):
             hint.setStyleSheet("color:#ffb347;border:0;")
             layout.addRow(hint)
 
+        # Layer 6 owns *every* red line -- the chart's own timing, a barline
+        # gimmick's 60000 BPM run, hand-placed lines -- and a sweep across a
+        # dragged range hits all of them indiscriminately. This narrows it to
+        # one BPM, which is how you drive a single gimmick run without
+        # disturbing the ordinary timing lines interleaved with it.
+        self.bpm_filter_check = QCheckBox()
+        self.bpm_filter_check.setChecked(False)
+        self.bpm_filter_spin = QDoubleSpinBox()
+        self.bpm_filter_spin.setRange(1.0, 1000000.0)
+        self.bpm_filter_spin.setDecimals(2)
+        # The BPM in force where the drag started -- the run you are looking at
+        # is almost always the one you want, so the default costs no typing.
+        self.bpm_filter_spin.setValue(
+            base_bpm_at(self.base_timing, start_ms) if self.base_timing else 120.0
+        )
+        if gimmick_layer == "sv_barline":
+            layout.addRow(tr("MainWindow", "Only red lines at this BPM"), self.bpm_filter_check)
+            layout.addRow(tr("MainWindow", "BPM"), self.bpm_filter_spin)
+            self.bpm_filter_check.toggled.connect(self._update_bpm_filter_row)
+
         layout.addItem(QSpacerItem(0, 0, QSizePolicy.Minimum, QSizePolicy.Expanding))
 
         # Right column: function choice and what it produces.
@@ -5429,6 +5481,10 @@ class SVFunctionDialog(QDialog):
         self._update_preview()
         self._update_placement_controls()
         pink_spin_buttons(self)
+        # After pink_spin_buttons, not before: the BPM spin is no longer the
+        # widget its form row is keyed on once it has been wrapped, and
+        # set_row_visible only knows that from the property the wrap sets.
+        self._update_bpm_filter_row()
 
     def selected_function(self) -> str:
         for function_id, button in self.function_buttons.items():
@@ -5474,6 +5530,17 @@ class SVFunctionDialog(QDialog):
         every_snap = str(self.placement_combo.currentData()) == "snaps"
         set_row_visible(self._form_layout, self.snap_combo, every_snap)
 
+    def _update_bpm_filter_row(self) -> None:
+        """The BPM only means anything while the filter is on.
+
+        Hidden rather than disabled, same as the snap divisor above: a greyed
+        control still takes a row of an already tall form and still invites a
+        click that does nothing.
+        """
+        if self.gimmick_layer != "sv_barline":
+            return
+        set_row_visible(self._form_layout, self.bpm_filter_spin, self.bpm_filter_check.isChecked())
+
     def parameters(self) -> dict:
         return {
             "initial_rate": self.initial_rate_spin.value(),
@@ -5486,6 +5553,12 @@ class SVFunctionDialog(QDialog):
             "function": self.selected_function(),
             "oscillate": str(self.mode_combo.currentData()),
             "include_shiny": self.include_shiny_check.isChecked(),
+            # One key rather than a flag and a value: None *is* "no filter",
+            # so no consumer can read the BPM without first having checked
+            # whether it applies.
+            "only_red_line_bpm": (
+                self.bpm_filter_spin.value() if self.bpm_filter_check.isChecked() else None
+            ),
         }
 
 
@@ -10151,6 +10224,12 @@ class MainWindow(QMainWindow):
             position_offset=(
                 self._gimmick_config(layer_id).sv_offset_ms if layer_id is not None else None
             ),
+            # Layer 6's BPM filter defaults to the BPM in force where the drag
+            # started, which only the base snapshot can answer honestly.
+            base_timing=(
+                self._gimmick_pairing.base_timing
+                if layer_id == "sv_barline" and self._gimmick_pairing is not None else None
+            ),
         )
         if dialog.exec() != QDialog.Accepted:
             return
@@ -10188,6 +10267,11 @@ class MainWindow(QMainWindow):
         (`_sv_layer_object_times` still excludes them, and a hand-placed or
         generated shiny line outside a sweep is still layer 4's to show), this
         just lets one Generate run reach both at once instead of two runs.
+
+        `params["only_red_line_bpm"]` (layer 6 only, None when off) drops every
+        position whose red line is at some other BPM, so a sweep can drive one
+        60000 BPM barline run and leave the chart's own timing lines -- which
+        share the layer -- untouched.
         """
         if layer_id is not None:
             # The objects themselves, unshifted: `_generate_sv` applies the
@@ -10196,10 +10280,32 @@ class MainWindow(QMainWindow):
             times = set(self._sv_layer_object_times(layer_id, state.document) or ())
             if layer_id == "sv_fake_slider" and params.get("include_shiny"):
                 times |= self._shiny_times(state.document)
-            return sorted(
+            selected = sorted(
                 float(time_ms) for time_ms in times
                 if start_ms - 0.001 <= time_ms <= end_ms + 0.001
             )
+            wanted_bpm = params.get("only_red_line_bpm")
+            if wanted_bpm is None:
+                return selected
+            # Layer 6's BPM filter. Keyed on the exact millisecond first: these
+            # times *are* red-line milliseconds, rounded, and a line at 1234.6
+            # rounds to 1235, where active_uninherited_at would answer with the
+            # line before it instead. The walk-back is the fallback for a
+            # position that is not itself a red line, where the governing one
+            # is the only sensible answer.
+            reds = {
+                round(point.time): point.bpm
+                for point in sorted_by_time(state.document.timing_points)
+                if point.uninherited
+            }
+            return [
+                at for at in selected
+                if bpm_matches(
+                    reds[round(at)] if round(at) in reds
+                    else active_uninherited_at(state.document.timing_points, at).bpm,
+                    wanted_bpm,
+                )
+            ]
         placement = params.get("placement", "notes")
         if placement == "snaps":
             divisor = max(1, int(params.get("snap_divisor", 4)))
@@ -11171,8 +11277,21 @@ class MainWindow(QMainWindow):
         state.history.redo(state); self._after_history_change(state)
 
     def _change_playback_speed(self,rate:float)->None:
-        rate=float(rate);self.player.setPlaybackRate(rate)
-        self.audio_anchor_position=self.player.position();self.audio_anchor_clock.restart()
+        # Re-anchor from *our own* playhead, sampled before the rate changes --
+        # never from self.player.position(). That value is whole milliseconds
+        # (seek_audio deliberately keeps the real one fractional), it is stale
+        # by up to one backend report, it is 0 whenever no media loaded or the
+        # backend has not reported yet, and reading it *after* setPlaybackRate
+        # means whatever the backend extrapolates into it is computed with the
+        # new rate against playback still running at the old one. Every one of
+        # those fired on the speed-button click, which is why 25/50/75% looked
+        # wrong while 100% -- the startup default nobody ever clicks -- did not.
+        # The clock restarts immediately after the sample and before the rate
+        # is applied, so the handover is continuous: position up to here at the
+        # old rate, everything after it at the new one.
+        rate=float(rate)
+        self.audio_anchor_position=self._predicted_audio_position();self.audio_anchor_clock.restart()
+        self.player.setPlaybackRate(rate)
         for button in (
             getattr(self,"playback_speed_buttons",[])
             + getattr(self,"editor_playback_speed_buttons",[])
@@ -11193,9 +11312,17 @@ class MainWindow(QMainWindow):
             if hasattr(self,"editor_play_button"):self.editor_play_button.setText("▶")
             if hasattr(self,"gimmick_play_button"):self.gimmick_play_button.setText("▶")
         else:
-            self.audio_anchor_position=self.player.position(); self.audio_anchor_clock.restart()
+            # The anchor is already the playhead, to the fraction of a
+            # millisecond seek_audio kept there on purpose; self.player.position()
+            # would round it off, or hand back 0 before the backend has ever
+            # reported. So: leave it alone, and restart the clock *after*
+            # play() rather than before it, because the backend produces no
+            # audio while play() is still setting itself up and counting that
+            # setup as elapsed song time is what put the playhead ahead of the
+            # music for the first second of every resume.
             self.timeline.is_playing=True
             self.player.play()
+            self.audio_anchor_clock.restart()
             self.play_button.setText(tr("MainWindow", "Pause"))
             if hasattr(self,"timeline_play_button"):self.timeline_play_button.setText("❚❚")
             if hasattr(self,"editor_play_button"):self.editor_play_button.setText("❚❚")
@@ -11301,9 +11428,15 @@ class MainWindow(QMainWindow):
         # reported position every time, so real drift (small or large,
         # one-off or systematic) converges within a few reports without
         # any single correction being large enough to see.
+        # The blend itself needs no rate term: `predicted` already carries the
+        # rate forward, so the tracked error decays by (1 - factor) per report
+        # whatever the rate is, with no lag against the ramp. The *threshold*
+        # does, because it is a real-time budget being compared against a
+        # song-time error -- see POSITION_HARD_RESYNC_WALL_MS.
         predicted = self._predicted_audio_position()
         error = position - predicted
-        if abs(error) >= POSITION_HARD_RESYNC_THRESHOLD_MS:
+        resync_threshold = POSITION_HARD_RESYNC_WALL_MS * abs(self.player.playbackRate())
+        if abs(error) >= resync_threshold:
             # A real discontinuity (backend stall, external seek) --
             # correcting it gradually would be audibly/visibly wrong for
             # however long convergence took, so snap immediately instead.
