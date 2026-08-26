@@ -188,27 +188,38 @@ def spinner_pixmap() -> QPixmap:
     return _SPINNER_PIXMAP
 
 
-# osu!'s own [Difficulty] SliderMultiplier default. This app parses neither
-# [Difficulty] nor any per-map override of it, so drumroll length<->duration
-# conversion (placing/resizing by dragging a time range) uses this constant
-# rather than the map's real value. A documented approximation, not a bug:
-# getting slider length exactly right would need parsing a section nothing
-# else in this codebase touches yet.
+# osu!'s own [Difficulty] SliderMultiplier default, and nothing more: the
+# parser now reads the map's real value (`OsuDocument.slider_multiplier`), so
+# this is only the fallback for a file with no SliderMultiplier line at all.
+# It is not a stand-in for the real number -- the whole length<->duration
+# conversion scales linearly with it, so a map authored at 2.0 had every
+# drumroll end drawn at 1.4/2.0 of its true length while this was assumed.
 SLIDER_MULTIPLIER_ASSUMED = 1.4
 
 
-def slider_length_for_duration(duration_ms: float, beat_length: float, sv: float) -> float:
+def slider_length_for_duration(
+    duration_ms: float, beat_length: float, sv: float,
+    slider_multiplier: float = SLIDER_MULTIPLIER_ASSUMED,
+) -> float:
     """osu!px length that plays for `duration_ms` at the given beat length/SV."""
-    if beat_length <= 0 or sv <= 0:
+    if beat_length <= 0 or sv <= 0 or slider_multiplier <= 0:
         return 1.0
-    return max(1.0, duration_ms * SLIDER_MULTIPLIER_ASSUMED * 100.0 * sv / beat_length)
+    return max(1.0, duration_ms * slider_multiplier * 100.0 * sv / beat_length)
 
 
-def duration_for_slider_length(length: float, beat_length: float, sv: float) -> float:
-    """Inverse of slider_length_for_duration, for hit-testing an existing slider's end."""
-    if beat_length <= 0 or sv <= 0:
+def duration_for_slider_length(
+    length: float, beat_length: float, sv: float,
+    slider_multiplier: float = SLIDER_MULTIPLIER_ASSUMED,
+) -> float:
+    """Inverse of slider_length_for_duration, for hit-testing an existing slider's end.
+
+    `length` is the whole path a drumroll travels -- one slide's length times
+    its slide count -- because osu! charges the per-slide duration once per
+    slide and the two multiplications are the same one.
+    """
+    if beat_length <= 0 or sv <= 0 or slider_multiplier <= 0:
         return 0.0
-    return length / (SLIDER_MULTIPLIER_ASSUMED * 100.0 * sv) * beat_length
+    return length / (slider_multiplier * 100.0 * sv) * beat_length
 
 
 PARAMETERS.setdefault("drawn_path", [{"key":"chunk_size","label":"Notes per Drawing","type":"int","min":2,"max":4096,"default":256},{"key":"reverse","label":"Direction","type":"choice","choices":[("Top to Bottom / Left to Right",False),("Top to Bottom / Right to Left",True)],"default":False}])
@@ -1279,6 +1290,13 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
         self._max_extend_ms = 0.0
         self.timing_points: list[TimingPoint] = []
         self._timing_times: list[float] = []
+        # Every point, inherited ones included. `timing_points` above is the
+        # uninherited-only list the beat grid needs; a slider's length depends
+        # on the SV in force at it, and that only exists on inherited points.
+        self._sv_points: list[TimingPoint] = []
+        # The map's [Difficulty] SliderMultiplier, the other half of that same
+        # conversion. Falls back to osu!'s default until a document is loaded.
+        self.slider_multiplier = SLIDER_MULTIPLIER_ASSUMED
         self.selected: set[int] = set()
         # Red lines picked by a drag, in a view that owns them. Kept apart from
         # `selected` (which is note original_index) because the barline layer
@@ -1291,9 +1309,20 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
         # where the snap grid already says where the beats are; on for the
         # gimmick layers, whose whole subject matter is red lines.
         self.show_timing_lines = False
-        # ...and let a double click on one open its BPM. The barline layer only:
-        # a red line is that layer's material, and it is view-only elsewhere.
+        # Hand this view's red lines to its tools -- right click deletes one,
+        # select drags one, a rubber band picks them up. The barline layer
+        # only: a red line is that layer's material, and it is view-only
+        # elsewhere.
         self.timing_edit_enabled = False
+        # ...and let a double click on one open its BPM. Both structure layers,
+        # because a fake slider's red line is the half of it that makes the
+        # object fake and retiming that line is how a shiny is tuned. Separate
+        # from `timing_edit_enabled` on purpose: the fake slider layer must not
+        # also let the line be dragged or deleted on its own, since a line
+        # pulled out from under its sliders dismantles the structure rather
+        # than moving it (only `_expand_move` knows how to move the whole
+        # thing, and it recognises a structure by the object, not the line).
+        self.timing_dialog_enabled = False
         # Restrict the drawn red lines to these milliseconds; None draws all of
         # them. The fake slider layer sets it to the fake sliders' own times, so
         # the line it shows is the one squashing the object beside it rather
@@ -1485,6 +1514,8 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
             self.set_kiai_from(document.timing_points)
         self.timing_points = extract_timing_points(document)
         self._timing_times = [point.time for point in self.timing_points]
+        self._sv_points = sorted_by_time(document.timing_points)
+        self.slider_multiplier = document.slider_multiplier
         # Lines deleted elsewhere must not stay "selected" forever -- the same
         # rule SVEditorView.refresh_points applies to its own selection.
         self.selected_timing_uids &= {point.uid for point in self.timing_points}
@@ -1525,10 +1556,22 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
         self.symmetric = symmetric
         self.update()
 
-    def _note_near_x(self, x: float, radius_px: float = 20.0):
-        """Nearest note within radius_px of an x position, for right-click delete."""
+    def _note_near_x(self, x: float, radius_px: float = 20.0, y: float | None = None):
+        """Nearest note within radius_px of an x position, for right-click delete.
+
+        `y` matters on a split layer and nowhere else. There the two rows hold
+        two different structures a millisecond apart -- the same pixel column
+        at any zoom the layer is readable at -- so the row the click landed in
+        is the only thing that says which of them was meant. Without it the
+        scan returned whichever came first in the document, and grabbing the
+        fake slider drawn on the upper row dragged the shiny note under it
+        (and the other way round).
+        """
+        wants_lower = None if y is None or not self.split_rows else y > self._baseline_y()
         best = None; best_distance = None
         for note in self.notes:
+            if wants_lower is not None and (round(note.time) in self.shiny_times) != wants_lower:
+                continue
             distance = abs(self.x_for_time(note.time) - x)
             if distance <= radius_px and (best_distance is None or distance < best_distance):
                 best = note; best_distance = distance
@@ -1540,8 +1583,14 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
             return float(note.end_time) if note.end_time is not None else None
         if note.is_slider and note.length is not None and note.slides is not None:
             timing = active_timing(self.timing_points, note.time)
-            sv = sv_at(self.timing_points, note.time)
-            duration = duration_for_slider_length(note.length * note.slides, timing.beat_length, sv)
+            # `self.timing_points` is the uninherited-only list (see
+            # extract_timing_points), where every point reads as 1.0x -- so the
+            # SV has to come off the full list, which is what osu! resolves the
+            # slider's speed from at the slider's own start time.
+            sv = sv_at(self._sv_points, note.time)
+            duration = duration_for_slider_length(
+                note.length * note.slides, timing.beat_length, sv, self.slider_multiplier,
+            )
             return note.time + duration if duration > 0 else None
         return None
 
@@ -1578,7 +1627,7 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
                 self._update_drag_selection()
                 event.accept()
                 return
-            note = self._note_near_x(event.position().x())
+            note = self._note_near_x(event.position().x(), y=event.position().y())
             if note is not None:
                 self.note_delete_requested.emit(note.uid)
                 event.accept()
@@ -1641,7 +1690,10 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
             # A press that does not turn into a drag still places, so clicking
             # an existing note to retype it (Don over a Kat) is unchanged: the
             # placement is only handed over once the object has actually moved.
-            grabbed = self._note_near_x(event.position().x()) if self.move_enabled else None
+            grabbed = (
+                self._note_near_x(event.position().x(), y=event.position().y())
+                if self.move_enabled else None
+            )
             if grabbed is not None:
                 self._begin_move(grabbed, None, event.position().x())
                 self._move_fallback = (self.tool, time_ms, self.new_combo, big)
@@ -1672,7 +1724,7 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
         # tried before a red line so a layer showing both never loses the
         # object to the line under it.
         if self.move_enabled:
-            grabbed_note = self._note_near_x(event.position().x())
+            grabbed_note = self._note_near_x(event.position().x(), y=event.position().y())
             grabbed_point = (
                 self._timing_point_near_x(event.position().x())
                 if grabbed_note is None and self.timing_edit_enabled else None
@@ -2139,10 +2191,18 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
         return best
 
     def _timing_point_near_x(self, x: float, radius_px: float = 12.0):
-        """The owned red line nearest `x`, for the double-click BPM edit."""
+        """The owned red line nearest `x`, for the double-click BPM edit.
+
+        Restricted to the lines this view actually draws. A layer that filters
+        them (`timing_line_times`, the fake slider layer) would otherwise hand
+        back a line that is not on screen at all -- the chart's own timing, or
+        a barline gimmick's -- and open a dialog for something invisible.
+        """
         best = None
         best_distance = None
         for point in self.timing_points:
+            if self.timing_line_times is not None and round(point.time) not in self.timing_line_times:
+                continue
             if not self._owns_timing_point(point):
                 continue
             distance = abs(self.x_for_time(point.time) - x)
@@ -2157,7 +2217,7 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
         Reached before mousePressEvent's tool handling gets a second click, so a
         placement tool being active does not swallow it.
         """
-        if not self.timing_edit_enabled or event.button() != Qt.LeftButton:
+        if not self.timing_dialog_enabled or event.button() != Qt.LeftButton:
             super().mouseDoubleClickEvent(event)
             return
         point = self._timing_point_near_x(event.position().x())
@@ -2172,7 +2232,7 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
         painter.fillRect(self.rect(), QColor("#151b24"))
         self.draw_kiai_bands(painter)
 
-        baseline_y = self.height() // 2 if self.symmetric else self.height() // 2 + 34
+        baseline_y = self._baseline_y()
         # Sized from the view, not typed: the gimmick page shows six layers as
         # short bands, and a fixed 42px finisher there is taller than the band
         # it sits in -- it spills past the edges and stops reading as centred on
@@ -2304,6 +2364,10 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
                 baseline_y + 7,
             )
 
+    def _baseline_y(self) -> float:
+        """The y objects are centred on. Bottom-anchored views draw lower."""
+        return self.height() // 2 if self.symmetric else self.height() // 2 + 34
+
     def _row_y(self, baseline_y: float, lower: bool) -> float:
         """Centre of the upper or lower object row on a split layer.
 
@@ -2413,10 +2477,13 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
             # Don is the small variant and Kat the big one in both layers, the
             # way the finisher bit decides size in a normal chart -- here the
             # tool decides it, since these structures carry no hitsound of their
-            # own until they are written.
+            # own until they are written. A plain fake slider and a shiny have
+            # no such pair, so Shift picks their size the same way it does for a
+            # Don or Kat in a normal chart -- see gimmick_session.fake_slider.
+            shift_sizes = shift_held and self.tool in ("regular", "shiny")
             self._draw_layer_ghost(
                 painter, x, baseline_y,
-                finisher_radius if self.tool == "kat" else normal_radius,
+                finisher_radius if (self.tool == "kat" or shift_sizes) else normal_radius,
             )
             return
         if self.tool == "spinner":
@@ -3365,6 +3432,8 @@ class GameplayViewerView(QWidget):
         self.timing_points: list[TimingPoint] = []
         self.beat_points: list[TimingPoint] = []
         self._beat_times: list[float] = []
+        # The map's [Difficulty] SliderMultiplier, until a document is loaded.
+        self.slider_multiplier = SLIDER_MULTIPLIER_ASSUMED
         # Scroll velocity in beats per millisecond, one entry per timing-point
         # timestamp, so velocity_at is a binary search instead of a walk.
         self._velocity_times: list[float] = []
@@ -3411,6 +3480,7 @@ class GameplayViewerView(QWidget):
             self.notes = [note for note in document.hit_objects if self.object_filter(note)]
         self.note_times = [note.time for note in self.notes]
         self.timing_points = sorted_by_time(document.timing_points)
+        self.slider_multiplier = document.slider_multiplier
         self.beat_points = uninherited_points(self.timing_points)
         self._beat_times = [point.time for point in self.beat_points]
         self._rebuild_velocities()
@@ -3452,7 +3522,8 @@ class GameplayViewerView(QWidget):
             # thousands of them between two red lines.
             timing = active_uninherited_at(self.beat_points, note.time)
             duration = duration_for_slider_length(
-                note.length * note.slides, timing.beat_length, sv_at(self.timing_points, note.time)
+                note.length * note.slides, timing.beat_length,
+                sv_at(self.timing_points, note.time), self.slider_multiplier,
             )
             return note.time + duration if duration > 0 else None
         return None
@@ -7741,7 +7812,9 @@ class MainWindow(QMainWindow):
           reference, and are not editable here.
         * **fake_slider** -- fake sliders alone. Red lines are shown here too:
           a fake slider is only fake because of the gimmick line squashing it,
-          so the line is the object's other half. View-only, like layer 1.
+          so the line is the object's other half. Double-clicking one opens its
+          BPM, as in layer 3; everything else about it stays view-only, since
+          only the object knows how to move the structure it belongs to.
         * **barline** -- no hit objects at all, because a barline gimmick is
           made of red lines. Every red line in the map is drawn; the ones that
           do not sit on an object are this layer's own, and double-clicking one
@@ -7765,6 +7838,12 @@ class MainWindow(QMainWindow):
             # red line in the map is another layer's business and just clutters
             # this one.
             view.timing_line_times_for = lambda document: self._fake_slider_lines(document)[0]
+            # ...and double-clicking that line opens it, the same dialog and
+            # the same one-step EditTimingPoint the barline layer's lines get.
+            # Its BPM is what squashes the object beside it, so it is as much
+            # this layer's material as the object is -- but only for the
+            # dialog: see TimelineGameplay.timing_dialog_enabled.
+            view.timing_dialog_enabled = True
             view.ghost_style = "fake_slider"
             # This layer draws only its own structures' lines, and their BPM is
             # the thing being tuned -- a shiny's retimed line especially, where
@@ -7779,6 +7858,7 @@ class MainWindow(QMainWindow):
             view.shiny_times_for = self._shiny_times
         elif layer_id == "barline":
             view.timing_edit_enabled = True
+            view.timing_dialog_enabled = True
             view.ghost_style = "barline"
             view.show_bpm_labels = True
 
@@ -8279,8 +8359,8 @@ class MainWindow(QMainWindow):
             if view_type == "chart" and layer_id != "chart":
                 # The tool carries the shape, the layer carries the kind.
                 view.note_place_requested.connect(
-                    lambda kind, time_ms, _combo, _big, lid=layer_id:
-                        self._place_gimmick(lid, kind, time_ms)
+                    lambda kind, time_ms, _combo, big, lid=layer_id:
+                        self._place_gimmick(lid, kind, time_ms, big)
                 )
             elif view_type == "chart":
                 # Layer 1 is an ordinary chart, so its tools are the ordinary
@@ -8407,12 +8487,16 @@ class MainWindow(QMainWindow):
             self._show_gimmick_row_for(view)
             break
 
-    def _place_gimmick(self, layer_id: str, kind: str, time_ms: float) -> None:
+    def _place_gimmick(self, layer_id: str, kind: str, time_ms: float, big: bool = False) -> None:
         """Place one gimmick object: its lines, its object, and its SV restore.
 
         Everything a single placement writes is one CompositeCommand, so a fake
         slider and the three or seven timing points that shape it undo together
         rather than one line at a time.
+
+        `big` is Shift held at the click, the same flag Don/Kat placement takes
+        -- it reaches the drawn object only where that object has a size of its
+        own to give away; see `gimmick_session.fake_slider`.
         """
         pairing = self._gimmick_pairing
         if pairing is None:
@@ -8422,10 +8506,11 @@ class MainWindow(QMainWindow):
             return
         time_ms = round(snap_time(pairing.base_timing, time_ms, self._gimmick_snap_divisor()))
         if kind == "multi":
-            commands = self._multi_fake_slider_commands(state, pairing, time_ms)
+            commands = self._multi_fake_slider_commands(state, pairing, time_ms, big)
         else:
             commands = self._gimmick_commands(
                 state, pairing, layer_id, kind, time_ms, count_from(self._next_original_index(state)),
+                big=big,
             )
         if not commands:
             return
@@ -8437,7 +8522,7 @@ class MainWindow(QMainWindow):
             self._refresh_difficulty_views(pairing.target)
             self._refresh_difficulty_sv_views(pairing.target)
 
-    def _multi_fake_slider_commands(self, state, pairing, click_ms: int) -> list:
+    def _multi_fake_slider_commands(self, state, pairing, click_ms: int, big: bool = False) -> list:
         """The Multiple Fake Slider tool: N plain fake sliders in one run.
 
         `click_ms` is where the click snapped to; the configured start/end/
@@ -8464,14 +8549,14 @@ class MainWindow(QMainWindow):
         limit = click_ms + end
         while position <= limit:
             commands.extend(self._gimmick_commands(
-                state, pairing, "fake_slider", "regular", position, indices,
+                state, pairing, "fake_slider", "regular", position, indices, big=big,
             ))
             position += distance
         return commands
 
     def _gimmick_commands(
         self, state, pairing, layer_id: str, kind: str, time_ms: int, indices,
-        copies: int | None = None,
+        copies: int | None = None, big: bool = False,
     ) -> list:
         """Everything one gimmick structure writes, as commands. [] for a no-op.
 
@@ -8532,7 +8617,7 @@ class MainWindow(QMainWindow):
             if layer_id == "fake_slider":
                 points, notes = gimmick_fake_slider(
                     time_ms, pairing.base_timing, config, kind=kind, shiny=shiny,
-                    copies=copies,
+                    copies=copies, big=big,
                 )
             elif kind == "red_line":
                 bpm = base_bpm_at(pairing.base_timing, time_ms)
@@ -9987,6 +10072,7 @@ class MainWindow(QMainWindow):
 
     def _build_extendable_hit_object(
         self, note_kind: str, start_ms: int, end_ms: int, new_combo: bool, big: bool, timing_points: list,
+        slider_multiplier: float = SLIDER_MULTIPLIER_ASSUMED,
     ) -> HitObject:
         """Slider/spinner, sized from a requested time duration (start_ms to
         end_ms) rather than a fixed default. A bare click (start == end)
@@ -9998,7 +10084,9 @@ class MainWindow(QMainWindow):
         if note_kind == "slider":
             timing = active_uninherited_at(timing_points, start_ms)
             sv = sv_at(timing_points, start_ms)
-            length = slider_length_for_duration(duration, timing.beat_length, sv)
+            length = slider_length_for_duration(
+                duration, timing.beat_length, sv, slider_multiplier,
+            )
             hit_sound = HITSOUND_FINISH if big else 0
             return HitObject(
                 x=x, y=y, time=start_ms, type=TYPE_SLIDER | combo_bit, hit_sound=hit_sound,
@@ -10019,6 +10107,7 @@ class MainWindow(QMainWindow):
             return
         note = self._build_extendable_hit_object(
             note_kind, round(start_ms), round(end_ms), new_combo, big, state.document.timing_points,
+            state.document.slider_multiplier,
         )
         note.original_index = self._next_original_index(state)
         self._insert_notes(state, [note], "place_note")
@@ -10041,7 +10130,9 @@ class MainWindow(QMainWindow):
         elif note.is_slider:
             timing = active_uninherited_at(state.document.timing_points, note.time)
             sv = sv_at(state.document.timing_points, note.time)
-            length = slider_length_for_duration(duration, timing.beat_length, sv)
+            length = slider_length_for_duration(
+                duration, timing.beat_length, sv, state.document.slider_multiplier,
+            )
             curve = note.extras[0] if note.extras else f"L|{note.x + 80}:{note.y}"
             new_extras = (curve, "1", f"{length:.3f}")
         else:

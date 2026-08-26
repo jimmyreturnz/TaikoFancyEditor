@@ -21,6 +21,12 @@ class OsuDocument:
     section_spans: dict[str, tuple[int, int]] = field(default_factory=dict)
     line_ending: str = "\r\n"
     format_version: int = 14
+    # [Difficulty] SliderMultiplier. Defaulted to osu!'s own default so the
+    # positional construction below and every existing caller keep working,
+    # but read off the file when it is there: it scales every slider's
+    # length-to-duration conversion, so guessing it draws drumroll ends at
+    # the wrong time on every map that does not happen to use 1.4.
+    slider_multiplier: float = 1.4
 
 
 def _decode_file(raw):
@@ -49,7 +55,7 @@ def _format_version(lines):
 
 def parse_osu(path):
     source_path=Path(path).resolve(); text,encoding=_decode_file(source_path.read_bytes()); lines=text.splitlines(keepends=True)
-    section=version=audio_filename=""; hit_objects=[]; timing_points=[]
+    section=version=audio_filename=""; hit_objects=[]; timing_points=[]; slider_multiplier=1.4
     section_spans={}; open_section=None; open_index=0
     for line_index,line in enumerate(lines):
         content=line.rstrip("\r\n"); stripped=content.strip()
@@ -61,6 +67,10 @@ def parse_osu(path):
         if not stripped or stripped.startswith("//"): continue
         if section=="General" and content.startswith("AudioFilename:"): audio_filename=content.split(":",1)[1].strip(); continue
         if section=="Metadata" and content.startswith("Version:"): version=content.split(":",1)[1].strip(); continue
+        if section=="Difficulty" and content.startswith("SliderMultiplier"):
+            try: slider_multiplier=float(content.split(":",1)[1].strip())
+            except (IndexError,ValueError): pass
+            continue
         if section=="TimingPoints":
             point=parse_timing_line(line,line_index)
             if point is not None: timing_points.append(point)
@@ -77,4 +87,5 @@ def parse_osu(path):
     return OsuDocument(
         source_path,lines,encoding,version,audio_filename,hit_objects,
         timing_points,section_spans,_dominant_ending(lines),_format_version(lines),
+        slider_multiplier,
     )
