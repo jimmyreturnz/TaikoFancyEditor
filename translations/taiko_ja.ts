@@ -1237,6 +1237,72 @@ Every beatmap in it is checked once for taiko difficulties, and the result is re
             <source>{songs} taiko songs, {files} files scanned</source>
             <translation>太鼓の曲 {songs} 件 / スキャンしたファイル {files} 個</translation>
         </message>
+        <message>
+            <source>Update available</source>
+            <translation>更新があります</translation>
+        </message>
+        <message>
+            <source>Taiko Fancy Arranger {0} is available.</source>
+            <translation>Taiko Fancy Arranger {0} が利用可能です。</translation>
+        </message>
+        <message>
+            <source>You are running version {0}.</source>
+            <translation>現在お使いのバージョンは {0} です。</translation>
+        </message>
+        <message>
+            <source>No release notes were published.</source>
+            <translation>リリースノートは公開されていません。</translation>
+        </message>
+        <message>
+            <source>Skip This Version</source>
+            <translation>このバージョンをスキップ</translation>
+        </message>
+        <message>
+            <source>Open Release Page</source>
+            <translation>リリースページを開く</translation>
+        </message>
+        <message>
+            <source>Later</source>
+            <translation>後で</translation>
+        </message>
+        <message>
+            <source>Download Update</source>
+            <translation>更新をダウンロード</translation>
+        </message>
+        <message>
+            <source>Update failed</source>
+            <translation>更新に失敗しました</translation>
+        </message>
+        <message>
+            <source>The update could not be installed. Your current copy was not changed.</source>
+            <translation>更新をインストールできませんでした。現在のコピーは変更されていません。</translation>
+        </message>
+        <message>
+            <source>Update downloaded</source>
+            <translation>更新をダウンロードしました</translation>
+        </message>
+        <message>
+            <source>The new version was extracted to:
+{0}
+
+Close Taiko Fancy Arranger and start TaikoFancyArranger.exe from that folder. Your current copy was left untouched.</source>
+            <translation>新しいバージョンを次の場所に展開しました:
+{0}
+
+Taiko Fancy Arranger を閉じて、そのフォルダーの TaikoFancyArranger.exe を起動してください。現在のコピーはそのまま残されています。</translation>
+        </message>
+        <message>
+            <source>Check for updates</source>
+            <translation>更新の確認</translation>
+        </message>
+        <message>
+            <source>You are running the latest version ({0}).</source>
+            <translation>最新のバージョン ({0}) をお使いです。</translation>
+        </message>
+        <message>
+            <source>Could not reach GitHub to check for updates. Please try again later.</source>
+            <translation>GitHub に接続できなかったため、更新を確認できませんでした。しばらくしてからもう一度お試しください。</translation>
+        </message>
     </context>
     <context>
         <name>Parameters</name>
@@ -1890,6 +1956,14 @@ Every beatmap in it is checked once for taiko difficulties, and the result is re
         <message>
             <source>Use Reset all settings to clear every saved setting.</source>
             <translation>保存済みの設定をすべて消去するには「すべての設定をリセット」を使用してください。</translation>
+        </message>
+        <message>
+            <source>Check for updates on startup</source>
+            <translation>起動時に更新を確認する</translation>
+        </message>
+        <message>
+            <source>Check for updates now</source>
+            <translation>今すぐ更新を確認</translation>
         </message>
     </context>
     <context>
