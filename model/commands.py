@@ -112,11 +112,24 @@ class SetNoteFields(Command):
         note = self._note(target)
         for name, (_old, new) in self.changes.items():
             setattr(note, name, new)
+        self._reorder(target)
 
     def revert(self, target: EditTarget) -> None:
         note = self._note(target)
         for name, (old, _new) in self.changes.items():
             setattr(note, name, old)
+        self._reorder(target)
+
+    def _reorder(self, target: EditTarget) -> None:
+        """Keep the list in time order after a retime.
+
+        Every view bisects `hit_objects` by time to find what is on screen, so a
+        note dragged past its neighbour and left in place is a note that stops
+        being drawn. Done here rather than at the call sites because both apply
+        *and* revert can move it, and an undo has no call site of its own.
+        """
+        if "time" in self.changes:
+            target.document.hit_objects.sort(key=lambda note: note.time)
 
 
 @dataclass
@@ -227,11 +240,22 @@ class EditTimingPoint(Command):
         point = self._point(target)
         for name, (_old, new) in self.changes.items():
             setattr(point, name, new)
+        self._reorder(target)
 
     def revert(self, target: EditTarget) -> None:
         point = self._point(target)
         for name, (old, _new) in self.changes.items():
             setattr(point, name, old)
+        self._reorder(target)
+
+    def _reorder(self, target: EditTarget) -> None:
+        """Keep the list in time order after a retime -- see SetNoteFields.
+
+        `sv_at` and every view's window slice both assume it, and an undo of a
+        retime has no call site that could sort on its behalf.
+        """
+        if "time" in self.changes:
+            target.document.timing_points.sort(key=lambda point: point.time)
 
     def merge_with(self, later: "Command") -> "Command | None":
         """Coalesce a continuous drag on the same point and fields."""

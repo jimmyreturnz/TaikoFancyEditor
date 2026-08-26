@@ -309,13 +309,14 @@ class PaintAndInputTests(unittest.TestCase):
         _wheel(self.view, -120, Qt.KeyboardModifier.ShiftModifier)
         self.assertAlmostEqual(self.view.current_time, 1500.0, places=3)
 
-    def test_ctrl_wheel_changes_scroll_speed_within_its_limits(self):
+    def test_ctrl_wheel_does_not_rescale_the_view(self):
+        """The viewer shows the chart at the speed the player sees it at, so
+        there is nothing for a zoom gesture to mean here."""
         self.view.px_per_beat = gui.GAMEPLAY_PX_PER_BEAT
-        _wheel(self.view, 120, Qt.KeyboardModifier.ControlModifier)
-        self.assertGreater(self.view.px_per_beat, gui.GAMEPLAY_PX_PER_BEAT)
-        for _ in range(60):
+        for _ in range(5):
             _wheel(self.view, 120, Qt.KeyboardModifier.ControlModifier)
-        self.assertLessEqual(self.view.px_per_beat, gui.GAMEPLAY_PX_PER_BEAT_MAX)
+            _wheel(self.view, -120, Qt.KeyboardModifier.ControlModifier)
+        self.assertEqual(self.view.px_per_beat, gui.GAMEPLAY_PX_PER_BEAT)
 
     def test_ctrl_wheel_does_not_seek(self):
         self.view.current_time = 1000.0

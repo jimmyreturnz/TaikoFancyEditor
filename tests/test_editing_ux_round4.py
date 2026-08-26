@@ -595,6 +595,15 @@ class LanguageRestartTests(unittest.TestCase):
         def bool_value(self, key, default=False):
             return bool(self.values.get(key, default))
 
+        def int_value(self, key, default=0):
+            # The Audio page reads volumes and the hitsound offset through
+            # this; without it, building the dialog raises before any of
+            # these tests reach what they are actually about.
+            try:
+                return int(float(self.values.get(key, default)))
+            except (TypeError, ValueError):
+                return default
+
         def value(self, key, default=None):
             return self.values.get(key, default)
 
@@ -820,12 +829,24 @@ class FunctionChooserTests(unittest.TestCase):
         dialog = gui.SVFunctionDialog(1000.0, 2000.0)
         columns = dialog.layout().itemAt(0).layout()
         left = columns.itemAt(0).layout()
+        # One level deep as well as directly: a spin box wears the pink +/-
+        # pair (gui.pink_spin_buttons), which puts it inside a small container
+        # in the row rather than in the row itself.
         left_widgets = set()
-        for i in range(left.count()):
-            item = left.itemAt(i)
-            widget = item.widget() if item is not None else None
-            if widget is not None:
-                left_widgets.add(widget)
+        pending = [left]
+        while pending:
+            layout = pending.pop()
+            for i in range(layout.count()):
+                item = layout.itemAt(i)
+                if item is None:
+                    continue
+                widget = item.widget()
+                if widget is not None:
+                    left_widgets.add(widget)
+                    if widget.layout() is not None:
+                        pending.append(widget.layout())
+                elif item.layout() is not None:
+                    pending.append(item.layout())
         for control in (
             dialog.initial_rate_spin, dialog.final_rate_spin, dialog.placement_combo,
             dialog.snap_combo, dialog.position_offset_spin, dialog.omit_barline_check,

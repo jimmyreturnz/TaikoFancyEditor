@@ -43,6 +43,27 @@ class SettingsManager:
             return value
         return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
+    def int_value(self, key: str, default: int = 0) -> int:
+        """Like bool_value: QSettings hands back a str on Windows, so coerce it.
+
+        Through float first, because `int("70.0")` raises: a value that has ever
+        round-tripped through a float -- a volume written by an older build, a
+        hand-edited ini -- would otherwise silently reset to the default.
+        """
+        value = self._settings.value(key, default)
+        try:
+            return int(float(value))
+        except (TypeError, ValueError):
+            return default
+
+    def float_value(self, key: str, default: float = 0.0) -> float:
+        """Like bool_value: QSettings hands back a str on Windows, so coerce it."""
+        value = self._settings.value(key, default)
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
     def string_value(self, key: str, default: str = "") -> str:
         value = self._settings.value(key, default)
         return default if value is None else str(value)

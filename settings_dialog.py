@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMessageBox,
     QPushButton,
+    QSpinBox,
     QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -60,6 +61,7 @@ class SettingsDialog(QDialog):
         self.pages = QStackedWidget()
         for title, page in (
             (self.tr("General"), self._general_page()),
+            (self.tr("Audio"), self._audio_page()),
             (self.tr("Language"), self._language_page()),
             (self.tr("Shortcuts"), self._shortcuts_page()),
             (self.tr("Advanced"), self._advanced_page()),
@@ -90,6 +92,32 @@ class SettingsDialog(QDialog):
         self.confirm_overwrite = QCheckBox(self.tr("Confirm before overwriting original beatmap"))
         layout.addWidget(self.confirm_overwrite)
         layout.addStretch(1)
+        return page
+
+    def _audio_page(self) -> QWidget:
+        # Pink +/- spin buttons are applied to every QSpinBox from gui.py
+        # after construction (see ImageTraceDialog) -- nothing to do here.
+        page = QWidget()
+        form = QFormLayout(page)
+        self.hitsounds_enabled = QCheckBox(self.tr("Hitsounds"))
+        form.addRow(self.hitsounds_enabled)
+        self.hitsound_volume = QSpinBox()
+        self.hitsound_volume.setRange(0, 100)
+        self.hitsound_volume.setSuffix("%")
+        form.addRow(self.tr("Hitsound volume"), self.hitsound_volume)
+        self.hitsound_offset_ms = QSpinBox()
+        # QSoundEffect has real, device-dependent output latency on Windows,
+        # so without a negative-capable offset every hitsound sits late and
+        # the user has no way to compensate.
+        self.hitsound_offset_ms.setRange(-500, 500)
+        form.addRow(self.tr("Hitsound offset (ms)"), self.hitsound_offset_ms)
+        offset_note = QLabel(self.tr("Shift hitsounds earlier or later to compensate for your audio device's latency."))
+        offset_note.setWordWrap(True)
+        form.addRow("", offset_note)
+        self.music_volume = QSpinBox()
+        self.music_volume.setRange(0, 100)
+        self.music_volume.setSuffix("%")
+        form.addRow(self.tr("Music volume"), self.music_volume)
         return page
 
     def _language_page(self) -> QWidget:
@@ -148,6 +176,10 @@ class SettingsDialog(QDialog):
 
     def _load_current_values(self) -> None:
         self.confirm_overwrite.setChecked(self.settings.bool_value("general/confirm_overwrite", True))
+        self.hitsounds_enabled.setChecked(self.settings.bool_value("audio/hitsounds_enabled", True))
+        self.hitsound_volume.setValue(self.settings.int_value("audio/hitsound_volume", 70))
+        self.hitsound_offset_ms.setValue(self.settings.int_value("audio/hitsound_offset_ms", 0))
+        self.music_volume.setValue(self.settings.int_value("audio/music_volume", 65))
         language = self.settings.string_value("language/current", "en")
         index = self.language_combo.findData(language if language in {"en", "ja"} else "en")
         self.language_combo.setCurrentIndex(max(0, index))
@@ -159,11 +191,16 @@ class SettingsDialog(QDialog):
         if page == 0:
             self.confirm_overwrite.setChecked(True)
         elif page == 1:
-            self.language_combo.setCurrentIndex(self.language_combo.findData("en"))
+            self.hitsounds_enabled.setChecked(True)
+            self.hitsound_volume.setValue(70)
+            self.hitsound_offset_ms.setValue(0)
+            self.music_volume.setValue(65)
         elif page == 2:
+            self.language_combo.setCurrentIndex(self.language_combo.findData("en"))
+        elif page == 3:
             for action_id, editor in self._shortcut_editors.items():
                 editor.setKeySequence(QKeySequence(self.shortcuts.default_sequence(action_id)))
-        elif page == 3:
+        elif page == 4:
             QMessageBox.information(self, self.tr("Settings"), self.tr("Use Reset all settings to clear every saved setting."))
 
     def _reset_all_settings(self) -> None:
@@ -192,6 +229,10 @@ class SettingsDialog(QDialog):
         previous_language = self.settings.string_value("language/current", "en")
         selected_language = str(self.language_combo.currentData())
         self.settings.set_value("general/confirm_overwrite", self.confirm_overwrite.isChecked())
+        self.settings.set_value("audio/hitsounds_enabled", self.hitsounds_enabled.isChecked())
+        self.settings.set_value("audio/hitsound_volume", self.hitsound_volume.value())
+        self.settings.set_value("audio/hitsound_offset_ms", self.hitsound_offset_ms.value())
+        self.settings.set_value("audio/music_volume", self.music_volume.value())
         self.settings.set_value("language/current", selected_language)
         for action_id, sequence in self._shortcut_values().items():
             self.shortcuts.set_sequence(action_id, sequence)

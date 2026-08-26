@@ -3,7 +3,7 @@ setlocal EnableExtensions
 cd /d "%~dp0"
 
 echo ==========================================
-echo  Taiko Fancy Arranger v1.0.3 Builder
+echo  Taiko Fancy Arranger v3.0.0 Builder
 echo  Output: Portable Windows folder
 echo ==========================================
 echo.
@@ -155,9 +155,9 @@ if exist "VERSION" (
     copy /Y "VERSION" "dist\TaikoFancyArranger\VERSION" >nul
 )
 
-if exist "RELEASE_NOTES_v1.0.3.md" (
+if exist "RELEASE_NOTES_v3.0.0.md" (
     copy /Y ^
-        "RELEASE_NOTES_v1.0.3.md" ^
+        "RELEASE_NOTES_v3.0.0.md" ^
         "dist\TaikoFancyArranger\RELEASE_NOTES.md" >nul
 )
 
