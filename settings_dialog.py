@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QKeySequenceEdit,
 )
 
+import updater
 from settings import SettingsManager, ShortcutRegistry, duplicate_shortcuts, normalize_sequence
 
 
@@ -50,6 +51,7 @@ class SettingsDialog(QDialog):
             """
         )
         self._shortcut_editors: dict[str, QKeySequenceEdit] = {}
+        self._update_check: object | None = None
         self._build_ui()
         self._load_current_values()
 
@@ -91,8 +93,17 @@ class SettingsDialog(QDialog):
         layout = QVBoxLayout(page)
         self.confirm_overwrite = QCheckBox(self.tr("Confirm before overwriting original beatmap"))
         layout.addWidget(self.confirm_overwrite)
+        self.check_updates_on_startup = QCheckBox(self.tr("Check for updates on startup"))
+        layout.addWidget(self.check_updates_on_startup)
+        self.check_updates_button = QPushButton(self.tr("Check for updates now"))
+        self.check_updates_button.clicked.connect(self._check_for_updates)
+        layout.addWidget(self.check_updates_button, 0, Qt.AlignLeft)
         layout.addStretch(1)
         return page
+
+    def _check_for_updates(self) -> None:
+        # Held so the worker is not garbage collected while it is running.
+        self._update_check = updater.check_now(self, self.settings)
 
     def _audio_page(self) -> QWidget:
         # Pink +/- spin buttons are applied to every QSpinBox from gui.py
@@ -176,6 +187,9 @@ class SettingsDialog(QDialog):
 
     def _load_current_values(self) -> None:
         self.confirm_overwrite.setChecked(self.settings.bool_value("general/confirm_overwrite", True))
+        self.check_updates_on_startup.setChecked(
+            self.settings.bool_value(updater.SETTING_CHECK_ON_STARTUP, True)
+        )
         self.hitsounds_enabled.setChecked(self.settings.bool_value("audio/hitsounds_enabled", True))
         self.hitsound_volume.setValue(self.settings.int_value("audio/hitsound_volume", 70))
         self.hitsound_offset_ms.setValue(self.settings.int_value("audio/hitsound_offset_ms", 0))
@@ -190,6 +204,7 @@ class SettingsDialog(QDialog):
         page = self.pages.currentIndex()
         if page == 0:
             self.confirm_overwrite.setChecked(True)
+            self.check_updates_on_startup.setChecked(True)
         elif page == 1:
             self.hitsounds_enabled.setChecked(True)
             self.hitsound_volume.setValue(70)
@@ -229,6 +244,9 @@ class SettingsDialog(QDialog):
         previous_language = self.settings.string_value("language/current", "en")
         selected_language = str(self.language_combo.currentData())
         self.settings.set_value("general/confirm_overwrite", self.confirm_overwrite.isChecked())
+        self.settings.set_value(
+            updater.SETTING_CHECK_ON_STARTUP, self.check_updates_on_startup.isChecked()
+        )
         self.settings.set_value("audio/hitsounds_enabled", self.hitsounds_enabled.isChecked())
         self.settings.set_value("audio/hitsound_volume", self.hitsound_volume.value())
         self.settings.set_value("audio/hitsound_offset_ms", self.hitsound_offset_ms.value())
