@@ -155,9 +155,14 @@ if exist "VERSION" (
     copy /Y "VERSION" "dist\TaikoFancyArranger\VERSION" >nul
 )
 
-if exist "RELEASE_NOTES_v3.0.0.md" (
+rem Read the version rather than hardcoding it: the old literal path silently
+rem shipped the previous release's notes for a whole version after each bump.
+set "APP_VERSION="
+if exist "VERSION" set /p APP_VERSION=<VERSION
+
+if defined APP_VERSION if exist "docs\releases\v%APP_VERSION%.md" (
     copy /Y ^
-        "RELEASE_NOTES_v3.0.0.md" ^
+        "docs\releases\v%APP_VERSION%.md" ^
         "dist\TaikoFancyArranger\RELEASE_NOTES.md" >nul
 )
 

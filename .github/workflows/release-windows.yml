@@ -52,7 +52,7 @@ jobs:
 
           if ("${{ github.event_name }}" -eq "release") {
             $tag = "${{ github.event.release.tag_name }}"
-            $notes = "RELEASE_NOTES_$tag.md"
+            $notes = "docs/releases/$tag.md"
 
             if (Test-Path $notes) {
               Copy-Item `

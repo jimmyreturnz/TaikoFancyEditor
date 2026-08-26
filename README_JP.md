@@ -29,7 +29,7 @@ Taiko Fancy Arrangerは、osu!taikoのノーツを手作業で1つずつ置く�
 - **どこでもキアイ。** キアイ区間はすべてのギミックレイヤーで半透明のオレンジ色の帯として描画され、生成されたタイミングポイントはそのセクションのキアイ状態を黙って終わらせるのではなく引き継ぐようになり、ゲームプレイビューアーのキアイフラッシュは画面上のすべてのノーツに届くようになりました。
 - **細かな編集の改善。** スライダーとスピナーの終端を選択ツールでドラッグできるようになり、タイミングバー上での右クリックはドラッグ選択を終わらせずに再生位置をスクラブでき、拒否された操作は何も起きないのではなくトースト通知で知らせ、すべてのスピンボックスにピンク色の+/-ボタンが付きました。
 
-詳細はすべて[`DEVELOPMENT_PLAN.md`](DEVELOPMENT_PLAN.md)にまとまっています。
+詳細はすべて[`docs/DEVELOPMENT_PLAN.md`](docs/DEVELOPMENT_PLAN.md)にまとまっています。
 
 ---
 
@@ -436,7 +436,7 @@ pyinstaller --noconfirm --clean TaikoFancyArranger.spec
 | `.env.example` | 環境変数が**一切**不要であることを示すためのファイル。ここに秘密情報を置かないこと |
 | `.github/workflows/release-windows.yml` | ポータブルZIPとSHA-256チェックサムをビルドし、公開されたリリースに添付する |
 
-`vX.Y.Z`とタグ付けされたGitHubリリースを公開すると、そのワークフローが実行され、翻訳をコンパイルし、テストスイートを実行し、ビルドし、`TaikoFancyArranger-Windows-x64.zip`と`SHA256SUMS.txt`をアップロードします。対応する`RELEASE_NOTES_vX.Y.Z.md`が存在する場合は、ZIPに同梱されます。
+`vX.Y.Z`とタグ付けされたGitHubリリースを公開すると、そのワークフローが実行され、翻訳をコンパイルし、ビルドし、`TaikoFancyArranger-Windows-x64.zip`と`SHA256SUMS.txt`をアップロードします。対応する`docs/releases/vX.Y.Z.md`が存在する場合は、ZIPに同梱されます。
 
 プログラムは環境変数を読み込まず、`.env`ファイルも必要としません。`.env`および鍵・証明書ファイルはgitignoreされています。
 
