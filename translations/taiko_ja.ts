@@ -1098,6 +1098,30 @@ Every beatmap in it is checked once for taiko difficulties, and the result is re
             <translation>SVを生成</translation>
         </message>
         <message>
+            <source>Generate Volume</source>
+            <translation>音量を生成</translation>
+        </message>
+        <message>
+            <source>Initial volume</source>
+            <translation>初期音量</translation>
+        </message>
+        <message>
+            <source>Final volume</source>
+            <translation>最終音量</translation>
+        </message>
+        <message>
+            <source>Kiai and Sound Effect</source>
+            <translation>キアイと効果音</translation>
+        </message>
+        <message>
+            <source>Kiai / Volume tools:</source>
+            <translation>キアイ / 音量ツール:</translation>
+        </message>
+        <message>
+            <source>Volume</source>
+            <translation>音量</translation>
+        </message>
+        <message>
             <source>Initial rate</source>
             <translation>初期倍率</translation>
         </message>
