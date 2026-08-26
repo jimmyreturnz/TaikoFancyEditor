@@ -181,6 +181,56 @@ class FancyArrangerPageTests(unittest.TestCase):
             widths.pop(), max(button.sizeHint().width() for button in buttons)
         )
 
+    def test_no_button_is_narrower_than_the_label_it_draws(self):
+        """The pink-square bug, in one assertion.
+
+        A QPushButton fixed narrower than the window stylesheet's 32px of
+        horizontal padding has negative room for its text, so Qt paints the
+        body over the whole label and the button reads as blank -- which is
+        how the Fancy Arranger's +/- buttons went "missing" at a typed 30px
+        and 28px. Compared against `button_text_width`, which is glyphs *plus*
+        that padding: comparing against the glyphs alone would have let both
+        of those through.
+        """
+        from PySide6.QtWidgets import QPushButton
+
+        clipped = [
+            (button.text(), button.width(), gui.button_text_width(button))
+            for button in self.window.findChildren(QPushButton)
+            if button.text() and button.width() < gui.button_text_width(button)
+        ]
+        self.assertEqual(clipped, [], f"buttons narrower than their label: {clipped}")
+
+    def test_the_fancy_arranger_step_buttons_show_their_glyphs(self):
+        """`ParameterControl` and `DifficultyValueControl` build the +/- pair
+        themselves, and both used to type a width smaller than the padding."""
+        from PySide6.QtWidgets import QPushButton
+
+        controls = [
+            gui.ParameterControl(
+                {"key": "x", "label": "X", "type": "int", "min": 0, "max": 10, "default": 1}
+            ),
+            gui.ParameterControl(
+                {"key": "seed", "label": "Seed", "type": "int", "min": 0, "max": 99, "default": 0}
+            ),
+            gui.DifficultyValueControl("HP", 5.0, "tip"),
+        ]
+        for control in controls:
+            control.setParent(self.window)
+            control.show()
+        steps = [
+            button
+            for control in controls
+            for button in control.findChildren(QPushButton)
+            if button.text() in {"+", "-"}
+        ]
+        self.assertEqual(len(steps), 6)
+        for button in steps:
+            with self.subTest(text=button.text()):
+                self.assertGreaterEqual(button.width(), gui.button_text_width(button))
+        for control in controls:
+            control.deleteLater()
+
 
 if __name__ == "__main__":
     unittest.main()
