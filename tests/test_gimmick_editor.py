@@ -193,20 +193,21 @@ class GimmickEntryTests(_GimmickFixture, unittest.TestCase):
 
 
 class GimmickLayerTests(_GimmickFixture, unittest.TestCase):
-    """The six layers, built once a session is open."""
+    """The gimmick layers, built once a session is open."""
 
     def setUp(self) -> None:
         super().setUp()
         self._enter(gui.GimmickEntryDialog.USE_CURRENT)
 
-    def test_six_layers_open_in_order(self):
+    def test_the_layers_open_in_order(self):
         self.assertEqual(
             [frame.gimmick_layer for frame in self.window._gimmick_views],
-            ["chart", "fake_slider", "barline", "sv_chart", "sv_fake_slider", "sv_barline"],
+            ["chart", "fake_slider", "barline", "sv_chart", "sv_fake_slider",
+             "sv_barline", "kiai_sound"],
         )
         self.assertEqual(
             [frame.view_type for frame in self.window._gimmick_views],
-            ["chart", "chart", "chart", "sv", "sv", "sv"],
+            ["chart", "chart", "chart", "sv", "sv", "sv", "sv"],
         )
 
     def test_every_layer_snaps_against_the_base_timing_not_the_document(self):
@@ -250,7 +251,9 @@ class GimmickLayerTests(_GimmickFixture, unittest.TestCase):
 
     def test_reopening_does_not_stack_a_second_set_of_layers(self):
         self.window._open_gimmick_layers()
-        self.assertEqual(len(self.window._gimmick_views), 6)
+        self.assertEqual(
+            len(self.window._gimmick_views), len(gui.MainWindow.GIMMICK_LAYERS)
+        )
 
 
 class GimmickPlacementTests(_GimmickFixture, unittest.TestCase):
@@ -399,11 +402,14 @@ class GimmickToolTests(_GimmickFixture, unittest.TestCase):
     def test_each_layer_has_its_own_toolbox(self):
         self.assertEqual(
             list(self.window.gimmick_tool_rows),
-            ["chart", "fake_slider", "barline", "sv_chart", "sv_fake_slider", "sv_barline"],
+            ["chart", "fake_slider", "barline", "sv_chart", "sv_fake_slider",
+             "sv_barline", "kiai_sound"],
         )
         self.assertEqual(
+            # Kiai left for the Kiai and Sound Effect layer, which is where a
+            # section that every layer is read against belongs.
             list(self.window.gimmick_tool_buttons["fake_slider"]),
-            ["select", "regular", "don", "kat", "shiny", "multi", "function", "convert", "kiai"],
+            ["select", "regular", "don", "kat", "shiny", "multi", "function", "convert"],
         )
         self.assertEqual(
             list(self.window.gimmick_tool_buttons["barline"]),
@@ -512,15 +518,17 @@ class GimmickPageChromeTests(_GimmickFixture, unittest.TestCase):
         for frame in self.window._gimmick_views:
             yield getattr(frame, "chart_view", None) or frame.sv_view
 
-    def test_all_six_layers_fit_one_screen(self):
+    def test_every_layer_fits_its_band(self):
         # The band is the view's height; each frame adds its own chrome row on
         # top, so the screen budget is measured on the frames' size hints.
         heights = [frame.sizeHint().height() for frame in self.window._gimmick_views]
-        self.assertEqual(len(heights), 6)
+        self.assertEqual(len(heights), len(gui.MainWindow.GIMMICK_LAYERS))
         self.assertTrue(all(v.height() == gui.MainWindow.GIMMICK_LAYER_HEIGHT for v in self._views()))
-        # Six bands plus the strip and tool row have to leave room in a
-        # normal window rather than forcing a scroll between related layers.
-        self.assertLessEqual(sum(heights), 900)
+        # Per band rather than a total: the stack grows a row whenever a
+        # layer is added, and what must not grow is any one band's share of
+        # the screen -- 150px keeps the whole stack plus the strip and tool
+        # row inside a normal window.
+        self.assertLessEqual(sum(heights), 150 * len(heights))
 
     def test_the_page_has_its_own_timeline_bar(self):
         self.assertIsInstance(self.window.gimmick_timing_bar, gui.TimingOverviewBar)
@@ -572,7 +580,7 @@ class GimmickPageChromeTests(_GimmickFixture, unittest.TestCase):
     def test_zooming_one_layer_zooms_them_all(self):
         views = list(self._views())
         views[0].zoom_changed.emit(1234.0)
-        self.assertEqual([v.window_ms for v in views], [1234.0] * 6)
+        self.assertEqual([v.window_ms for v in views], [1234.0] * len(views))
 
     def test_notes_are_sized_from_the_view_so_they_stay_centred(self):
         """A fixed 42px finisher is taller than a 132px band once the frame

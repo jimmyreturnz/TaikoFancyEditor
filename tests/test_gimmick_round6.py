@@ -790,7 +790,11 @@ class BarlineBetweenNoteAndSliderTests(_Session, unittest.TestCase):
 
 
 class KiaiRangeTests(_Session, unittest.TestCase):
-    """The fake slider layer's kiai tool: one drag, one kiai section."""
+    """The Kiai tool: one drag, one kiai section.
+
+    It lives in the Kiai and Sound Effect layer now -- a kiai section is read
+    against every layer at once, so the fake slider layer was never its home.
+    """
 
     def _kiai_at(self, time_ms):
         return gui.in_kiai(gui.sorted_by_time(self.document.timing_points), time_ms)
@@ -843,12 +847,13 @@ class KiaiRangeTests(_Session, unittest.TestCase):
             [(p.uid, p.effects) for p in self.document.timing_points], before
         )
 
-    def test_the_tool_is_in_the_fake_slider_toolbox(self):
-        self.assertIn("kiai", dict(gui.MainWindow.GIMMICK_TOOLSETS["fake_slider"]))
+    def test_the_tool_is_in_the_kiai_and_sound_effect_toolbox(self):
+        self.assertIn("kiai", dict(gui.MainWindow.GIMMICK_TOOLSETS["kiai_sound"]))
+        self.assertNotIn("kiai", dict(gui.MainWindow.GIMMICK_TOOLSETS["fake_slider"]))
 
     def test_every_layer_draws_the_section(self):
-        """The band is background information, so it belongs in all six rather
-        than only in the layer whose tool wrote it."""
+        """The band is background information, so it belongs in every layer
+        rather than only in the one whose tool wrote it."""
         target = self.window._gimmick_pairing.target
         self.window._set_kiai_range(target, 9000, 12000)
         for frame in self.window._gimmick_views:
@@ -908,7 +913,9 @@ class LayerRemovalTests(_Session, unittest.TestCase):
         frame.close_button.click()
 
         self.assertNotIn(frame, self.window._gimmick_views)
-        self.assertEqual(len(self.window._gimmick_views), 5)
+        self.assertEqual(
+            len(self.window._gimmick_views), len(gui.MainWindow.GIMMICK_LAYERS) - 1
+        )
         # ...and it stops being fed the playhead, which would call set_time on
         # a deleted C++ object.
         self.assertNotIn(view, self.window._chart_views)
@@ -916,7 +923,9 @@ class LayerRemovalTests(_Session, unittest.TestCase):
     def test_re_entering_the_page_brings_every_layer_back(self):
         self.window._gimmick_views[1].close_button.click()
         self._enter(gui.GimmickEntryDialog.USE_CURRENT)
-        self.assertEqual(len(self.window._gimmick_views), 6)
+        self.assertEqual(
+            len(self.window._gimmick_views), len(gui.MainWindow.GIMMICK_LAYERS)
+        )
 
     def test_a_layer_is_still_focused_afterwards(self):
         self.window._gimmick_views[0].close_button.click()
