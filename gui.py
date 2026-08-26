@@ -39,6 +39,7 @@ from settings import (
     APPLICATION_NAME, ORGANIZATION_NAME, SettingsManager, ShortcutRegistry, should_ignore_shortcut_focus,
 )
 from settings_dialog import SettingsDialog
+import updater
 from osu_io.parser import parse_osu
 from osu_io.timing import (
     EFFECT_KIAI,
@@ -5886,6 +5887,26 @@ class MainWindow(QMainWindow):
         self.hitsounds.offset_ms = self.settings.int_value("audio/hitsound_offset_ms", 0)
         self.hitsounds.set_volume(self.settings.int_value("audio/hitsound_volume", 70) / 100.0)
 
+    def maybe_check_for_updates(self) -> None:
+        """Startup update check, on a worker thread so the window never waits.
+
+        Skipped versions are filtered here rather than in updater.check_now:
+        an explicit "Check for updates now" should still report the release the
+        user once skipped.
+        """
+        if not self.settings.bool_value(updater.SETTING_CHECK_ON_STARTUP, True):
+            return
+        skipped = self.settings.string_value(updater.SETTING_SKIPPED_TAG, "")
+
+        def finished(release: object, _reachable: bool) -> None:
+            if release is not None and getattr(release, "tag", "") != skipped:
+                updater.present_update(release, self.settings, self)
+
+        # Held on self so Qt does not destroy the thread while it is running.
+        self._update_check = updater.CheckThread(self)
+        self._update_check.result.connect(finished)
+        self._update_check.start()
+
     def open_settings(self) -> None:
         dialog = SettingsDialog(self.settings, self.shortcuts, self)
         # Applied from here because settings_dialog cannot import gui -- gui
@@ -11425,6 +11446,7 @@ def main() -> None:
     window = MainWindow()
     window.showMaximized()
     window.start_library()
+    window.maybe_check_for_updates()
     raise SystemExit(app.exec())
 
 

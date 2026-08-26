@@ -29,14 +29,17 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-build.txt
 
-      # Compiled before the tests so the localization suite checks the catalog
-      # this build will actually ship.
       - name: Compile translations
         shell: pwsh
         run: pyside6-lrelease translations/taiko_ja.ts
 
-      - name: Run tests
-        run: python -m unittest discover -v
+      # There is deliberately no "Run tests" step here. The Qt suite took
+      # roughly five hours on the GitHub Windows runner, which made every
+      # release a five-hour wait. Tests now run locally instead, in two
+      # places, both of which fail loudly:
+      #   * tools/run_tests.bat  -- run this before tagging a release
+      #   * build_windows.bat    -- step [6/9], aborts the build on failure
+      # Do not tag a release from a tree where those have not passed.
 
       - name: Build portable Windows application
         run: pyinstaller --noconfirm --clean TaikoFancyArranger.spec
