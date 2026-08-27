@@ -6945,9 +6945,41 @@ class MainWindow(QMainWindow):
         # programmatic close() is code tidying up, including every test's
         # teardown, and a modal prompt there has nobody to answer it.
         if not event.spontaneous() or self._confirm_leaving_editor():
+            self._release_application_hooks()
             event.accept()
         else:
             event.ignore()
+
+    def _release_application_hooks(self) -> None:
+        """Unhook this window from QApplication once it is really closing.
+
+        Two registrations in __init__ are on the *application*, which outlives
+        every window: an event filter and a focusChanged slot. Neither is
+        undone by close() or by the window being garbage collected, and Qt
+        dispatches **every application event through every installed filter**
+        -- so a second live registration doubles the per-event Python work, a
+        third triples it, and so on.
+
+        One window per run never noticed. The test suite builds one per test
+        and noticed badly: twelve windows took 171ms to build the first and
+        976ms the twelfth (5.7x), and the whole suite degraded quadratically
+        past four hours. Releasing here makes that flat -- 164ms to 154ms over
+        the same twelve -- with the same number of objects still alive, which
+        is the proof that the cost was the fan-out and not the memory.
+
+        Idempotent: removeEventFilter on an unregistered filter is a no-op, and
+        the disconnect is guarded, so a second close (or a close after a
+        failed one) is harmless.
+        """
+        app = QApplication.instance()
+        if app is None:
+            return
+        app.removeEventFilter(self)
+        try:
+            app.focusChanged.disconnect(self._editor_view_focus_changed)
+        except (RuntimeError, TypeError):
+            # Already disconnected, or the C++ side is gone.
+            pass
 
     # -- Song library page --------------------------------------------------
 
