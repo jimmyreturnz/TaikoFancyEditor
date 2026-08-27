@@ -130,6 +130,35 @@ class FiringWindowTests(unittest.TestCase):
         self.assertEqual(self.player.pending(1000, 1020), [])
         self.assertEqual(self.player.pending(1020, 1045), ["normal"])
 
+    def test_the_offset_is_wall_time_so_it_scales_with_the_rate(self):
+        """The knob compensates output latency, which is real time.
+
+        Held as song time it was right only at 1.0x -- the error is
+        offset * (1 - rate), zero at 100% and worst at the slowest speed,
+        which is why every rate except the default sounded misaligned.
+        At 0.5x, 40ms of real latency is 20ms of song.
+        """
+        self.player.offset_ms = -40
+
+        self.player.playback_rate = 1.0
+        self.assertEqual(self.player.pending(950, 965), ["normal"])
+
+        self.player.playback_rate = 0.5
+        # The note is now only 20ms of song early, so the same window that
+        # caught it at 1.0x is past it before it is due.
+        self.assertEqual(self.player.pending(950, 965), [])
+        self.assertEqual(self.player.pending(975, 985), ["normal"])
+
+    def test_the_offset_scales_by_magnitude_not_sign(self):
+        self.player.offset_ms = -40
+        self.player.playback_rate = -0.5
+        self.assertEqual(self.player.pending(975, 985), ["normal"])
+
+    def test_no_offset_means_the_rate_changes_nothing(self):
+        for rate in (1.0, 0.75, 0.5, 0.25):
+            self.player.playback_rate = rate
+            self.assertEqual(self.player.pending(950, 1050), ["normal"], rate)
+
     def test_disabled_fires_nothing(self):
         self.player.enabled = False
         self.assertEqual(self.player.pending(0, 100000), [])

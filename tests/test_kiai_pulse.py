@@ -57,6 +57,39 @@ class PulseTests(unittest.TestCase):
         """0.0001ms per beat would flash several times per frame."""
         self.assertEqual(gui.beat_pulse([TimingPoint(time=0.0, beat_length=0.0001)], 1234.5), 0.0)
 
+    def test_with_an_anchor_it_is_full_at_the_section_start(self):
+        self.assertAlmostEqual(gui.beat_pulse(self.points, 3000.0, anchor_ms=3000.0), 1.0, places=9)
+
+    def test_with_an_anchor_the_period_is_a_measure_not_a_beat(self):
+        """4 beats * 500ms = 2000ms period, not 500ms."""
+        points = [TimingPoint(time=0.0, beat_length=500.0, meter=4)]
+        # A whole beat (500ms) into the measure: still fading, not back to 1.0.
+        self.assertAlmostEqual(gui.beat_pulse(points, 500.0, anchor_ms=0.0), 0.75, places=9)
+        # A full measure later (2000ms): back to full strength.
+        self.assertAlmostEqual(gui.beat_pulse(points, 2000.0, anchor_ms=0.0), 1.0, places=9)
+
+    def test_with_an_anchor_it_decays_monotonically_across_the_measure(self):
+        points = [TimingPoint(time=0.0, beat_length=500.0, meter=4)]
+        samples = [gui.beat_pulse(points, t, anchor_ms=0.0) for t in range(0, 2000, 50)]
+        self.assertTrue(all(a >= b for a, b in zip(samples, samples[1:])))
+
+    def test_a_slower_bpm_fades_slower(self):
+        """Same elapsed time since the anchor, a slower BPM (longer beat_length,
+        so a longer measure) has faded less -- the period IS the fade."""
+        fast = [TimingPoint(time=0.0, beat_length=500.0, meter=4)]
+        slow = [TimingPoint(time=0.0, beat_length=1000.0, meter=4)]
+        elapsed = 800.0
+        self.assertGreater(
+            gui.beat_pulse(slow, elapsed, anchor_ms=0.0),
+            gui.beat_pulse(fast, elapsed, anchor_ms=0.0),
+        )
+
+    def test_an_anchor_with_meter_3_gives_a_three_beat_period(self):
+        points = [TimingPoint(time=0.0, beat_length=500.0, meter=3)]
+        # 3 * 500ms = 1500ms period.
+        self.assertAlmostEqual(gui.beat_pulse(points, 1500.0, anchor_ms=0.0), 1.0, places=9)
+        self.assertAlmostEqual(gui.beat_pulse(points, 750.0, anchor_ms=0.0), 0.5, places=9)
+
     def test_kiai_reads_the_green_lines_too(self):
         """The fixture switches kiai on with an inherited point at 2000 and off
         with the next one at 4000."""
