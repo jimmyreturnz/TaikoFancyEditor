@@ -792,18 +792,34 @@ class BarlineBetweenNoteAndSliderTests(_Session, unittest.TestCase):
 class KiaiRangeTests(_Session, unittest.TestCase):
     """The Kiai tool: one drag, one kiai section.
 
-    It lives in the Kiai and Sound Effect layer now -- a kiai section is read
+    It lives in the Kiai and Sound Volume layer now -- a kiai section is read
     against every layer at once, so the fake slider layer was never its home.
     """
 
     def _kiai_at(self, time_ms):
         return gui.in_kiai(gui.sorted_by_time(self.document.timing_points), time_ms)
 
+    def _lines_at(self, *times):
+        """Put a green line on each of `times`, at the SV already in force.
+
+        The Kiai tool flags the lines already inside the range and writes
+        none of its own -- the layer it lives in must never touch scroll
+        speed, and inventing an inherited point to carry the flag is a
+        scroll-speed edit. So a section's edges have to be real lines before
+        the drag, which is what these tests set up here rather than relying on
+        the tool to conjure them.
+        """
+        target = self.window._gimmick_pairing.target
+        for time_ms in times:
+            sv = gui.sv_at(gui.sorted_by_time(self.document.timing_points), time_ms)
+            self.window._add_sv_point(target, time_ms, sv)
+
     def test_every_point_in_the_range_carries_kiai(self):
         # Kiai first: a shiny is refused outside one (see KiaiRefusalTests),
         # so placing it after the section exists is what a mapper actually
         # does, and lets this test its real subject -- that every line a
         # placement writes inside an existing section still carries kiai.
+        self._lines_at(9000, 12000)
         self.window._set_kiai_range(self.window._gimmick_pairing.target, 9000, 12000)
         self.window._place_gimmick("fake_slider", "shiny", 10000)
         self.window._place_gimmick("barline", "kat", 11000)
@@ -817,6 +833,7 @@ class KiaiRangeTests(_Session, unittest.TestCase):
 
     def test_the_section_starts_and_ends_where_the_drag_did(self):
         target = self.window._gimmick_pairing.target
+        self._lines_at(9000, 12000)
         self.window._set_kiai_range(target, 9000, 12000)
         self.assertFalse(self._kiai_at(8999))
         self.assertTrue(self._kiai_at(9000))
@@ -825,6 +842,7 @@ class KiaiRangeTests(_Session, unittest.TestCase):
 
     def test_the_edges_change_nothing_but_the_flag(self):
         target = self.window._gimmick_pairing.target
+        self._lines_at(9000, 12000)
         before = gui.sv_at(gui.sorted_by_time(self.document.timing_points), 9000)
         self.window._set_kiai_range(target, 9000, 12000)
         self.assertAlmostEqual(
@@ -839,6 +857,7 @@ class KiaiRangeTests(_Session, unittest.TestCase):
 
     def test_the_whole_range_is_one_undo_step(self):
         target = self.window._gimmick_pairing.target
+        self._lines_at(9000, 12000)
         self.window._place_gimmick("barline", "kat", 11000)
         before = [(p.uid, p.effects) for p in self.document.timing_points]
         self.window._set_kiai_range(target, 9000, 12000)
@@ -855,6 +874,7 @@ class KiaiRangeTests(_Session, unittest.TestCase):
         """The band is background information, so it belongs in every layer
         rather than only in the one whose tool wrote it."""
         target = self.window._gimmick_pairing.target
+        self._lines_at(9000, 12000)
         self.window._set_kiai_range(target, 9000, 12000)
         for frame in self.window._gimmick_views:
             view = getattr(frame, "chart_view", None) or frame.sv_view

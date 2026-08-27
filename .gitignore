@@ -50,6 +50,9 @@ build/
 dist/
 release/
 releases/
+# ...but the shipped release notes live in docs/releases/ and are source,
+# not build output. `releases/` above is for the build's own dumping ground.
+!docs/releases/
 
 *.zip
 *.7z

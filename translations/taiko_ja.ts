@@ -430,6 +430,10 @@
             <translation>選択範囲に変換できるノーツがありません。</translation>
         </message>
         <message>
+            <source>No timing point in the selected range.</source>
+            <translation>選択範囲にタイミングポイントがありません。</translation>
+        </message>
+        <message>
             <source>Oscillate (per pair)</source>
             <translation>振動（ペアごと）</translation>
         </message>
@@ -978,6 +982,14 @@ Every beatmap in it is checked once for taiko difficulties, and the result is re
             <translation>BPM</translation>
         </message>
         <message>
+            <source>BPM from</source>
+            <translation>BPM（下限）</translation>
+        </message>
+        <message>
+            <source>BPM to</source>
+            <translation>BPM（上限）</translation>
+        </message>
+        <message>
             <source>Gameplay Viewer</source>
             <translation>プレイビューアー</translation>
         </message>
@@ -1110,8 +1122,8 @@ Every beatmap in it is checked once for taiko difficulties, and the result is re
             <translation>最終音量</translation>
         </message>
         <message>
-            <source>Kiai and Sound Effect</source>
-            <translation>キアイと効果音</translation>
+            <source>Kiai and Sound Volume</source>
+            <translation>キアイと音量</translation>
         </message>
         <message>
             <source>Kiai / Volume tools:</source>

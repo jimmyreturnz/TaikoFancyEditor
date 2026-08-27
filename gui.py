@@ -16,7 +16,7 @@ from PySide6.QtCore import (
     QElapsedTimer, QEvent, QObject, QPointF, QPropertyAnimation, QRect, QRectF, QSize, QStandardPaths, Qt, QTimer,
     QUrl, Signal,
 )
-from PySide6.QtGui import QImageReader, QColor, QFont, QFontDatabase, QKeySequence, QPainter, QPen, QPixmap, QPolygonF, QShortcut, QIcon
+from PySide6.QtGui import QImageReader, QColor, QFont, QFontDatabase, QFontMetrics, QKeySequence, QPainter, QPen, QPixmap, QPolygonF, QShortcut, QIcon
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer, QSoundEffect
 from PySide6.QtWidgets import (
     QAbstractSpinBox, QApplication, QButtonGroup, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
@@ -87,20 +87,15 @@ from transformer import available_transformations, transform, transform_groups
 PLAYFIELD_WIDTH = 512
 PLAYFIELD_HEIGHT = 384
 
-# See _player_position_changed. Below the hard threshold, discrepancies are
-# blended in gradually (fraction corrected per report) rather than ignored
-# or snapped, so both one-off jitter and small steady-state bias converge
-# without a visible jump. At or above it, something discontinuous happened
-# (stall, external seek) and snapping immediately is the correct response.
-POSITION_CORRECTION_FACTOR = 0.3
-# **Wall** milliseconds, converted to song milliseconds at the point of use by
-# multiplying by the playback rate. The events it separates -- a backend stall,
-# a dropped buffer -- and the jitter it must stay above are both real-time
-# things: at 0.25x, 200ms of real time is only 50ms of song. Held as a song-time
-# constant (as it was) the threshold was four times too loose at 0.25x, so a
-# genuine discontinuity there never snapped and instead crawled in over a dozen
-# reports, which is a visibly wrong playhead for most of a second.
-POSITION_HARD_RESYNC_WALL_MS = 200.0
+# Ported from osu!(lazer)'s InterpolatingFramedClock.ProcessFrame: every
+# *rendered frame* (not every sparse backend report) the displayed clock is
+# nudged 1/8 of the way toward the source clock, or snapped to it outright if
+# the two have drifted more than AllowableErrorMilliseconds apart. Blending
+# every frame instead of only at report time is what makes the correction
+# invisible; osu!'s own numbers for both constants are kept rather than
+# re-tuned, since they were already chosen for this exact smoothing problem.
+POSITION_INTERPOLATION_DIVISOR = 8.0
+POSITION_ALLOWABLE_ERROR_MS = 1000.0 / 60.0 * 2.0
 
 # The song-folder scan runs on the UI thread, sliced by time rather than by a
 # file count: one frame's worth of work per timer tick, so a folder with a few
@@ -275,10 +270,21 @@ def button_text_width(button: QPushButton) -> int:
 
     sizeHint() is still the floor, so an icon, a menu indicator or a style
     minimum is never sized away.
+
+    A second cause layers on top of the first for any checkable button: the
+    `QPushButton:checked` rule bumps `font-weight` to 700, but this function
+    was measuring with the button's own (unchecked, lighter) font -- so the
+    width was pinned before the button ever got heavier, and checking it
+    clipped the label again. The advance is now measured with the current
+    font AND a bold copy of it, and the wider of the two wins.
     """
+    metrics_width = button.fontMetrics().horizontalAdvance(button.text())
+    bold_font = QFont(button.font())
+    bold_font.setWeight(QFont.Weight.Bold)
+    bold_width = QFontMetrics(bold_font).horizontalAdvance(button.text())
     return max(
         button.sizeHint().width(),
-        button.fontMetrics().horizontalAdvance(button.text()) + button_chrome_width(button),
+        max(metrics_width, bold_width) + button_chrome_width(button),
     )
 
 
@@ -358,6 +364,14 @@ def pink_spin_buttons(root: QWidget) -> None:
         if layout is None:
             continue
         spin.setButtonSymbols(QAbstractSpinBox.NoButtons)
+        # A row already hidden before the wrap has to stay hidden after it.
+        # The container is brand new and therefore visible, and the spin is
+        # forced visible below because it has to show *inside* the container
+        # -- so between them they used to un-hide any row a dialog had already
+        # set_row_visible(..., False) on. Only spin boxes were affected, which
+        # is why the Volume dialog hid its checkbox rows and kept showing the
+        # position offset.
+        was_hidden = spin.isHidden()
         container = QWidget(parent)
         row = QHBoxLayout(container)
         row.setContentsMargins(0, 0, 0, 0)
@@ -367,6 +381,7 @@ def pink_spin_buttons(root: QWidget) -> None:
         layout.replaceWidget(spin, container)
         row.addWidget(spin, 1)
         spin.setVisible(True)
+        container.setVisible(not was_hidden)
         # The spin is no longer the widget its form row is keyed on, so
         # setRowVisible has to be told where it went -- see `set_row_visible`.
         spin.setProperty("pinkRow", container)
@@ -464,7 +479,21 @@ class HitsoundPlayer(QObject):
         # Shifts when a sound fires relative to the playhead; negative fires
         # earlier. Output latency is real and device-dependent, so without this
         # every hitsound sits late and the user has no recourse.
+        #
+        # **Wall** milliseconds, converted to song milliseconds at the point of
+        # use by multiplying by `playback_rate` -- the same distinction
+        # POSITION_ALLOWABLE_ERROR_MS draws. What it compensates is the time
+        # the sound spends in the output device, which is real time and does
+        # not care how fast the song is being read. Held as a song-time
+        # constant (as it was) an offset tuned at 100% was four times too large
+        # at 25%: the error is offset * (1 - rate), which is exactly zero at
+        # 100% and worst at the slowest speed. That is why every rate except
+        # the one nobody ever changes away from sounded misaligned.
         self.offset_ms = 0
+        # Kept in step by MainWindow._change_playback_speed. Not read from the
+        # player: `pending()` is deliberately free of any audio call so the
+        # interesting half stays testable without a media device.
+        self.playback_rate = 1.0
         self._times: list[float] = []
         self._keys: list[str] = []
         self._cursor = 0.0
@@ -543,8 +572,11 @@ class HitsoundPlayer(QObject):
         """
         if not self.enabled or current_ms <= previous_ms:
             return []
-        first = bisect_right(self._times, previous_ms - self.offset_ms)
-        last = bisect_right(self._times, current_ms - self.offset_ms)
+        # See `offset_ms`: wall milliseconds, so the window it shifts has to be
+        # scaled into song time by whatever rate the song is playing at.
+        offset = self.offset_ms * abs(self.playback_rate)
+        first = bisect_right(self._times, previous_ms - offset)
+        last = bisect_right(self._times, current_ms - offset)
         return self._keys[first:last]
 
     def advance(self, current_ms: float) -> None:
@@ -588,6 +620,10 @@ def active_timing(
 # mappers stack fake sliders for is that yellow showing through.
 KIAI_PULSE_COLOR = (255, 206, 92)
 KIAI_PULSE_ALPHA = 80
+# Deliberately far below KIAI_PULSE_ALPHA: this one washes the *entire* view
+# rect rather than a single note-sized circle, so the same alpha that reads as
+# a glow on a note would read as a floodlight over the whole lane.
+PLAYFIELD_PULSE_ALPHA = 16
 # A circle's share of that, so a note glows without its colour being replaced.
 CIRCLE_KIAI_STRENGTH = 0.55
 # Under this a "beat" is a gimmick, not a pulse: an invisible-note section at
@@ -595,7 +631,9 @@ CIRCLE_KIAI_STRENGTH = 0.55
 KIAI_PULSE_MIN_BEAT_MS = 50.0
 
 
-def beat_pulse(timing_points: list[TimingPoint], time_ms: float) -> float:
+def beat_pulse(
+    timing_points: list[TimingPoint], time_ms: float, anchor_ms: float | None = None,
+) -> float:
     """Flash strength at `time_ms`: 1.0 on the beat, fading to 0 by the next.
 
     Walks back past any point whose beat_length reads as a gimmick rather than
@@ -606,6 +644,14 @@ def beat_pulse(timing_points: list[TimingPoint], time_ms: float) -> float:
     where the playhead happened to be sitting, not on the note. Returns 0.0
     only when the map has no real section behind the playhead at all, which
     keeps the original guard against strobing at 0.0001ms per beat.
+
+    `anchor_ms` is the start of the kiai section `time_ms` falls in (the
+    caller already has this from its kiai bands, so this doesn't search for
+    it). With an anchor, the pulse hits 1.0 there and repeats every `meter`
+    beats (a measure) instead of every single beat -- one linear fade across
+    the whole measure, so a slower BPM fades slower for free, no separate
+    constant needed. Without one, falls back to the old one-beat, point-phased
+    behaviour so existing callers are unaffected.
     """
     # Binary search to the last point at or before the playhead, then walk back
     # from there -- not a scan from the end of the list. This runs once per
@@ -616,7 +662,11 @@ def beat_pulse(timing_points: list[TimingPoint], time_ms: float) -> float:
     while index >= 0:
         point = timing_points[index]
         if point.beat_length >= KIAI_PULSE_MIN_BEAT_MS:
-            return 1.0 - ((time_ms - point.time) / point.beat_length) % 1.0
+            if anchor_ms is None:
+                return 1.0 - ((time_ms - point.time) / point.beat_length) % 1.0
+            meter = point.meter if point.meter > 0 else 4
+            period = point.beat_length * meter
+            return 1.0 - ((time_ms - anchor_ms) / period) % 1.0
         index -= 1
     return 0.0
 
@@ -1437,8 +1487,11 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
         # what the stack actually looks like in game is the yellow washing out
         # to white. The layer draws that result directly rather than painting
         # three overlapping yellows, which at this size is just a brighter blob.
-        self.shiny_brush = QColor(255, 252, 235, 215)
-        self.ghost_shiny_brush = QColor(255, 252, 235, 110)
+        # Deliberately near-white -- a shiny is the stack mappers build to read
+        # as "brighter than a note", so its fill is pushed toward pure white
+        # rather than toward any particular hue.
+        self.shiny_brush = QColor(255, 254, 245, 235)
+        self.ghost_shiny_brush = QColor(255, 254, 245, 120)
         # Spinner extent: grey so it reads as "this span is occupied" rather
         # than competing with don/kat/slider colour coding.
         self.spinner_band_brush = QColor(190, 195, 205, 70)
@@ -1872,11 +1925,20 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
         if self.drag_anchor_time is not None:
             self.drag_mouse_x=event.position().x(); self._update_drag_selection()
             return
-        # Hover ghost: only worth repainting for a placement tool -- select
-        # mode has nothing to preview.
+        # Repaint on every move, whatever the tool. The hover *ghost* is only
+        # worth drawing for a placement tool, but draw_cursor_position writes
+        # the millisecond under the cursor in every one of them -- and with
+        # the repaint gated on the tool, that number only refreshed when
+        # something else happened to repaint the view, which in select mode
+        # meant clicking.
         self._hover_time = self.time_for_x(event.position().x())
-        if self.tool != "select":
-            self.update()
+        self.update()
+    def leaveEvent(self, event) -> None:
+        """Hand the readout back to the playhead when the cursor leaves."""
+        self._hover_time = None
+        super().leaveEvent(event)
+        self.update()
+
     def _auto_scroll_selection(self) -> None:
         if self.drag_anchor_time is None: self.auto_scroll_timer.stop(); return
         if self.auto_scroll_step(self.drag_mouse_x): self._update_drag_selection()
@@ -1925,7 +1987,7 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
             if self.tool == "kiai":
                 # Snapped here rather than by the handler -- see
                 # SVEditorView.mouseReleaseEvent, which owns the same gesture
-                # in the Kiai and Sound Effect layer and for the same reason:
+                # in the Kiai and Sound Volume layer and for the same reason:
                 # only the view knows Ctrl means whole milliseconds.
                 start, end = self.snap_ms(start), self.snap_ms(end)
             self.drag_start_x = None
@@ -2671,6 +2733,11 @@ class SVEditorView(TimeAxisMixin, QWidget):
         # view's own tool row entry (global, per the Editor page's tool
         # rows), never anything else.
         self.tool = "select"
+        # Set true only for the Kiai and Sound Volume layer (MainWindow.
+        # _add_editor_view). Switches the vertical axis, the connected curve
+        # and vertical drags from SV to a plain 0-100 volume percentage; the
+        # red/green/yellow line placement itself is unchanged.
+        self.volume_mode = False
 
         self.drag_start_x: float | None = None
         self.drag_anchor_time: float | None = None
@@ -2700,6 +2767,13 @@ class SVEditorView(TimeAxisMixin, QWidget):
         self.show_bpm_labels = True
         self._series: list[tuple[float, float]] = []
         self._series_times: list[float] = []
+        # Effective volume over time, used only when volume_mode is True. Kept
+        # separate from _series/_series_times rather than repurposing them:
+        # SV resolution resets to 1.0x at an uninherited point, volume does
+        # not (every point, red or green, carries its own .volume), so the
+        # two curves are built by different rules from the same points.
+        self._volume_series: list[tuple[float, float]] = []
+        self._volume_series_times: list[float] = []
         self._line_kinds: dict[float, str] = {}
         self._line_kind_times: list[float] = []
         self._bpm_at: dict[float, float] = {}
@@ -2794,6 +2868,15 @@ class SVEditorView(TimeAxisMixin, QWidget):
             by_time[point.time] = point.sv_multiplier
         self._series = sorted(by_time.items())
         self._series_times = [time_ms for time_ms, _sv in self._series]
+        # Effective volume: unlike SV, every point (red or green) carries its
+        # own value and none of them reset it, so this is a plain
+        # last-in-file-order-wins fold over the same points, iterated in
+        # `self.timing_points`' sorted (stable) order.
+        by_time_volume: dict[float, float] = {}
+        for point in self._visible_points:
+            by_time_volume[point.time] = float(point.volume)
+        self._volume_series = sorted(by_time_volume.items())
+        self._volume_series_times = [time_ms for time_ms, _volume in self._volume_series]
         # Keyed by the point's exact time, not by a rounded millisecond: this
         # is where the line is *drawn*, and a point at 4845.4 rounded to 4845
         # drew half a millisecond away from the note it belongs to -- invisible
@@ -2824,7 +2907,12 @@ class SVEditorView(TimeAxisMixin, QWidget):
         # against the full list, once per curve segment per frame, was the SV
         # editor's entire paint cost.
         self._beat_points = uninherited_points(self.timing_points)
-        if self.autoscale:
+        if self.volume_mode:
+            # Volume is a plain 0-100% scale, never the log SV ladder -- set
+            # here too (not only in update_scale) so a mouse handler that
+            # reads scale_min/max between paints never sees a stale SV range.
+            self.scale_min, self.scale_max = 0.0, 100.0
+        elif self.autoscale:
             # The ceiling follows the whole document, not the visible window: a
             # bound refitted per frame moved every time a fast point crossed
             # the view edge, which read as the graph flickering while scrolling.
@@ -2877,12 +2965,19 @@ class SVEditorView(TimeAxisMixin, QWidget):
     def _sv_to_y(self, sv: float, top: float, bottom: float) -> float:
         low, high = self.scale_min, self.scale_max
         clamped = max(low, min(high, sv))
-        ratio = (math.log(clamped) - math.log(low)) / (math.log(high) - math.log(low))
+        if self.volume_mode:
+            # Linear 0-100%, not log SV -- math.log(0) would crash here, and a
+            # log scale has no meaning for a volume percentage anyway.
+            ratio = (clamped - low) / (high - low)
+        else:
+            ratio = (math.log(clamped) - math.log(low)) / (math.log(high) - math.log(low))
         return bottom - ratio * (bottom - top)
 
     def _y_to_sv(self, y: float, top: float, bottom: float) -> float:
         low, high = self.scale_min, self.scale_max
         ratio = max(0.0, min(1.0, (bottom - y) / max(1.0, bottom - top)))
+        if self.volume_mode:
+            return low + ratio * (high - low)
         return math.exp(math.log(low) + ratio * (math.log(high) - math.log(low)))
 
     def update_scale(self) -> tuple[float, float]:
@@ -2901,7 +2996,13 @@ class SVEditorView(TimeAxisMixin, QWidget):
 
         Kept as a method (rather than reading the attribute) because
         `autoscale = False` still has to freeze whatever a caller set by hand.
+
+        In volume_mode the whole SV_BOUND ladder is bypassed: the axis is
+        always a fixed 0%-100%, because that is what a volume percentage is.
         """
+        if self.volume_mode:
+            self.scale_min, self.scale_max = 0.0, 100.0
+            return self.scale_min, self.scale_max
         return self.scale_min, self.scale_max
 
     def sv_series(self) -> list[tuple[float, float]]:
@@ -2967,7 +3068,13 @@ class SVEditorView(TimeAxisMixin, QWidget):
     def _drag_axis_for_click(self, point: TimingPoint, pos: QPointF) -> str:
         """"value" (adjust SV) if the click landed on the point's dot, else
         "time" (retime). An uninherited point has no SV, so it is always
-        "time" -- see SV_DOT_HIT_RADIUS_PX for the threshold."""
+        "time" -- see SV_DOT_HIT_RADIUS_PX for the threshold.
+
+        Always "time" in volume_mode too: this layer has nothing to do with
+        SV, and a vertical drag there must retime the line, never write one.
+        """
+        if self.volume_mode:
+            return "time"
         if point.uninherited:
             return "time"
         dot = self._dot_position(point)
@@ -3022,7 +3129,7 @@ class SVEditorView(TimeAxisMixin, QWidget):
 
         if self.tool in ("function", "kiai", "volume"):
             # Same gesture for all three: drag a range, then the owner decides
-            # what to do with it. Kiai and Volume are the Kiai and Sound Effect
+            # what to do with it. Kiai and Volume are the Kiai and Sound Volume
             # layer's tools -- see MainWindow._sv_range_action.
             self.drag_start_x = event.position().x()
             self.drag_mouse_x = self.drag_start_x
@@ -3137,11 +3244,19 @@ class SVEditorView(TimeAxisMixin, QWidget):
                 )
             self.update()
             return
-        # Ghost preview: only green-line mode has something to preview.
+        # Ghost preview: only green-line mode has something to preview, but
+        # the cursor millisecond is drawn in every mode -- see
+        # TimelineGameplay.mouseMoveEvent for why the repaint is unconditional.
         self._hover_time = self.time_for_x(event.position().x())
         self._hover_sv = self._y_to_sv(event.position().y(), self._graph_top(), self._graph_bottom())
-        if self.tool == "green_line":
-            self.update()
+        self.update()
+
+    def leaveEvent(self, event) -> None:
+        """See TimelineGameplay.leaveEvent."""
+        self._hover_time = None
+        self._hover_sv = None
+        super().leaveEvent(event)
+        self.update()
 
     def mouseReleaseEvent(self, event) -> None:
         if event.button() == Qt.RightButton:
@@ -3300,8 +3415,12 @@ class SVEditorView(TimeAxisMixin, QWidget):
         painter.setPen(QPen(QColor(120, 132, 150, 90), 1, Qt.DotLine))
         painter.drawLine(0, int(top), self.width(), int(top))
         painter.setPen(self.label_pen)
-        painter.drawText(QPointF(4, top + 12), f"{self.scale_max:.2f}x")
-        painter.drawText(QPointF(4, bottom - 4), f"{self.scale_min:.2f}x")
+        if self.volume_mode:
+            painter.drawText(QPointF(4, top + 12), f"{self.scale_max:.0f}%")
+            painter.drawText(QPointF(4, bottom - 4), f"{self.scale_min:.0f}%")
+        else:
+            painter.drawText(QPointF(4, top + 12), f"{self.scale_max:.2f}x")
+            painter.drawText(QPointF(4, bottom - 4), f"{self.scale_min:.2f}x")
 
     def _draw_sv_curve(
         self, painter: QPainter, top: float, bottom: float, start_time: float, end_time: float,
@@ -3321,7 +3440,14 @@ class SVEditorView(TimeAxisMixin, QWidget):
         contain. Dots mark the real points, so the line is never mistaken for a
         claim that SV ramps continuously between them.
         """
-        series = self._series
+        # In volume_mode this plots effective volume (carried forward from
+        # each point's own .volume, never reset by an uninherited point) --
+        # see _rebuild_caches -- rather than effective SV. Same step/diagonal
+        # drawing rules either way: a volume sweep generated by the Volume
+        # tool (2d) is eased between existing points exactly like an SV sweep,
+        # so the same visual makes the easing shape readable.
+        series = self._volume_series if self.volume_mode else self._series
+        series_times = self._volume_series_times if self.volume_mode else self._series_times
         if not series:
             return
 
@@ -3329,8 +3455,8 @@ class SVEditorView(TimeAxisMixin, QWidget):
         # runs per frame per view, and a gimmick map carries tens of thousands
         # of points.
         margin = self.window_ms * 0.1
-        first = bisect_left(self._series_times, start_time - margin)
-        after_last = bisect_right(self._series_times, end_time + margin)
+        first = bisect_left(series_times, start_time - margin)
+        after_last = bisect_right(series_times, end_time + margin)
         # Anchor to the neighbours just outside the window, or the curve would
         # start and end abruptly at the view edges as it scrolls.
         visible = series[max(0, first - 1):min(len(series), after_last + 1)]
@@ -3382,7 +3508,8 @@ class SVEditorView(TimeAxisMixin, QWidget):
                 continue
             if i and point.x() - points[i - 1].x() < SV_LABEL_MIN_SPACING_PX:
                 continue
-            painter.drawText(QPointF(point.x() + 3, point.y() - 4), f"{sv:.2f}x")
+            label = f"{sv:.0f}%" if self.volume_mode else f"{sv:.2f}x"
+            painter.drawText(QPointF(point.x() + 3, point.y() - 4), label)
 
     def _draw_placement_ghost(self, painter: QPainter, top: float, bottom: float) -> None:
         """Dashed preview of the green line a click would place, at the snapped
@@ -3448,6 +3575,11 @@ class GameplayViewerView(QWidget):
         self.timing_points: list[TimingPoint] = []
         self.beat_points: list[TimingPoint] = []
         self._beat_times: list[float] = []
+        # (start_ms, end_ms) kiai sections; see refresh_notes and paintEvent's
+        # pulse block. kiai_bands_for lets a host share the cached bands the
+        # way other views do -- see MainWindow._share_kiai_bands.
+        self.kiai_bands: list[tuple[int, int]] = []
+        self.kiai_bands_for = None
         # The map's [Difficulty] SliderMultiplier, until a document is loaded.
         self.slider_multiplier = SLIDER_MULTIPLIER_ASSUMED
         # Scroll velocity in beats per millisecond, one entry per timing-point
@@ -3496,6 +3628,10 @@ class GameplayViewerView(QWidget):
             self.notes = [note for note in document.hit_objects if self.object_filter(note)]
         self.note_times = [note.time for note in self.notes]
         self.timing_points = sorted_by_time(document.timing_points)
+        if self.kiai_bands_for is not None:
+            self.kiai_bands = self.kiai_bands_for(document)
+        else:
+            self.kiai_bands = kiai_spans(self.timing_points, KIAI_OPEN_END_MS)
         self.slider_multiplier = document.slider_multiplier
         self.beat_points = uninherited_points(self.timing_points)
         self._beat_times = [point.time for point in self.beat_points]
@@ -3824,12 +3960,23 @@ class GameplayViewerView(QWidget):
         # the section. Notes were previously filtered by their own kiai state
         # as well, which meant the section's first beat lit up a handful of
         # notes and left the rest of the screen dark.
-        pulse = (
-            beat_pulse(self.beat_points, self.current_time)
-            if in_kiai(self.timing_points, self.current_time)
-            else 0.0
-        )
+        # Anchor the pulse to the kiai section under the playhead, not to
+        # whatever timing point governs it -- see beat_pulse. kiai_bands is
+        # sorted by start, so bisect straight to the band the playhead could
+        # be in rather than scanning it.
+        band_index = bisect_right(self.kiai_bands, self.current_time, key=lambda band: band[0]) - 1
+        anchor_ms = None
+        if 0 <= band_index < len(self.kiai_bands):
+            band_start, band_end = self.kiai_bands[band_index]
+            if band_start <= self.current_time < band_end:
+                anchor_ms = band_start
+        pulse = beat_pulse(self.beat_points, self.current_time, anchor_ms) if anchor_ms is not None else 0.0
         if pulse > 0.0:
+            # Subtle white wash over the whole lane, drawn before the per-note
+            # flashes below so notes still read brighter than the background.
+            playfield_alpha = round(PLAYFIELD_PULSE_ALPHA * pulse)
+            if playfield_alpha > 0:
+                painter.fillRect(self.rect(), QColor(255, 255, 255, playfield_alpha))
             for note in self.notes[first:after_last]:
                 x = self.x_for_time(note.time)
                 radius = big_radius if (note.is_finisher or note.is_spinner) else normal_radius
@@ -4207,7 +4354,7 @@ class AddViewDialog(QDialog):
         self.type_combo.addItem(tr("MainWindow", "Fake Sliders Only"), "chart_fake_slider")
         self.type_combo.addItem(tr("MainWindow", "Barlines Only"), "chart_barline")
         self.type_combo.addItem(tr("MainWindow", "SV Editor"), "sv")
-        self.type_combo.addItem(tr("MainWindow", "Kiai and Sound Effect"), "kiai_sound")
+        self.type_combo.addItem(tr("MainWindow", "Kiai and Sound Volume"), "kiai_sound")
         self.type_combo.addItem(tr("MainWindow", "Gameplay Viewer"), "gameplay")
         self.type_combo.addItem(tr("MainWindow", "Gameplay: Regular Chart Only"), "gameplay_regular")
         self.type_combo.addItem(tr("MainWindow", "Gameplay: Fake Sliders Only"), "gameplay_fake_slider")
@@ -5226,6 +5373,24 @@ def bpm_matches(bpm: float | None, wanted: float) -> bool:
     return abs(bpm - wanted) <= BPM_MATCH_RELATIVE_EPSILON * max(abs(bpm), abs(wanted), 1.0)
 
 
+def bpm_in_range(bpm: float | None, low: float, high: float) -> bool:
+    """Is `bpm` within [low, high], inclusive, allowing for the same float
+    drift bpm_matches guards against?
+
+    The tolerance is applied per end rather than as one shared absolute
+    slop, for the same reason bpm_matches scales it by the value being
+    compared: a red line's BPM is recomputed as 60000/beat_length, so an
+    authored 500.0 can come back as 499.99999...  and a fixed epsilon would
+    be wrong by orders of magnitude between a 60 BPM line and a 60000 BPM
+    barline gimmick one.
+    """
+    if bpm is None:
+        return False
+    low_tolerance = BPM_MATCH_RELATIVE_EPSILON * max(abs(bpm), abs(low), 1.0)
+    high_tolerance = BPM_MATCH_RELATIVE_EPSILON * max(abs(bpm), abs(high), 1.0)
+    return bpm >= low - low_tolerance and bpm <= high + high_tolerance
+
+
 class SVFunctionPreview(QWidget):
     """20 dots showing what Generate would actually produce.
 
@@ -5379,7 +5544,7 @@ class SVFunctionDialog(QDialog):
         # gimmick difficulty is full of 60000 BPM lines, so its own timing is
         # the worst possible answer to "what BPM are we at".
         self.base_timing = base_timing or []
-        # The Kiai and Sound Effect layer's Volume tool is this same generator
+        # The Kiai and Sound Volume layer's Volume tool is this same generator
         # pointed at TimingPoint.volume: same functions, same modes, same
         # placement. Only the quantity differs -- whole percent in 0..100
         # instead of a scroll rate -- so it is a flag rather than a second
@@ -5419,7 +5584,7 @@ class SVFunctionDialog(QDialog):
         # Volume is a whole percent in 0..100 (what the .osu field holds and
         # what the writer validates), so the same two spin boxes are told to
         # carry integers rather than a second pair being built beside them.
-        low, high = (0.0, 100.0) if volume else (0.1, self.MAX_RATE)
+        low, high = (0.0, 100.0) if volume else (0.01, self.MAX_RATE)
         step, decimals = (1.0, 0) if volume else (0.05, 2)
 
         self.initial_rate_spin = QDoubleSpinBox()
@@ -5486,10 +5651,19 @@ class SVFunctionDialog(QDialog):
             self.DEFAULT_POSITION_OFFSET_MS if position_offset is None else int(position_offset)
         )
         layout.addRow(tr("MainWindow", "Position offset (ms)"), self.position_offset_spin)
+        if volume:
+            # Describes where an *inserted* point sits; the Volume tool edits
+            # the timing points already in the range instead, so there is
+            # nothing here to offset.
+            set_row_visible(layout, self.position_offset_spin, False)
 
         self.omit_barline_check = QCheckBox()
         self.omit_barline_check.setChecked(False)
         layout.addRow(tr("MainWindow", "Omit barline"), self.omit_barline_check)
+        if volume:
+            # Also describes an inserted point's own flag; nothing is
+            # inserted in volume mode.
+            set_row_visible(layout, self.omit_barline_check, False)
 
         self.relative_to_final_bpm_check = QCheckBox()
         # Off in a gimmick layer. It multiplies every generated rate by
@@ -5535,9 +5709,18 @@ class SVFunctionDialog(QDialog):
         self.bpm_filter_spin.setValue(
             base_bpm_at(self.base_timing, start_ms) if self.base_timing else 120.0
         )
+        # An inclusive range rather than one exact BPM: "500-1000 BPM" means
+        # every red line from 500 to 1000, and an exact match is just the
+        # degenerate case where the two ends are equal -- so there is no
+        # separate exact-value mode to keep in sync with this one.
+        self.bpm_filter_max_spin = QDoubleSpinBox()
+        self.bpm_filter_max_spin.setRange(1.0, 1000000.0)
+        self.bpm_filter_max_spin.setDecimals(2)
+        self.bpm_filter_max_spin.setValue(self.bpm_filter_spin.value())
         if gimmick_layer == "sv_barline":
             layout.addRow(tr("MainWindow", "Only red lines at this BPM"), self.bpm_filter_check)
-            layout.addRow(tr("MainWindow", "BPM"), self.bpm_filter_spin)
+            layout.addRow(tr("MainWindow", "BPM from"), self.bpm_filter_spin)
+            layout.addRow(tr("MainWindow", "BPM to"), self.bpm_filter_max_spin)
             self.bpm_filter_check.toggled.connect(self._update_bpm_filter_row)
 
         layout.addItem(QSpacerItem(0, 0, QSizePolicy.Minimum, QSizePolicy.Expanding))
@@ -5589,7 +5772,7 @@ class SVFunctionDialog(QDialog):
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.button(QDialogButtonBox.Ok).setText(tr("MainWindow", "Generate"))
-        buttons.accepted.connect(self.accept)
+        buttons.accepted.connect(self._accept)
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
 
@@ -5637,8 +5820,12 @@ class SVFunctionDialog(QDialog):
         objects or they do not exist. The position offset stays -- it is how far
         ahead of those objects they sit, which is a real choice and the one the
         normal chart layer needs.
+
+        Volume mode has no "where" either, for a different reason: it edits
+        the timing points already in the range rather than placing new ones,
+        so there is no position to offer a choice about.
         """
-        if self.gimmick_layer:
+        if self.gimmick_layer or self.volume:
             set_row_visible(self._form_layout, self.snap_combo, False)
             set_row_visible(self._form_layout, self.placement_combo, False)
             return
@@ -5654,7 +5841,17 @@ class SVFunctionDialog(QDialog):
         """
         if self.gimmick_layer != "sv_barline":
             return
-        set_row_visible(self._form_layout, self.bpm_filter_spin, self.bpm_filter_check.isChecked())
+        visible = self.bpm_filter_check.isChecked()
+        set_row_visible(self._form_layout, self.bpm_filter_spin, visible)
+        set_row_visible(self._form_layout, self.bpm_filter_max_spin, visible)
+
+    def _accept(self) -> None:
+        # Clamped up rather than refused, same reasoning as
+        # MultiFakeSliderDialog._accept: "to" below "from" is "I only meant
+        # the one BPM at from", not a mistake worth bouncing back to the user.
+        if self.bpm_filter_max_spin.value() < self.bpm_filter_spin.value():
+            self.bpm_filter_max_spin.setValue(self.bpm_filter_spin.value())
+        self.accept()
 
     def parameters(self) -> dict:
         return {
@@ -5662,17 +5859,22 @@ class SVFunctionDialog(QDialog):
             "final_rate": self.final_rate_spin.value(),
             "placement": str(self.placement_combo.currentData()),
             "snap_divisor": int(self.snap_combo.currentData()),
-            "position_offset": self.position_offset_spin.value(),
+            # Zero in volume mode, not merely hidden: the Volume tool edits
+            # the timing points already in the range, so there is nothing to
+            # offset and no path may act as though there were.
+            "position_offset": 0 if self.volume else self.position_offset_spin.value(),
             "omit_barline": self.omit_barline_check.isChecked(),
             "relative_to_final_bpm": self.relative_to_final_bpm_check.isChecked(),
             "function": self.selected_function(),
             "oscillate": str(self.mode_combo.currentData()),
             "include_shiny": self.include_shiny_check.isChecked(),
             # One key rather than a flag and a value: None *is* "no filter",
-            # so no consumer can read the BPM without first having checked
-            # whether it applies.
+            # so no consumer can read the BPM interval without first having
+            # checked whether it applies. The value is a (low, high) tuple,
+            # inclusive at both ends -- an exact single BPM is just low == high.
             "only_red_line_bpm": (
-                self.bpm_filter_spin.value() if self.bpm_filter_check.isChecked() else None
+                (self.bpm_filter_spin.value(), self.bpm_filter_max_spin.value())
+                if self.bpm_filter_check.isChecked() else None
             ),
         }
 
@@ -5741,6 +5943,14 @@ class MainWindow(QMainWindow):
         # switching difficulty and back preserves edits, selection, undo
         # history and cursor position instead of discarding them.
         self._states: dict[Path, DifficultyState] = {}
+        # source_path -> history.revision at the moment the user chose
+        # "Continue Without Saving" on it. _confirm_leaving_editor stays
+        # quiet about a state whose revision hasn't moved since, so
+        # answering the prompt once does not immediately re-ask on the very
+        # next page/view change; a fresh edit moves the revision on and the
+        # prompt is legitimate again. Cleared once the state is actually
+        # saved (save_all_states).
+        self._discard_acknowledged: dict[Path, int] = {}
         self.state: DifficultyState | None = None
         self.song_difficulties: list[Path] = []
         # Every TimelineGameplay currently on screen: the shared player-deck
@@ -5860,10 +6070,29 @@ class MainWindow(QMainWindow):
         self.player.durationChanged.connect(
             lambda _duration: self._update_timeline_info()
         )
+        # The interpolated clock (osu!'s framedClock): the value actually
+        # displayed. Advanced and blended toward the source clock once per
+        # rendered frame in _advance_interpolated_clock -- never stepped
+        # directly from a backend report, and never allowed to move backwards
+        # except on an explicit reset (seek_audio, toggle_playback).
         self.audio_anchor_position = 0.0
+        # Restarted every time audio_anchor_position is set (per frame, or on
+        # a reset) so _predicted_audio_position can extrapolate the small gap
+        # since then for callers between rendered frames.
         self.audio_anchor_clock = QElapsedTimer()
         self.audio_anchor_clock.start()
-        self.latest_audio_position = 0
+        # The last raw report from QMediaPlayer.positionChanged, and the
+        # instant it arrived. osu!'s framedSourceClock is exactly this: a
+        # sparse report extrapolated forward by elapsed real time * rate, so
+        # there is something to blend toward every frame instead of only at
+        # the tens-of-milliseconds-apart instants a report actually lands.
+        self.latest_audio_position = 0.0
+        self._source_report_clock = QElapsedTimer()
+        self._source_report_clock.start()
+        # Monotonic floor for _predicted_audio_position's own sub-frame
+        # extrapolation -- reset alongside the clocks above so a legitimate
+        # backwards seek is never clamped away.
+        self._last_predicted_position = 0.0
 
         # Never restarted after this; _render_gameplay_frame schedules off a
         # fixed cadence (self._next_frame_due_ns) measured against it instead
@@ -5874,6 +6103,11 @@ class MainWindow(QMainWindow):
         self.gameplay_frame_clock.start()
         self.gameplay_frame_interval_ns = 8_333_333  # ~120fps
         self._next_frame_due_ns = self.gameplay_frame_interval_ns
+        # The real gap between rendered frames drives the interpolated
+        # clock's own per-frame advance (_advance_interpolated_clock), rather
+        # than the fixed interval above -- a render that fires a little late
+        # advances the playhead by how late it actually was.
+        self._last_frame_ns = self.gameplay_frame_clock.nsecsElapsed()
         # Last position handed to the views, so a paused playhead stops costing
         # a full repaint of every open view per frame.
         self._last_broadcast_position: float | None = None
@@ -6662,8 +6896,20 @@ class MainWindow(QMainWindow):
             self._close_editor_view(frame)
 
     def _confirm_leaving_editor(self) -> bool:
-        """Ask about unsaved difficulties. False means "stay where you are"."""
-        dirty = [state for state in self._states.values() if state.history.dirty]
+        """Ask about unsaved difficulties. False means "stay where you are".
+
+        A state the user already dismissed with "Continue Without Saving" is
+        left out as long as nothing has changed on it since: `history.revision`
+        bumps on every edit, so a match against the revision recorded at that
+        click is exactly "still the same unsaved edits the user already said
+        to ignore" -- and a mismatch means a real new edit, which is legitimate
+        to ask about again.
+        """
+        dirty = [
+            state for state in self._states.values()
+            if state.history.dirty
+            and self._discard_acknowledged.get(state.source_path) != state.history.revision
+        ]
         if not dirty:
             return True
         box = QMessageBox(self)
@@ -6684,7 +6930,11 @@ class MainWindow(QMainWindow):
         if clicked is save_button:
             self.save_all_states()
             return True
-        return clicked is leave_button
+        if clicked is leave_button:
+            for state in dirty:
+                self._discard_acknowledged[state.source_path] = state.history.revision
+            return True
+        return False
 
     def closeEvent(self, event) -> None:
         # Same guard as Esc: quitting is the other way to walk away from
@@ -7702,7 +7952,7 @@ class MainWindow(QMainWindow):
         ("sv_chart", "sv", "SV (normal chart)"),
         ("sv_fake_slider", "sv", "SV (fake sliders)"),
         ("sv_barline", "sv", "SV (barlines)"),
-        ("kiai_sound", "sv", "Kiai and Sound Effect"),
+        ("kiai_sound", "sv", "Kiai and Sound Volume"),
     )
 
     @staticmethod
@@ -8368,6 +8618,13 @@ class MainWindow(QMainWindow):
                 )
                 # The BPM belongs beside the lines themselves, which is layer 3.
                 view.show_bpm_labels = layer_id != "sv_barline"
+                # Layer 7 graphs note volume on a 0-100% axis, not scroll
+                # speed. Set here as well as in _add_editor_view because the
+                # gimmick page builds its bands itself rather than going
+                # through that path -- and the band *is* where this layer
+                # normally lives, so missing it here left the curve reading
+                # SV in the one place anybody looks at it.
+                view.volume_mode = layer_id == "kiai_sound"
                 view.timing_line_edit_requested.connect(
                     lambda uid, dp=pairing.target: self._edit_timing_line(dp, uid)
                 )
@@ -8794,10 +9051,21 @@ class MainWindow(QMainWindow):
         """The same routing for an SV view's dragged range.
 
         One signal, three tools: the SV layers' Function, and the Kiai and
-        Sound Effect layer's Kiai and Volume. Which one it was is a property of
+        Sound Volume layer's Kiai and Volume. Which one it was is a property of
         the view rather than of the drag -- see _gimmick_range_action.
         """
         if tool == "kiai":
+            # The Kiai and Sound Volume layer's Kiai tool never creates a
+            # green line (task: "you shouldn't be able to drag them at all"
+            # where there is no timing point) -- so a range with nothing in
+            # it is refused outright rather than silently inserting edges.
+            state = self._states.get(difficulty_path)
+            if state is not None and not any(
+                round(start_ms) <= round(point.time) <= round(end_ms)
+                for point in state.document.timing_points
+            ):
+                self.show_toast(tr("MainWindow", "No timing point in the selected range."))
+                return
             self._set_kiai_range(difficulty_path, start_ms, end_ms)
         elif tool == "volume":
             self._open_volume_function_dialog(difficulty_path, start_ms, end_ms)
@@ -8815,11 +9083,15 @@ class MainWindow(QMainWindow):
         lines, a barline note's seven -- and each of them is a place the section
         can end by accident. Setting them all is the only way to say it once.
 
-        The two edges are made real: a point is written at the start if none is
-        there, and one at the end with kiai off, so the section begins and ends
-        exactly where the drag did rather than at whatever line happened to be
-        nearest. Both are inherited points restating the SV already in force, so
-        they change nothing except the flag they carry.
+        Nothing is ever *created* here. The only toolbox with a Kiai tool is
+        the Kiai and Sound Volume layer, and that layer must never write a
+        green line -- so an edge with no timing point on it is left alone and
+        the section starts (or ends) at the nearest existing point instead.
+        This used to invent an inherited point at each edge restating the SV
+        already in force, which is a scroll-speed edit made on the user's
+        behalf in a layer that has nothing to do with scroll speed. If the
+        range holds no timing point at all there is nothing to flag, so the
+        caller toasts and does not call this (see _sv_range_action).
 
         The range arrives already snapped: the view that dragged it owns the
         grid (and the Ctrl override that trades it for whole milliseconds), so
@@ -8849,16 +9121,6 @@ class MainWindow(QMainWindow):
                     EditTimingPoint(point.uid, {"effects": (point.effects, wanted)})
                 )
 
-        edges = []
-        for at, kiai in ((start, True), (end, False)):
-            if any(round(point.time) == at for point in ordered):
-                continue
-            active = active_point_at(ordered, at)
-            edges.append(TimingPoint.inherited_at(
-                at, sv_at(ordered, at), kiai=kiai, template=active,
-            ))
-        if edges:
-            commands.append(InsertTimingPoints(edges))
         if not commands:
             return
         state.history.push(CompositeCommand(commands, "set_kiai"), state)
@@ -9278,7 +9540,7 @@ class MainWindow(QMainWindow):
             view_type = "chart"
         elif gameplay_layer is not None:
             view_type = "gameplay"
-        # ...and so is the Kiai and Sound Effect layer: an unfiltered SV view,
+        # ...and so is the Kiai and Sound Volume layer: an unfiltered SV view,
         # differing only in which range tools its drag can be holding, which
         # every SV view now routes through _sv_range_action anyway.
         kiai_sound = view_type == "kiai_sound"
@@ -9372,10 +9634,13 @@ class MainWindow(QMainWindow):
             self.global_sv_tool_row.setVisible(False)
         elif view_type == "sv":
             view = SVEditorView()
-            # Marks the Kiai and Sound Effect view for the global SV tool row,
+            # Marks the Kiai and Sound Volume view for the global SV tool row,
             # which is the one place an unfiltered SV view still has to be told
             # apart from an ordinary one (see _sv_tools_for).
             view.kiai_sound = kiai_sound
+            # The Kiai and Sound Volume layer has nothing to do with SV: its
+            # axis, curve and drags all read/write note volume instead.
+            view.volume_mode = kiai_sound
             view.timing_bar = self.gimmick_timing_bar if band else self.timing_bar
             view.load_document(state.document)
             view.set_snap_divisor(int(self.editor_snap_combo.currentData()))
@@ -9425,6 +9690,7 @@ class MainWindow(QMainWindow):
             view = GameplayViewerView()
             if gameplay_layer is not None:
                 view.object_filter = self._layer_object_filter(gameplay_layer)
+            self._share_kiai_bands(view, sv=False)
             view.load_document(state.document)
             view.set_snap_divisor(int(self.editor_snap_combo.currentData()))
             view.current_time = state.playhead_ms
@@ -9549,7 +9815,7 @@ class MainWindow(QMainWindow):
         tool_group = QButtonGroup(row)
         tool_group.setExclusive(True)
         # Two sets sharing slot 1: an ordinary SV view builds green lines and
-        # sweeps, the Kiai and Sound Effect view sets kiai and note volume over
+        # sweeps, the Kiai and Sound Volume view sets kiai and note volume over
         # the same drag. Both are built here and _sync_global_sv_tool_row shows
         # whichever the focused view wants, so the digits keep meaning the
         # button in the same position -- the rule the gimmick rows already use.
@@ -10444,12 +10710,13 @@ class MainWindow(QMainWindow):
     def _open_volume_function_dialog(
         self, difficulty_path: Path, start_ms: float, end_ms: float,
     ) -> None:
-        """The Kiai and Sound Effect layer's Volume tool: the SV generator
-        aimed at hitsound volume.
+        """The Kiai and Sound Volume layer's Volume tool: the SV generator's
+        easing curves aimed at hitsound volume, editing existing timing
+        points rather than placing new ones (see _generate_volume).
 
-        No `layer_id` is passed on: the SV layers each own one structure's
-        milliseconds, and this layer owns them all, so "Each note" / "Every
-        snap" is a real choice here and the dialog keeps offering it.
+        No `layer_id` is passed on -- there is no note/snap placement mode to
+        decide between any more, since nothing is placed. SVFunctionDialog
+        hides "Generate at" and the other placement-only rows in volume mode.
         """
         state = self._states.get(difficulty_path)
         if state is None:
@@ -10498,10 +10765,12 @@ class MainWindow(QMainWindow):
         generated shiny line outside a sweep is still layer 4's to show), this
         just lets one Generate run reach both at once instead of two runs.
 
-        `params["only_red_line_bpm"]` (layer 6 only, None when off) drops every
-        position whose red line is at some other BPM, so a sweep can drive one
-        60000 BPM barline run and leave the chart's own timing lines -- which
-        share the layer -- untouched.
+        `params["only_red_line_bpm"]` (layer 6 only, None when off) is an
+        inclusive (low, high) BPM interval; every position whose red line
+        falls outside it is dropped, so a sweep can drive one 60000 BPM
+        barline run -- or a whole family of them, "500-1000 BPM" -- and leave
+        the chart's own timing lines, which share the layer, untouched. An
+        exact single BPM is simply low == high.
         """
         if layer_id is not None:
             # The objects themselves, unshifted: `_generate_sv` applies the
@@ -10517,6 +10786,7 @@ class MainWindow(QMainWindow):
             wanted_bpm = params.get("only_red_line_bpm")
             if wanted_bpm is None:
                 return selected
+            low_bpm, high_bpm = wanted_bpm
             # Layer 6's BPM filter. Keyed on the exact millisecond first: these
             # times *are* red-line milliseconds, rounded, and a line at 1234.6
             # rounds to 1235, where active_uninherited_at would answer with the
@@ -10530,10 +10800,10 @@ class MainWindow(QMainWindow):
             }
             return [
                 at for at in selected
-                if bpm_matches(
+                if bpm_in_range(
                     reds[round(at)] if round(at) in reds
                     else active_uninherited_at(state.document.timing_points, at).bpm,
-                    wanted_bpm,
+                    low_bpm, high_bpm,
                 )
             ]
         placement = params.get("placement", "notes")
@@ -10567,14 +10837,16 @@ class MainWindow(QMainWindow):
     ) -> None:
         """Fill a range with generated inherited points.
 
-        `volume` swaps what the eased curve *is*: hitsound volume (whole
-        percent, 0..100) instead of a scroll rate. Everything else -- where the
-        points go, the growth function, the two oscillation modes, the position
-        offset -- is the same machinery, which is why it is a flag here rather
-        than a parallel generator that would drift out of step with this one.
+        `volume` no longer reuses this machinery -- see _generate_volume. The
+        Kiai and Sound Volume layer's Volume tool edits existing timing
+        points' own volume in place; it must never insert a green line, which
+        is exactly what this path does. This function is SV-only now.
         """
         state = self._states.get(difficulty_path)
         if state is None:
+            return
+        if volume:
+            self._generate_volume(state, difficulty_path, start_ms, end_ms, params)
             return
         ordered = sorted_by_time(state.document.timing_points)
         template = active_point_at(ordered, start_ms)
@@ -10615,27 +10887,12 @@ class MainWindow(QMainWindow):
             else:
                 eased = sv_ease(params["function"], t)
                 rate = params["initial_rate"] + (params["final_rate"] - params["initial_rate"]) * eased
-            if params["relative_to_final_bpm"] and start_bpm and not volume:
+            if params["relative_to_final_bpm"] and start_bpm:
                 # Compensate for a BPM change across the range so the
                 # perceived scroll speed matches `rate` regardless of where
                 # the local BPM lands, not just the raw multiplier.
                 local_bpm = active_uninherited_at(state.document.timing_points, time_ms).bpm or start_bpm
                 rate = rate * (local_bpm / start_bpm)
-            if volume:
-                # The point restates the SV already in force rather than
-                # writing one: this sweep is about loudness, and a green line
-                # that quietly reset scroll speed to 1.0x under every note in
-                # the range is exactly what it must not do. osu! stores volume
-                # as a whole percent in 0..100, and an oscillation around 95
-                # fans past that by design, so the curve is clamped.
-                point = TimingPoint.inherited_at(
-                    time_ms, sv_at(ordered, source_time),
-                    omit_first_barline=(params["omit_barline"] and index == 0),
-                    template=template,
-                )
-                point.volume = max(0, min(100, round(rate)))
-                points.append(point)
-                continue
             # Kiai belongs to the active point, so a generated sweep that
             # doesn't carry it forward switches kiai off for the whole range
             # it covers. Read per point, not once: a range can cross a kiai
@@ -10648,14 +10905,59 @@ class MainWindow(QMainWindow):
                 template=template,
             ))
 
-        if volume:
-            # Same rule, read at the point's own millisecond: a run of lines
-            # written without the flag ends the chorus they were drawn across.
-            preserve_kiai(points, state.document.timing_points)
-
         # One undo step regardless of point count, and regardless of how many
         # existing green lines the sweep replaces.
-        self._insert_sv_points(state, points, "generate_volume" if volume else "generate_sv")
+        self._insert_sv_points(state, points, "generate_sv")
+        self._refresh_difficulty_sv_views(difficulty_path)
+
+    def _generate_volume(
+        self, state: DifficultyState, difficulty_path: Path, start_ms: float, end_ms: float,
+        params: dict,
+    ) -> None:
+        """The Kiai and Sound Volume layer's Volume tool.
+
+        Edits the volume already on every existing timing point (red and
+        green alike) inside the range -- it never inserts one. Position
+        offset, "omit first barline", "relative to final BPM" and kiai
+        preservation all describe a point being *created*, so none of them
+        apply here; SVFunctionDialog hides those rows in volume mode.
+        """
+        ordered = sorted_by_time(state.document.timing_points)
+        targets = [
+            point for point in ordered
+            if round(start_ms) <= round(point.time) <= round(end_ms)
+        ]
+        if not targets:
+            self.show_toast(tr("MainWindow", "No timing point in the selected range."))
+            return
+
+        times = [point.time for point in targets]
+        span = times[-1] - times[0]
+        oscillate = params.get("oscillate", "")
+        wobble = oscillating_series(
+            params["initial_rate"],
+            abs(params["final_rate"] - params["initial_rate"]),
+            len(times),
+            lambda t: sv_ease(params["function"], t),
+            per_pair=oscillate == "pair",
+        ) if oscillate else []
+
+        commands = []
+        for index, point in enumerate(targets):
+            t = 0.0 if span <= 0 else (point.time - times[0]) / span
+            if wobble:
+                rate = wobble[index]
+            else:
+                eased = sv_ease(params["function"], t)
+                rate = params["initial_rate"] + (params["final_rate"] - params["initial_rate"]) * eased
+            new_volume = max(0, min(100, round(rate)))
+            if new_volume == point.volume:
+                continue
+            commands.append(EditTimingPoint(point.uid, {"volume": (point.volume, new_volume)}))
+
+        if not commands:
+            return
+        state.history.push(CompositeCommand(commands, "generate_volume"), state)
         self._refresh_difficulty_sv_views(difficulty_path)
 
     def _refresh_difficulty_sv_views(self, difficulty_path: Path) -> None:
@@ -11547,8 +11849,22 @@ class MainWindow(QMainWindow):
         # The clock restarts immediately after the sample and before the rate
         # is applied, so the handover is continuous: position up to here at the
         # old rate, everything after it at the new one.
+        # The *source* clock needs the same handover, and for the same reason.
+        # _source_clock_position extrapolates the last backend report forward
+        # by elapsed real time * playbackRate(), so leaving it alone here would
+        # replay the interval since that report at the new rate. Reports land
+        # tens of milliseconds apart, so at 0.25x that mis-extrapolation is
+        # comfortably past POSITION_ALLOWABLE_ERROR_MS -- the interpolated
+        # clock would then *snap* to a wrong source on the very next frame,
+        # which is the speed-button jump this scheme exists to remove. Rebase
+        # it on the old rate first, then let the new one run from there.
         rate=float(rate)
+        # Hitsound offset is wall time; the window it shifts is song time.
+        self.hitsounds.playback_rate=rate
+        self.latest_audio_position=self._source_clock_position()
+        self._source_report_clock.restart()
         self.audio_anchor_position=self._predicted_audio_position();self.audio_anchor_clock.restart()
+        self._last_predicted_position=self.audio_anchor_position
         self.player.setPlaybackRate(rate)
         for button in (
             getattr(self,"playback_speed_buttons",[])
@@ -11581,6 +11897,8 @@ class MainWindow(QMainWindow):
             self.timeline.is_playing=True
             self.player.play()
             self.audio_anchor_clock.restart()
+            self._source_report_clock.restart()
+            self._last_predicted_position=self.audio_anchor_position
             self.play_button.setText(tr("MainWindow", "Pause"))
             if hasattr(self,"timeline_play_button"):self.timeline_play_button.setText("❚❚")
             if hasattr(self,"editor_play_button"):self.editor_play_button.setText("❚❚")
@@ -11595,7 +11913,8 @@ class MainWindow(QMainWindow):
         everybody put every view up to half a millisecond off its own grid,
         which is a third of the screen at the 20ms zoom floor.
         """
-        position=max(0.0,float(position)); self.audio_anchor_position=position; self.latest_audio_position=position; self.audio_anchor_clock.restart()
+        position=max(0.0,float(position)); self.audio_anchor_position=position; self.latest_audio_position=position
+        self.audio_anchor_clock.restart(); self._source_report_clock.restart(); self._last_predicted_position=position
         # Before anything else: a jump forward would otherwise fire every note
         # it skipped in one frame, and a jump backwards would replay them.
         self.hitsounds.reset_to(position)
@@ -11648,60 +11967,95 @@ class MainWindow(QMainWindow):
             )
         )
 
-    def _predicted_audio_position(self) -> float:
-        """Extrapolate from the last known anchor using nanosecond precision.
+    def _source_clock_position(self) -> float:
+        """osu!'s framedSourceClock: the last backend report, extrapolated
+        forward by elapsed real time * rate while playing.
 
-        Integer-millisecond elapsed() truncation used to compound visibly at
-        higher playback rates (1ms of rounding error becomes `rate` ms of
-        position error); nsecsElapsed() keeps that error under a
-        microsecond regardless of rate.
+        This is the value _advance_interpolated_clock blends the displayed
+        playhead toward every frame, rather than only at the report itself --
+        reports land tens of milliseconds apart, which is far too sparse to
+        drive a per-frame display directly.
+        """
+        position = float(self.latest_audio_position)
+        if self.player.playbackState() == QMediaPlayer.PlayingState:
+            position += self._source_report_clock.nsecsElapsed() / 1_000_000.0 * self.player.playbackRate()
+        return position
+
+    def _advance_interpolated_clock(self, frame_elapsed_ms: float) -> None:
+        """One frame of osu!(lazer)'s InterpolatingFramedClock.ProcessFrame.
+
+        Extrapolate the displayed clock by real elapsed time, then either
+        snap it to the source clock (drifted more than
+        POSITION_ALLOWABLE_ERROR_MS, or not currently playing) or blend
+        1/POSITION_INTERPOLATION_DIVISOR of the remaining gap in -- every
+        frame, not just at the report. The monotonic clamp is mandatory: a
+        blended *negative* error would otherwise step the displayed playhead
+        backwards, which is the visible bug this whole scheme replaces. An
+        explicit reset (seek_audio, toggle_playback) is the only legitimate
+        way to move it backwards, and those reset audio_anchor_position
+        directly rather than going through this method.
+        """
+        last_interpolated = self.audio_anchor_position
+        running = self.player.playbackState() == QMediaPlayer.PlayingState
+        rate = self.player.playbackRate()
+        source = self._source_clock_position()
+
+        interpolated = last_interpolated + (frame_elapsed_ms * rate if running else 0.0)
+        if not running or abs(interpolated - source) > POSITION_ALLOWABLE_ERROR_MS:
+            interpolated = source
+        else:
+            interpolated += (source - interpolated) / POSITION_INTERPOLATION_DIVISOR
+            if rate >= 0:
+                interpolated = max(last_interpolated, interpolated)
+            else:
+                interpolated = min(last_interpolated, interpolated)
+        self.audio_anchor_position = interpolated
+        self.audio_anchor_clock.restart()
+
+    def _predicted_audio_position(self) -> float:
+        """The interpolated clock, plus sub-frame extrapolation for a caller
+        that runs between rendered frames.
+
+        Nanosecond precision keeps the extrapolation error under a
+        microsecond regardless of rate (integer-millisecond elapsed()
+        truncation used to compound into `rate` ms of error). Monotonic for
+        the same reason _advance_interpolated_clock is: a caller between
+        frames must never see the playhead step backwards either.
         """
         position = float(self.audio_anchor_position)
         if self.player.playbackState() == QMediaPlayer.PlayingState:
-            position += self.audio_anchor_clock.nsecsElapsed() / 1_000_000.0 * self.player.playbackRate()
+            rate = self.player.playbackRate()
+            position += self.audio_anchor_clock.nsecsElapsed() / 1_000_000.0 * rate
+            position = max(self._last_predicted_position, position) if rate >= 0 else min(
+                self._last_predicted_position, position
+            )
+        self._last_predicted_position = position
         return position
 
     def _player_position_changed(self, position: int) -> None:
-        self.latest_audio_position = position
+        """Adopt a fresh backend report as the source clock's new base.
+
+        No blending happens here any more -- that is
+        _advance_interpolated_clock's job, run once per rendered frame
+        against whatever _source_clock_position() (built from what this
+        method stores) currently says. This is deliberately the only place
+        that touches `latest_audio_position` and its report clock.
+        """
         if self.player.playbackState() != QMediaPlayer.PlayingState:
             # Qt reports whole milliseconds, so its echo of a seek we just made
             # would round the fractional playhead away again. Only a real move
             # -- someone dragging the media control, a backend jump -- is worth
             # adopting while paused.
-            if abs(position - self.audio_anchor_position) >= 1.0:
+            if abs(position - self.latest_audio_position) >= 1.0:
+                self.latest_audio_position = float(position)
+                self._source_report_clock.restart()
                 self.audio_anchor_position = float(position)
                 self.audio_anchor_clock.restart()
+                self._last_predicted_position = float(position)
             return
+        self.latest_audio_position = float(position)
+        self._source_report_clock.restart()
 
-        # Qt's own position reports are noisier than our extrapolation
-        # between them (backend rounding/buffering jitter, worse at
-        # non-1x rates). Hard-resetting the anchor to `position` on every
-        # report turned that jitter into a visible correction jump each
-        # time. But *ignoring* every report under a fixed threshold was
-        # its own bug: a small, steady-state bias (e.g. consistent
-        # decode/resample latency at a slow rate) never gets corrected
-        # if no single report ever exceeds the threshold, so displayed
-        # position stays quietly wrong for the entire playback. Blend
-        # instead: nudge the anchor a fraction of the way toward the
-        # reported position every time, so real drift (small or large,
-        # one-off or systematic) converges within a few reports without
-        # any single correction being large enough to see.
-        # The blend itself needs no rate term: `predicted` already carries the
-        # rate forward, so the tracked error decays by (1 - factor) per report
-        # whatever the rate is, with no lag against the ramp. The *threshold*
-        # does, because it is a real-time budget being compared against a
-        # song-time error -- see POSITION_HARD_RESYNC_WALL_MS.
-        predicted = self._predicted_audio_position()
-        error = position - predicted
-        resync_threshold = POSITION_HARD_RESYNC_WALL_MS * abs(self.player.playbackRate())
-        if abs(error) >= resync_threshold:
-            # A real discontinuity (backend stall, external seek) --
-            # correcting it gradually would be audibly/visibly wrong for
-            # however long convergence took, so snap immediately instead.
-            self.audio_anchor_position = position
-        else:
-            self.audio_anchor_position = predicted + error * POSITION_CORRECTION_FACTOR
-        self.audio_anchor_clock.restart()
     def _render_gameplay_frame(self) -> None:
         now_ns = self.gameplay_frame_clock.nsecsElapsed()
         if now_ns < self._next_frame_due_ns:
@@ -11715,6 +12069,15 @@ class MainWindow(QMainWindow):
             # Fell behind by more than a full interval (e.g. a stall);
             # resync instead of firing a burst of catch-up frames.
             self._next_frame_due_ns = now_ns + self.gameplay_frame_interval_ns
+
+        # osu!'s InterpolatingFramedClock advances once per rendered frame,
+        # by that frame's own real elapsed time -- not the fixed interval
+        # above, so a render that fires a little late advances by how late
+        # it actually was rather than by a nominal amount.
+        frame_elapsed_ms = max(0.0, (now_ns - self._last_frame_ns) / 1_000_000.0)
+        self._last_frame_ns = now_ns
+        self._advance_interpolated_clock(frame_elapsed_ms)
+
         if self.document is None:return
         position=self._predicted_audio_position()
         duration=self.player.duration()
@@ -11785,6 +12148,7 @@ class MainWindow(QMainWindow):
                     force_ar=self.approach_rate_control.value(), force_cs=self.circle_size_control.value(),
                 )
                 state.history.mark_saved()
+                self._discard_acknowledged.pop(state.source_path, None)
             except PermissionError as error:
                 # The one failure whose message reads as nonsense on its own:
                 # the file is plainly there, and Windows only refuses the

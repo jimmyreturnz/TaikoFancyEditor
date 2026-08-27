@@ -639,7 +639,14 @@ class SVFollowsPlaybackTests(WindowTestCase):
 
     def test_the_frame_clock_moves_the_sv_view(self):
         sv_view = self._sv_view()
+        # Both clocks, not just the interpolated one. While paused the frame
+        # loop snaps the interpolated clock to the source clock (osu!'s
+        # InterpolatingFramedClock does the same when the source is not
+        # running), so setting one and leaving the other behind is a state the
+        # app never produces -- seek_audio, _change_playback_speed and
+        # _player_position_changed all move the pair together.
         self.window.audio_anchor_position = 7777
+        self.window.latest_audio_position = 7777
         self.window._next_frame_due_ns = 0
         self.window._render_gameplay_frame()
         self.assertAlmostEqual(sv_view.current_time, 7777.0, places=3)

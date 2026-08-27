@@ -499,6 +499,36 @@ class LibraryPageTests(unittest.TestCase):
         # Nothing was written; the edit is still there in this session.
         self.assertTrue(self.window.state.history.dirty)
 
+    def test_continue_without_saving_does_not_reprompt_until_edited_again(self):
+        """Answering "Continue Without Saving" must stick: the very next
+        page/view change (or Esc, or quit) must not immediately re-ask about
+        the exact same still-unsaved edit."""
+        import gui
+
+        self._open_and_dirty()
+        self._fake_message_box({"role": QMessageBox.DestructiveRole})
+        self.assertTrue(self.window._confirm_leaving_editor())
+        self.assertTrue(self.window.state.history.dirty, "discarding must not write anything")
+
+        # No box this time: the acknowledged revision matches, so the state
+        # is filtered out of "dirty" before a prompt is ever built.
+        original_box = gui.QMessageBox
+
+        def _no_box(*args, **kwargs):
+            raise AssertionError("must not prompt again for the same unsaved edit")
+
+        gui.QMessageBox = _no_box
+        try:
+            self.assertTrue(self.window._confirm_leaving_editor())
+        finally:
+            gui.QMessageBox = original_box
+
+        # A fresh edit bumps history.revision past the acknowledged one, so
+        # the prompt is legitimate again.
+        self.window._place_note(self.window.state.source_path, "don", 3200, False)
+        self._fake_message_box({"role": QMessageBox.RejectRole})
+        self.assertFalse(self.window._confirm_leaving_editor())
+
     def _fake_message_box(self, answers: dict) -> None:
         """Answer the unsaved-changes prompt by role instead of by clicking.
 

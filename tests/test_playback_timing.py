@@ -1,21 +1,30 @@
 """Playback position accuracy/smoothness.
 
-_predicted_audio_position extrapolates with nanosecond precision (integer-ms
-elapsed() rounding used to scale with playback rate). _player_position_changed
-blends small QMediaPlayer.positionChanged discrepancies in gradually instead
-of either hard-snapping (visible stutter) or ignoring them below a fixed
-threshold (a small steady-state bias -- worse at non-1x rates -- would then
-never get corrected). _render_gameplay_frame schedules off a fixed cadence
-instead of restarting its clock every tick, so a timer firing a little late
-doesn't permanently shift every future frame too.
+Adapted from osu!(lazer)'s InterpolatingFramedClock. Two clocks:
 
-Two of these were live bugs at 25/50/75%. _change_playback_speed and
-toggle_playback used to re-anchor from QMediaPlayer.position() -- whole
-milliseconds, stale by up to one backend report, 0 before the backend has said
-anything, and read *after* setPlaybackRate -- so the act of clicking a speed
-button moved the playhead. And the hard-resync threshold was held in song
-milliseconds while the discontinuities it classifies are real-time events, so
-at 0.25x it sat four times too high and genuine stalls never snapped.
+* The **source** clock (_source_clock_position) is the last raw
+  QMediaPlayer.positionChanged report, extrapolated forward by elapsed real
+  time * rate. Reports land tens of milliseconds apart, so this alone is far
+  too sparse to drive a per-frame display.
+* The **interpolated** clock (self.audio_anchor_position) is what is actually
+  displayed. _advance_interpolated_clock nudges it 1/POSITION_INTERPOLATION_
+  DIVISOR of the way toward the source clock every *rendered frame* (not
+  every report), or snaps it straight to the source clock if the two have
+  drifted more than POSITION_ALLOWABLE_ERROR_MS apart.
+
+Blending every frame instead of only at report time is what makes the
+correction invisible. A monotonic clamp is mandatory: a blend toward a source
+clock that is momentarily *behind* the interpolated one (a negative error --
+completely normal report jitter) would otherwise step the displayed playhead
+backwards every time it happened, which is the single most visible symptom
+this model exists to prevent. _predicted_audio_position (the interpolated
+clock plus its own small sub-frame extrapolation, for callers between
+rendered frames) carries the same monotonic guarantee.
+
+_change_playback_speed and toggle_playback re-anchor from
+_predicted_audio_position(), sampled *before* the rate/state actually changes
+-- see their own comments for why reading QMediaPlayer.position() there used
+to move the playhead on every speed-button click at 25/50/75%.
 """
 from __future__ import annotations
 
@@ -108,6 +117,11 @@ class PlaybackTimingTests(unittest.TestCase):
         self.window.audio_anchor_clock = clock
         return clock
 
+    def _take_source_clock(self) -> _FakeClock:
+        clock = _FakeClock()
+        self.window._source_report_clock = clock
+        return clock
+
     # -- extrapolation --------------------------------------------------------
 
     def test_predicted_position_is_exact_anchor_when_paused(self):
@@ -122,134 +136,110 @@ class PlaybackTimingTests(unittest.TestCase):
         predicted = self.window._predicted_audio_position()
         self.assertGreaterEqual(predicted, 1000.0)
 
-    # -- resync: gradual for small errors, immediate for large ones -----------
-
-    def test_small_discrepancy_is_blended_not_snapped(self):
-        self._make_playing()
-        self.window.audio_anchor_position = 1000
+    def test_predicted_position_never_travels_backwards(self):
+        """A stale-but-higher last prediction (e.g. left over from just
+        before a rate/state change) must clamp a lower raw reading up to it
+        rather than let the displayed playhead visibly jump backwards."""
+        self._make_playing(rate=1.0)
+        self.window.audio_anchor_position = 1000.0
         self.window.audio_anchor_clock.restart()
+        self.window._last_predicted_position = 1005.0
+
         predicted = self.window._predicted_audio_position()
-        noisy_report = int(predicted) + 10
 
-        self.window._player_position_changed(noisy_report)
+        self.assertEqual(predicted, 1005.0)
 
-        self.assertNotEqual(self.window.audio_anchor_position, predicted, "must still correct")
-        self.assertLess(
-            abs(self.window.audio_anchor_position - noisy_report), 10,
-            "must not snap all the way to the noisy report either",
-        )
+    # -- _advance_interpolated_clock: the per-frame blend/snap -----------------
 
-    def test_steady_state_bias_converges_over_repeated_reports(self):
-        """A consistent small bias (e.g. backend latency at a slow rate) must
-        not go permanently uncorrected just because no single report crosses
-        the hard-resync threshold."""
-        self._make_playing()
-        self.window.audio_anchor_position = 1000
-        self.window.audio_anchor_clock.restart()
+    def test_advance_blends_small_error_by_one_eighth_per_frame(self):
+        self._make_playing(rate=1.0)
+        self._take_source_clock()
+        self.window.audio_anchor_position = 1000.0
+        self.window.latest_audio_position = 1010.0  # source is 10ms ahead
 
-        for _ in range(30):
-            predicted = self.window._predicted_audio_position()
-            self.window._player_position_changed(round(predicted) + 15)
+        self.window._advance_interpolated_clock(0.0)
 
-        final_predicted = self.window._predicted_audio_position()
-        self.assertLess(abs(self.window.audio_anchor_position - final_predicted), 5)
+        self.assertAlmostEqual(self.window.audio_anchor_position, 1000.0 + 10.0 / 8.0, places=6)
 
-    def test_large_discrepancy_snaps_immediately(self):
-        self._make_playing()
-        self.window.audio_anchor_position = 1000
-        self.window.audio_anchor_clock.restart()
-        predicted = self.window._predicted_audio_position()
-        big_jump = int(predicted) + 500
+    def test_advance_snaps_when_error_exceeds_allowable(self):
+        self._make_playing(rate=1.0)
+        self._take_source_clock()
+        self.window.audio_anchor_position = 1000.0
+        self.window.latest_audio_position = 1000.0 + gui.POSITION_ALLOWABLE_ERROR_MS + 5.0
 
-        self.window._player_position_changed(big_jump)
+        self.window._advance_interpolated_clock(0.0)
 
-        self.assertEqual(self.window.audio_anchor_position, big_jump)
+        self.assertEqual(self.window.audio_anchor_position, self.window.latest_audio_position)
+
+    def test_advance_does_not_snap_just_under_the_allowable_error(self):
+        self._make_playing(rate=1.0)
+        self._take_source_clock()
+        self.window.audio_anchor_position = 1000.0
+        self.window.latest_audio_position = 1000.0 + gui.POSITION_ALLOWABLE_ERROR_MS - 1.0
+
+        self.window._advance_interpolated_clock(0.0)
+
+        self.assertNotEqual(self.window.audio_anchor_position, self.window.latest_audio_position)
+
+    def test_advance_never_moves_backwards_on_a_negative_error(self):
+        """The source clock reading behind the interpolated one is ordinary
+        report jitter, not a seek -- blending toward it must never step the
+        displayed playhead backwards."""
+        self._make_playing(rate=1.0)
+        self._take_source_clock()
+        self.window.audio_anchor_position = 1000.0
+        self.window.latest_audio_position = 990.0  # source is 10ms behind
+
+        self.window._advance_interpolated_clock(0.0)
+
+        self.assertGreaterEqual(self.window.audio_anchor_position, 1000.0)
+
+    def test_advance_repeated_frames_converge_on_a_steady_bias(self):
+        """A consistent small bias converges over a handful of frames even
+        though no single frame's error ever exceeds the allowable threshold."""
+        self._make_playing(rate=1.0)
+        self._take_source_clock()
+        self.window.audio_anchor_position = 1000.0
+        self.window.latest_audio_position = 1015.0
+
+        for _ in range(200):
+            self.window._advance_interpolated_clock(0.0)
+
+        self.assertLess(abs(self.window.audio_anchor_position - 1015.0), 0.01)
+
+    def test_advance_while_paused_snaps_to_source_without_advancing(self):
+        # Not playing: _advance_interpolated_clock must not extrapolate by
+        # frame time, only ever reflect the (unextrapolated) source.
+        self.window.audio_anchor_position = 1000.0
+        self.window.latest_audio_position = 1000.0
+
+        self.window._advance_interpolated_clock(50.0)
+
+        self.assertEqual(self.window.audio_anchor_position, 1000.0)
+
+    def test_player_position_changed_while_playing_only_updates_the_source(self):
+        """No blending happens synchronously any more -- a report just moves
+        where the source clock reads from; _advance_interpolated_clock is
+        what actually moves the displayed playhead, once per frame."""
+        self._make_playing(rate=1.0)
+        self.window.audio_anchor_position = 1000.0
+
+        self.window._player_position_changed(1500)
+
+        self.assertEqual(self.window.audio_anchor_position, 1000.0)
+        self.assertEqual(self.window.latest_audio_position, 1500.0)
 
     def test_paused_report_re_anchors_exactly(self):
         self.window.audio_anchor_position = 1000
         self.window._player_position_changed(4242)
         self.assertEqual(self.window.audio_anchor_position, 4242)
 
-    # -- the resync threshold is a real-time budget, not a song-time one ------
-
-    def test_the_resync_threshold_scales_with_the_playback_rate(self):
-        """200ms of real time is 50ms of song at 0.25x. Held as a fixed song-time
-        number the threshold was four times too loose there, so a genuine stall
-        never snapped and crawled in over a dozen reports instead."""
-        for rate, error_ms, should_snap in (
-            (1.0, 60.0, False), (1.0, 260.0, True),
-            (0.25, 60.0, True), (0.25, 40.0, False),
-        ):
-            with self.subTest(rate=rate, error_ms=error_ms):
-                self._make_playing(rate)
-                clock = self._take_the_clock()
-                self.window.audio_anchor_position = 1000.0
-                clock.restart()
-                report = round(1000.0 + error_ms)
-                self.window._player_position_changed(report)
-                if should_snap:
-                    self.assertEqual(self.window.audio_anchor_position, report)
-                else:
-                    self.assertNotEqual(self.window.audio_anchor_position, report)
-
-    # -- tracking convergence, at every rate ----------------------------------
-
-    def _run_reports(self, rate: float, count: int = 20, quantize: bool = True) -> list[float]:
-        """Simulate `count` position reports and return the tracking error at
-        each one, in song milliseconds.
-
-        The model is the real one: media advances at `rate` song-ms per wall-ms,
-        the backend reports on a wall-clock cadence, and what it reports is
-        behind the truth by a fixed *output latency in wall time* -- which is
-        `latency * rate` song milliseconds, i.e. smaller at slow rates.
-
-        `quantize` is Qt's whole-millisecond reporting. Real, and on by default,
-        but it is 0.5ms of noise on top of an error that is only 10ms to begin
-        with at 0.25x -- enough to swamp a measurement of the decay *ratio*, so
-        the test that measures that one turns it off.
-        """
-        interval_wall_ms, latency_wall_ms = 50.0, 40.0
-        self._make_playing(rate)
-        clock = self._take_the_clock()
-        true_position = 1000.0
-        self.window.audio_anchor_position = true_position
-        clock.restart()
-
-        errors = []
-        for _ in range(count):
-            clock.advance_ms(interval_wall_ms)
-            true_position += interval_wall_ms * rate
-            report = true_position - latency_wall_ms * rate
-            if quantize:
-                report = round(report)
-            errors.append(self.window._predicted_audio_position() - report)
-            self.window._player_position_changed(report)
-        return errors
-
-    def test_tracking_converges_at_every_playback_rate(self):
-        for rate in (0.25, 0.5, 0.75, 1.0):
-            with self.subTest(rate=rate):
-                errors = self._run_reports(rate)
-                self.assertGreater(abs(errors[0]), 1.0, "the bias has to be real to be worth correcting")
-                self.assertLess(
-                    abs(errors[-1]), 1.0,
-                    "must converge to within the reports' own 1ms quantization",
-                )
-
-    def test_convergence_is_not_rate_dependent(self):
-        """The prediction already carries the rate forward, so the residual
-        decays by (1 - POSITION_CORRECTION_FACTOR) per report whatever the rate
-        is -- there is no ramp lag for a rate-aware gain to remove. A gain that
-        acquired a rate term would break this."""
-        decays = {}
-        for rate in (0.25, 0.5, 0.75, 1.0):
-            errors = self._run_reports(rate, count=6, quantize=False)
-            decays[rate] = [errors[i + 1] / errors[i] for i in range(len(errors) - 1)]
-        for rate, ratios in decays.items():
-            for ratio in ratios:
-                self.assertAlmostEqual(
-                    ratio, 1 - gui.POSITION_CORRECTION_FACTOR, places=2, msg=f"rate {rate}",
-                )
+    def test_paused_report_under_one_ms_is_ignored(self):
+        """Qt's own echo of a seek we just made must not perturb the anchor."""
+        self.window.audio_anchor_position = 1000.4
+        self.window.latest_audio_position = 1000.4
+        self.window._player_position_changed(1000)
+        self.assertEqual(self.window.audio_anchor_position, 1000.4)
 
     # -- re-anchoring: never from the backend's rounded, stale position -------
 
@@ -288,25 +278,39 @@ class PlaybackTimingTests(unittest.TestCase):
             msg="and everything after it runs at the new rate",
         )
 
-    def test_a_speed_change_mid_playback_leaves_nothing_for_the_blend_to_fix(self):
-        """The old anchoring injected a step error that then had to be blended
-        away over a dozen reports -- a visibly wrong playhead for as long as it
-        took. There should be nothing to correct in the first place."""
+    def test_changing_speed_rebases_the_source_clock_too(self):
+        """The source clock needs the same handover as the interpolated one.
+
+        _source_clock_position extrapolates the last backend report by elapsed
+        real time * playbackRate(). Backend reports land tens of milliseconds
+        apart, so leaving the report where it was would replay that whole
+        interval at the new rate -- at 0.25x, an error well past
+        POSITION_ALLOWABLE_ERROR_MS, which makes the next frame *snap* the
+        displayed playhead to a wrong source. That snap is the speed-button
+        jump this clock exists to remove, so it must not come back in through
+        the source side.
+        """
         self._make_playing(1.0)
-        clock = self._take_the_clock()
+        source = self._take_source_clock()
+        self._take_the_clock()
         self.window.player.position = lambda: 0
-        true_position = 1000.0
-        self.window.audio_anchor_position = true_position
-        clock.restart()
-        clock.advance_ms(50.0)
-        true_position += 50.0
+        self.window.latest_audio_position = 1000.0
+        self.window.audio_anchor_position = 1000.0
+        source.restart()
+        source.advance_ms(100.0)
+        self.assertAlmostEqual(self.window._source_clock_position(), 1100.0, places=6)
 
-        self.window._change_playback_speed(0.5)
+        self.window._change_playback_speed(0.25)
 
-        clock.advance_ms(50.0)
-        true_position += 50.0 * 0.5
-        error = round(true_position) - self.window._predicted_audio_position()
-        self.assertLess(abs(error), 1.0, f"step error of {error}ms survived the rate change")
+        self.assertAlmostEqual(
+            self.window._source_clock_position(), 1100.0, places=6,
+            msg="rebased at the old rate: the source must not step at the change",
+        )
+        source.advance_ms(100.0)
+        self.assertAlmostEqual(
+            self.window._source_clock_position(), 1125.0, places=6,
+            msg="and runs at the new rate from there -- not 1000 + 200 * 0.25",
+        )
 
     def test_resuming_playback_keeps_the_fractional_playhead(self):
         """seek_audio keeps the exact position on purpose; play must not round
@@ -318,6 +322,39 @@ class PlaybackTimingTests(unittest.TestCase):
         self.window.toggle_playback()
 
         self.assertAlmostEqual(self.window.audio_anchor_position, 7777.25, places=6)
+
+    # -- seeking: the one legitimate way to move backwards ---------------------
+
+    def test_seek_backwards_is_not_clamped_away(self):
+        """A monotonic clock guard must never fight a real seek: rewinding
+        past the interpolated clock's current value has to actually land
+        there, not get pinned to the higher pre-seek position."""
+        self._make_playing(rate=1.0)
+        self._take_source_clock()
+        self._take_the_clock()
+        self.window.player.position = lambda: 0
+        self.window.audio_anchor_position = 5000.0
+        self.window._last_predicted_position = 5000.0
+
+        self.window.seek_audio(1000.0)
+
+        self.assertEqual(self.window.audio_anchor_position, 1000.0)
+        self.assertEqual(self.window._predicted_audio_position(), 1000.0)
+        # And the next frame's blend must not fight the seek either: the
+        # source clock was reset to the same position, so there is no error
+        # for it to (wrongly) snap or blend away from.
+        self.window._advance_interpolated_clock(0.0)
+        self.assertEqual(self.window.audio_anchor_position, 1000.0)
+
+    def test_seek_forward_still_works_after_a_backwards_seek(self):
+        self._make_playing(rate=1.0)
+        self.window.player.position = lambda: 0
+        self.window.seek_audio(5000.0)
+        self.window.seek_audio(1000.0)
+
+        self.window.seek_audio(2000.0)
+
+        self.assertEqual(self.window.audio_anchor_position, 2000.0)
 
     # -- frame scheduler --------------------------------------------------------
 

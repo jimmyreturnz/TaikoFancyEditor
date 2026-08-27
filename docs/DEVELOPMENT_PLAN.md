@@ -47,6 +47,95 @@ Turning the visual arranger into a full osu!taiko editor.
 
 ---
 
+## Next: the audio backend (the real cause of inaccurate slow playback)
+
+Decided 2026-08-27, deferred out of v3.1.0 so the rest of it could ship.
+
+**Measured, not guessed.** `QMediaPlayer`'s two Windows backends were sampled
+against a wall clock while playing a generated 120s WAV, 12s per rate after a
+2s warm-up, on PySide6 6.11.1:
+
+| backend | rate error | position granularity | fresh reading @0.25x | worst extrapolation error |
+| --- | --- | --- | --- | --- |
+| `ffmpeg` (current default) | 0.10% | 93 ms steps | every 351 ms of wall | 8-44 ms |
+| `windows` (WMF) | 0.00% | 1 ms | every 4 ms | ~1 ms |
+
+The FFmpeg backend advances `position()` in fixed ~93 ms *song-time* chunks.
+At 0.25x that is one true reading every third of a second of real time, with
+the app extrapolating blind in between. **No interpolation scheme can fix a
+source that coarse** -- which is why the osu!-style `InterpolatingFramedClock`
+port in v3.1.0, correct as it is, did not make 25/50/75% feel right. WMF is
+exact at every rate including 1.0x.
+
+**The blocker:** WMF cannot decode Ogg -- `InvalidMedia` / `FormatError` on a
+real `.ogg` from the Songs folder, where FFmpeg reports `BufferedMedia`. A
+large share of osu! maps ship `.ogg`, and `QT_MEDIA_BACKEND` is process-wide
+and read before `QApplication` exists, so the backend cannot be chosen per
+file.
+
+**Chosen design: auto-fallback on first failure.** Default to WMF; when a
+source fails to load with `FormatError`, record that and fall back to FFmpeg.
+Points to settle when this is built:
+
+1. The fallback needs a process restart to take effect, so it has to be
+   persisted (QSettings) and applied at the next launch -- decide whether to
+   relaunch automatically or tell the user and let them.
+2. The first Ogg map of a fresh install still fails once. Consider sniffing
+   the audio extension of the map being opened and persisting the choice
+   before the media is ever handed to Qt.
+3. Keep a manual override in Settings regardless, so a wrong auto-decision is
+   recoverable without hunting for the state file.
+4. Re-run the measurement harness after the switch to confirm the numbers
+   hold against real map audio rather than a generated WAV.
+
+A later alternative, if Ogg accuracy turns out to matter: decode Ogg to PCM
+ourselves and hand WMF the samples, which would make every map accurate at the
+cost of a decode step on open.
+
+## The test suite is slow because of a widget leak, not because it is big
+
+Measured 2026-08-27. `unittest discover` in one process reached only 258 of
+963 tests in 80 minutes and was still slowing down; extrapolated past 4 hours.
+That is not the test count. Building twelve `MainWindow`s in a row, keeping no
+Python reference and calling `gc.collect()` between each:
+
+| window | build time |
+| --- | --- |
+| #1 | 184 ms |
+| #12 | 1228 ms (6.7x) |
+
+and **108 top-level widgets were still alive afterwards** — roughly nine leaked
+per window. `close()` does not destroy them, and adding `deleteLater()` plus
+`processEvents()` made it worse (216 alive). Qt walks every live top-level
+widget, so each successive window costs more and the whole run degrades
+quadratically.
+
+The split is visible per file:
+
+```
+tests.test_editor_state        23 tests in   0.048s   pure logic
+tests.test_editing_ux_round3   57 tests in 111.618s   MainWindow per test
+```
+
+~2 ms/test against ~2 s/test. `gui.MainWindow()` is constructed in `setUp` in
+all 16 places it appears in the suite — never `setUpClass`.
+
+**Workaround in use:** run one process per test file (and in parallel), so the
+leak resets between files. `tools/run_tests.bat` and `build_windows.bat` step
+`[6/9]` both still use single-process `unittest discover`, which is the shape
+that burned ~5 hours in CI before the workflow's test step was removed — they
+should move to the per-file runner.
+
+**Real fix, in order of payoff:**
+
+1. Find what keeps the widgets alive (a parentless child, a signal connection
+   holding a reference, a module-level cache). Nine per window is a specific
+   number and should be identifiable by diffing `app.topLevelWidgets()`.
+2. Share one `MainWindow` per test class via `setUpClass` wherever the tests
+   do not mutate global state.
+3. Move assertions about pure functions off `MainWindow` entirely — the
+   0.048s files show what the suite could look like.
+
 ## Refactor backlog
 
 Opened 2026-08-27 while shipping v3.1.0. None of these is a bug; all of them

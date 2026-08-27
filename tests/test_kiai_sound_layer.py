@@ -1,4 +1,4 @@
-"""The "Kiai and Sound Effect" layer: every timing point on one axis, plus its
+"""The "Kiai and Sound Volume" layer: every timing point on one axis, plus its
 Kiai and Volume range tools.
 
 Three properties, one per thing the layer actually promises:
@@ -7,9 +7,9 @@ Three properties, one per thing the layer actually promises:
   **one yellow rule**, not a red and a green fighting over the same pixel,
 * the Volume sweep writes whole percent inside 0..100 -- an oscillation fans
   past both ends by design, so the clamp is load-bearing rather than defensive,
-* switching kiai on where no timing point exists writes a green line carrying
-  the SV **already in force**, so the section does not silently flatten scroll
-  speed at its own edges.
+* neither range tool ever *writes* a timing point: this layer has nothing to
+  do with scroll speed, and inventing a green line to carry a kiai flag is a
+  scroll-speed edit made on the user's behalf.
 """
 from __future__ import annotations
 
@@ -20,11 +20,14 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import QEvent, QPointF, Qt
+from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import QApplication
 
 import gui
 from osu_io.timing import TimingPoint
 from tests.osu_fixtures import write_fixture
+from tests.test_gimmick_editor import _GimmickFixture, _StubDialog
 
 _APP: QApplication | None = None
 
@@ -115,38 +118,65 @@ class RangeToolTests(unittest.TestCase):
 
     # -- Kiai ---------------------------------------------------------------
 
-    def test_kiai_edge_with_no_point_gets_a_green_line_at_the_current_sv(self):
-        # The fixture's last inherited point before 4500 is 4000 at 2.0x, and
-        # nothing sits on 4500 -- so the edge has to be invented, and inventing
-        # it at 1.0x would halve the scroll speed the moment kiai came on.
+    def test_a_kiai_edge_with_no_point_is_left_alone(self):
+        """Nothing here may invent a timing point.
+
+        The fixture has an inherited point at 4000 and nothing on 4500. The
+        old behaviour wrote a green line at each edge restating the SV already
+        in force -- which is a scroll-speed edit made on the user's behalf, in
+        the one layer that must have nothing to do with scroll speed. The
+        section now simply starts at the nearest existing point.
+        """
+        before = len(self.state.document.timing_points)
+
         self.window._set_kiai_range(self.path, 4500.0, 5500.0)
 
-        start = self._point_at(4500)
-        self.assertFalse(start.uninherited)
-        self.assertAlmostEqual(start.sv_multiplier, 2.0)
-        self.assertTrue(start.kiai)
-
-        end = self._point_at(5500)
-        self.assertAlmostEqual(end.sv_multiplier, 2.0)
-        self.assertFalse(end.kiai, "the closing edge is what ends the section")
+        self.assertEqual(len(self.state.document.timing_points), before)
+        self.assertFalse(any(
+            round(point.time) == 4500 for point in self.state.document.timing_points
+        ))
 
     def test_kiai_range_is_one_undo_step(self):
-        before = len(self.state.document.timing_points)
-        self.window._set_kiai_range(self.path, 4500.0, 5500.0)
-        self.assertEqual(len(self.state.document.timing_points), before + 2)
+        """One undo step for the whole range, however many points it flags."""
+        # 3500-4500 holds the fixture's own points, so there is something to
+        # flag without anything being created. The fixture already has kiai on
+        # elsewhere, so this compares against the range's own before/after
+        # rather than against an empty list.
+        def flagged():
+            return {round(p.time) for p in self.state.document.timing_points if p.kiai}
+
+        before = flagged()
+        self.window._set_kiai_range(self.path, 3500.0, 4500.0)
+        self.assertNotEqual(flagged(), before, "the range really did flag something")
 
         self.window.undo()
-        self.assertEqual(len(self.state.document.timing_points), before)
+
+        self.assertEqual(flagged(), before)
 
     def test_the_view_snaps_the_drag_so_the_handler_does_not(self):
         # Deliberately off-grid: the range arrives already snapped (the view
         # owns the grid *and* the Ctrl override that trades it for whole
-        # milliseconds), so it must land where it was asked to rather than
-        # being pulled back onto a beat here.
-        self.window._set_kiai_range(self.path, 4507.0, 5503.0)
-        self.assertTrue(any(
-            round(point.time) == 4507 for point in self.state.document.timing_points
-        ))
+        # milliseconds), so it must be used as given rather than being pulled
+        # back onto a beat here. An existing point one millisecond inside the
+        # range is flagged; one millisecond outside it is not.
+        self.window._set_kiai_range(self.path, 3999.0, 4500.0)
+        self.assertTrue(self._point_at(4000).kiai)
+
+        self.window.undo()
+        self.window._set_kiai_range(self.path, 4001.0, 4500.0)
+        self.assertFalse(self._point_at(4000).kiai)
+
+    def test_the_kiai_tool_never_inserts_a_green_line(self):
+        """_sv_range_action is what the kiai_sound layer's drag actually calls
+        (not _set_kiai_range directly); neither path may write a point."""
+        before = len(self.state.document.timing_points)
+        self.window._sv_range_action(self.path, "kiai", 4000.0, 4500.0)
+        self.assertEqual(len(self.state.document.timing_points), before)
+
+    def test_kiai_with_no_timing_point_in_range_toasts_and_changes_nothing(self):
+        before = len(self.state.document.timing_points)
+        self.window._sv_range_action(self.path, "kiai", 4500.0, 5500.0)
+        self.assertEqual(len(self.state.document.timing_points), before)
 
     # -- Volume -------------------------------------------------------------
 
@@ -159,27 +189,50 @@ class RangeToolTests(unittest.TestCase):
         params.update(overrides)
         return params
 
-    def test_oscillated_volume_is_clamped_into_0_100(self):
-        # 20 +/- 80 fans to -44 and to 100 across the fixture's notes in range,
-        # so both ends of the clamp are exercised rather than merely available.
+    def _spread_inherited_points(self) -> None:
+        """Existing (inherited) timing points at 1000, 1500, 2500, 3000, 3500,
+        alongside the fixture's own one at 2000 -- six points, the same
+        cadence the old note-placed version of this test used, so the "20 +/-
+        80 fans to -44 and to 100" math below still holds. The Volume tool
+        edits timing points already in the range; it does not create them, so
+        the range needs some to act on.
+        """
+        for time_ms in (1000, 1500, 2500, 3000, 3500):
+            self.state.document.timing_points.append(TimingPoint.inherited_at(time_ms, 1.0))
+
+    def test_volume_never_inserts_a_point(self):
+        self._spread_inherited_points()
         before_ids = {point.uid for point in self.state.document.timing_points}
+
         self.window._generate_sv(
             self.path, 1000.0, 3500.0, self._volume_params(), volume=True,
         )
+
+        after_ids = {point.uid for point in self.state.document.timing_points}
+        self.assertEqual(after_ids, before_ids)
+
+    def test_oscillated_volume_is_clamped_into_0_100(self):
+        # 20 +/- 80 fans to -44 and to 100 across the six points in range, so
+        # both ends of the clamp are exercised rather than merely available.
+        self._spread_inherited_points()
+
+        self.window._generate_sv(
+            self.path, 1000.0, 3500.0, self._volume_params(), volume=True,
+        )
+
         volumes = [
             point.volume for point in self.state.document.timing_points
-            if point.uid not in before_ids
+            if 1000 <= round(point.time) <= 3500
         ]
-
-        self.assertTrue(volumes, "the sweep generated nothing")
         self.assertTrue(all(isinstance(value, int) for value in volumes), volumes)
         self.assertTrue(all(0 <= value <= 100 for value in volumes), volumes)
         self.assertIn(100, volumes, "the upper clamp never fired")
         self.assertIn(0, volumes, "the lower clamp never fired")
 
     def test_a_volume_sweep_leaves_scroll_speed_and_kiai_alone(self):
-        # 2000 is the fixture's kiai green line at 0.75x. Regenerating volume
-        # over it replaces the point, so both properties have to be restated.
+        # 2000 is the fixture's kiai green line at 0.75x. The Volume tool
+        # only ever touches the .volume field, so both properties survive
+        # untouched rather than needing to be restated.
         self.window._generate_sv(
             self.path, 1000.0, 3500.0, self._volume_params(), volume=True,
         )
@@ -187,7 +240,20 @@ class RangeToolTests(unittest.TestCase):
         self.assertAlmostEqual(point.sv_multiplier, 0.75)
         self.assertTrue(point.kiai)
 
+    def test_a_volume_sweep_with_nothing_to_change_pushes_no_undo_step(self):
+        """Only 2000 (the fixture's one inherited point) falls in range; if
+        its volume is already the value the curve would write, there is
+        nothing to record."""
+        point = self._point_at(2000)
+        self.window._generate_sv(
+            self.path, 1000.0, 3500.0,
+            self._volume_params(initial_rate=point.volume, final_rate=point.volume),
+            volume=True,
+        )
+        self.assertEqual(len(self.state.history.undo_stack), 0)
+
     def test_a_volume_sweep_is_one_undo_step(self):
+        self._spread_inherited_points()
         before = [(point.uid, point.volume) for point in self.state.document.timing_points]
         self.window._generate_sv(
             self.path, 1000.0, 3500.0, self._volume_params(), volume=True,
@@ -199,6 +265,18 @@ class RangeToolTests(unittest.TestCase):
             [(point.uid, point.volume) for point in self.state.document.timing_points],
             before,
         )
+
+    def test_volume_with_no_timing_point_in_range_toasts_and_changes_nothing(self):
+        before = [(point.uid, point.volume) for point in self.state.document.timing_points]
+        # Nothing sits between the fixture's 2000 and 4000 lines.
+        self.window._generate_sv(
+            self.path, 2500.0, 3500.0, self._volume_params(), volume=True,
+        )
+        self.assertEqual(
+            [(point.uid, point.volume) for point in self.state.document.timing_points],
+            before,
+        )
+        self.assertEqual(len(self.state.history.undo_stack), 0)
 
 
 class VolumeDialogTests(unittest.TestCase):
@@ -226,3 +304,135 @@ class VolumeDialogTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class VolumeDialogRowTests(unittest.TestCase):
+    """What the Volume dialog offers, and what it must not.
+
+    Everything describing where an *inserted* point sits is meaningless here:
+    the Volume tool edits the timing points already in the range. The position
+    offset in particular kept showing despite being hidden, because
+    pink_spin_buttons re-wrapped the row into a fresh visible container after
+    the hide -- so this asserts the rendered state, not the hide call.
+    """
+
+    def _dialog(self, volume: bool) -> gui.SVFunctionDialog:
+        dialog = gui.SVFunctionDialog(0.0, 1000.0, volume=volume)
+        self.addCleanup(dialog.deleteLater)
+        return dialog
+
+    def test_volume_mode_offers_no_position_offset(self):
+        dialog = self._dialog(volume=True)
+        self.assertFalse(dialog.position_offset_spin.isVisibleTo(dialog))
+        self.assertEqual(dialog.parameters()["position_offset"], 0)
+
+    def test_volume_mode_offers_no_placement_or_omit_barline(self):
+        dialog = self._dialog(volume=True)
+        self.assertFalse(dialog.placement_combo.isVisibleTo(dialog))
+        self.assertFalse(dialog.omit_barline_check.isVisibleTo(dialog))
+        self.assertFalse(dialog.relative_to_final_bpm_check.isVisibleTo(dialog))
+
+    def test_the_sv_dialog_still_offers_all_of_them(self):
+        dialog = self._dialog(volume=False)
+        self.assertTrue(dialog.position_offset_spin.isVisibleTo(dialog))
+        self.assertTrue(dialog.placement_combo.isVisibleTo(dialog))
+        self.assertTrue(dialog.omit_barline_check.isVisibleTo(dialog))
+        self.assertEqual(
+            dialog.parameters()["position_offset"],
+            gui.SVFunctionDialog.DEFAULT_POSITION_OFFSET_MS,
+        )
+
+
+class GimmickBandTests(_GimmickFixture, unittest.TestCase):
+    """The layer's real home is the gimmick page's seventh band.
+
+    That page builds its own SVEditorView rather than going through
+    _add_editor_view, which is how the volume axis came to be set in only one
+    of the two places a view of this layer is made -- and not the one anybody
+    actually looks at.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self._enter(gui.GimmickEntryDialog.USE_CURRENT)
+
+    def _band(self, layer_id: str):
+        frame = next(
+            f for f in self.window._gimmick_views if f.gimmick_layer == layer_id
+        )
+        return frame.sv_view
+
+    def test_the_band_graphs_volume_not_scroll_speed(self):
+        view = self._band("kiai_sound")
+        self.assertTrue(view.volume_mode)
+        self.assertEqual(view.update_scale(), (0.0, 100.0))
+
+    def test_the_other_sv_bands_still_graph_scroll_speed(self):
+        for layer_id in ("sv_chart", "sv_fake_slider", "sv_barline"):
+            self.assertFalse(self._band(layer_id).volume_mode, layer_id)
+
+
+class CursorReadoutTests(_GimmickFixture, unittest.TestCase):
+    """TimeAxisMixin.draw_cursor_position -- the small millisecond written in
+    the corner of every layer -- has to follow the mouse.
+
+    It reads self._hover_time, which was always current; what was missing was
+    the repaint. Both views gated update() on having a placement ghost to
+    draw, so in select mode the number only changed when something else
+    repainted the view -- in practice, when you clicked.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self._enter(gui.GimmickEntryDialog.USE_CURRENT)
+        self.view = self.window._gimmick_views[0].chart_view
+        self.view.resize(800, self.window.GIMMICK_LAYER_HEIGHT)
+
+    def _move_to(self, x: float) -> None:
+        self.view.mouseMoveEvent(QMouseEvent(
+            QEvent.MouseMove, QPointF(x, 10.0), Qt.NoButton, Qt.NoButton, Qt.NoModifier,
+        ))
+
+    def test_leaving_the_view_clears_and_repaints(self):
+        self._move_to(600.0)
+        self.assertIsNotNone(self.view._hover_time)
+        repaints = []
+        self.view.update = lambda *a: repaints.append(1)
+
+        self.view.leaveEvent(QEvent(QEvent.Leave))
+
+        self.assertIsNone(self.view._hover_time)
+        self.assertTrue(repaints, "the stale number has to be painted away")
+
+    def test_select_mode_repaints_so_the_cursor_millisecond_follows(self):
+        """TimeAxisMixin.draw_cursor_position writes the millisecond under the
+        cursor in *every* tool, but the repaint used to be gated on there
+        being a placement ghost to draw -- so in select mode the number only
+        refreshed when something else repainted the view, which meant
+        clicking.
+        """
+        self.view.tool = "select"
+        repaints = []
+        self.view.update = lambda *a: repaints.append(1)
+
+        self._move_to(600.0)
+
+        self.assertTrue(repaints, "a move in select mode has to repaint")
+        self.assertEqual(self.view._hover_time, self.view.time_for_x(600.0))
+
+    def test_an_sv_view_in_select_mode_repaints_too(self):
+        sv_view = next(
+            f.sv_view for f in self.window._gimmick_views
+            if f.gimmick_layer == "kiai_sound"
+        )
+        sv_view.resize(800, self.window.GIMMICK_LAYER_HEIGHT)
+        sv_view.tool = "select"
+        repaints = []
+        sv_view.update = lambda *a: repaints.append(1)
+
+        sv_view.mouseMoveEvent(QMouseEvent(
+            QEvent.MouseMove, QPointF(400.0, 10.0), Qt.NoButton, Qt.NoButton, Qt.NoModifier,
+        ))
+
+        self.assertTrue(repaints)
+        self.assertEqual(sv_view._hover_time, sv_view.time_for_x(400.0))
+
