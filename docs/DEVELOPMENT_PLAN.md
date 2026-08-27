@@ -92,7 +92,25 @@ A later alternative, if Ogg accuracy turns out to matter: decode Ogg to PCM
 ourselves and hand WMF the samples, which would make every map accurate at the
 cost of a decode step on open.
 
-## The test suite is slow because of a widget leak, not because it is big
+## ~~The test suite is slow~~ — FIXED 2026-08-28
+
+**Resolved in 692f3cb.** The diagnosis below was half right: the cost was
+real and quadratic, but it was not a *widget* leak. `MainWindow.__init__`
+registers an event filter and a `focusChanged` slot on `QApplication`, which
+outlives every window and is never unhooked by `close()`. Qt runs every
+application event through every installed filter, so N live windows put N
+Python calls on every event. Releasing both in `closeEvent` made it flat
+(171→976ms became 164→154ms over twelve windows) **with the same objects
+still alive**. The eight QFrames per window are QComboBox popup containers
+owned by the window, not leaked widgets.
+
+Whole suite, 967 tests: 4+ hours → **106 seconds** (per file, 6 at a time).
+`test_gimmick_editor` went ~650s → 65s, so the "run it per class" advice is
+no longer needed. Still worth doing, in order: point `tools/run_tests.bat`
+and `build_windows.bat` step `[6/9]` at a per-file runner, and move the
+assertions that need no window off `MainWindow` entirely.
+
+Original investigation, kept for the method:
 
 Measured 2026-08-27. `unittest discover` in one process reached only 258 of
 963 tests in 80 minutes and was still slowing down; extrapolated past 4 hours.
