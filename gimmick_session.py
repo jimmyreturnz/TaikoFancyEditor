@@ -622,14 +622,19 @@ def sv_restore_point(
     )
 
 
-def preserve_kiai(points: list[TimingPoint], document_points: list[TimingPoint]) -> list[TimingPoint]:
-    """Carry the map's kiai state at each point's time onto that point.
+def carry_active_state(points: list[TimingPoint], document_points: list[TimingPoint]) -> list[TimingPoint]:
+    """Carry the map's state at each point's time onto that point.
 
-    Kiai lives on the timing point, not on a span: whatever point is active at a
-    millisecond decides whether kiai is on there. So *every* line a gimmick
-    writes inside a kiai section has to say so, or the first one silently ends
-    the section for everything after it -- which is what made a gimmick placed
-    in a chorus switch the chorus off.
+    Two fields live on the timing point rather than on a span, so whichever
+    point is active at a millisecond decides them for everything after it until
+    the next one:
+
+    * **Kiai.** Every line a gimmick writes inside a kiai section has to say
+      so, or the first one silently ends the section -- which is what made a
+      gimmick placed in a chorus switch the chorus off.
+    * **Hitsound volume.** A generated line carries `TimingPoint`'s default of
+      100% unless told otherwise, so a structure placed inside a quiet section
+      used to slam it back to full volume for the rest of that section.
 
     Applied to the built points rather than passed into each builder: it is the
     same rule for red lines, green lines and every structure, and the state it
@@ -638,8 +643,11 @@ def preserve_kiai(points: list[TimingPoint], document_points: list[TimingPoint])
     ordered = sorted_by_time(document_points)
     for point in points:
         active = active_point_at(ordered, point.time)
-        if active is not None and active.kiai:
+        if active is None:
+            continue
+        if active.kiai:
             point.set_kiai(True)
+        point.volume = active.volume
     return points
 
 

@@ -133,5 +133,29 @@ class ApplicationHookReleaseTests(unittest.TestCase):
         )
 
 
+class AudioFileReleaseTests(ApplicationHookReleaseTests):
+    """The song file must not stay locked by a closed window.
+
+    Qt keeps the decoded source open until it is cleared, and on Windows that
+    is a real file lock: the song cannot be moved or deleted underneath it.
+    tearDown met the same lock from the other side, failing intermittently
+    with NotADirectoryError while TemporaryDirectory raced the backend.
+    """
+
+    def test_closing_clears_the_media_source(self):
+        window = self._window()
+        window.player.setSource(
+            gui.QUrl.fromLocalFile(str(Path(self._temp.name) / "audio.mp3"))
+        )
+        self.assertFalse(window.player.source().isEmpty())
+
+        window.close()
+
+        self.assertTrue(
+            window.player.source().isEmpty(),
+            "a closed window must let go of the song file",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

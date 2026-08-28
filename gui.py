@@ -76,7 +76,7 @@ from gimmick_session import (
     load_index,
     looks_gimmicked,
     oscillating_series,
-    preserve_kiai,
+    carry_active_state,
     save_index,
     shiny_collides,
     snapshot_timing,
@@ -6946,6 +6946,7 @@ class MainWindow(QMainWindow):
         # teardown, and a modal prompt there has nobody to answer it.
         if not event.spontaneous() or self._confirm_leaving_editor():
             self._release_application_hooks()
+            self._release_audio_file()
             event.accept()
         else:
             event.ignore()
@@ -6980,6 +6981,19 @@ class MainWindow(QMainWindow):
         except (RuntimeError, TypeError):
             # Already disconnected, or the C++ side is gone.
             pass
+
+    def _release_audio_file(self) -> None:
+        """Let go of the song file on close.
+
+        Qt's media backend holds the decoded source open until it is cleared,
+        which on Windows is a live file lock -- the song cannot be moved,
+        renamed, or deleted while a closed-but-not-cleared window still names
+        it. The test suite hit the same lock from the other side: tearDown's
+        TemporaryDirectory cleanup raced the backend and failed intermittently
+        with NotADirectoryError on the fixture's audio.mp3.
+        """
+        self.player.stop()
+        self.player.setSource(QUrl())
 
     # -- Song library page --------------------------------------------------
 
@@ -8457,12 +8471,18 @@ class MainWindow(QMainWindow):
         # that the layer would then draw and hit-test forever.
         taken = {round(p.time) for p in state.document.timing_points if p.uninherited}
         ordered = sorted_by_time(state.document.timing_points)
-        template = active_point_at(ordered, start_ms)
         points = []
         for at, bpm in zip(times, bpms):
             if at in taken:
                 continue
-            points.append(TimingPoint.uninherited_at(at, bpm))
+            # Per point, not once for the range: hitsound volume is carried by
+            # whichever timing point is in force, and a run long enough to be
+            # worth generating routinely crosses a volume change. Taking the
+            # range's opening volume would flatten every later change back to
+            # it -- and taking no template at all would reset the whole run to
+            # 100%, which is what this used to do.
+            template = active_point_at(ordered, at)
+            points.append(TimingPoint.uninherited_at(at, bpm, template=template))
             # Straight after its red line, never before: osu! resolves a shared
             # timestamp by file order, and the red one has just reset SV to
             # 1.0x, so the other way round the reset would win and the run
@@ -8476,7 +8496,7 @@ class MainWindow(QMainWindow):
             return
         # Same reason as _place_gimmick: a thousand generated lines with kiai
         # off is a thousand ways to kill the section they were drawn across.
-        preserve_kiai(points, state.document.timing_points)
+        carry_active_state(points, state.document.timing_points)
         state.history.push(InsertTimingPoints(points), state)
         with self._refresh_cycle():
             self._refresh_difficulty_views(difficulty_path)
@@ -9013,7 +9033,7 @@ class MainWindow(QMainWindow):
         # written without it ends the section it lands in for everything after
         # it -- a chorus that stops being a chorus the moment a fake slider is
         # placed in it. Applied to the whole cluster, red and green alike.
-        preserve_kiai(points, state.document.timing_points)
+        carry_active_state(points, state.document.timing_points)
 
         # A fake slider and a shiny on one snap share a gimmick line, so the
         # second of them must not write a duplicate: osu! honours only the first
@@ -10881,7 +10901,6 @@ class MainWindow(QMainWindow):
             self._generate_volume(state, difficulty_path, start_ms, end_ms, params)
             return
         ordered = sorted_by_time(state.document.timing_points)
-        template = active_point_at(ordered, start_ms)
         start_bpm = active_uninherited_at(state.document.timing_points, start_ms).bpm or 1.0
 
         times = self._sv_generation_times(state, start_ms, end_ms, params, layer_id)
@@ -10934,7 +10953,10 @@ class MainWindow(QMainWindow):
                 time_ms, max(0.01, rate),
                 kiai=bool(active.kiai) if active is not None else False,
                 omit_first_barline=(params["omit_barline"] and index == 0),
-                template=template,
+                # The same point kiai comes from. Sweeping across a volume
+                # change used to copy the range's opening volume onto every
+                # generated line, silently undoing the change.
+                template=active,
             ))
 
         # One undo step regardless of point count, and regardless of how many
