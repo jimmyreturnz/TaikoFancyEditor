@@ -423,7 +423,7 @@ python -m unittest discover
 pyinstaller --noconfirm --clean TaikoFancyArranger.spec
 ```
 
-ソースから実行するには`python main.py`、Windowsでは`run_from_source.bat`を使います。
+ソースから実行するには`python gui.py`、Windowsでは`run_from_source.bat`を使います。
 
 パッケージング関連ファイル:
 

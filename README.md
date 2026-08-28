@@ -423,7 +423,7 @@ python -m unittest discover
 pyinstaller --noconfirm --clean TaikoFancyArranger.spec
 ```
 
-Run from source with `python main.py`, or `run_from_source.bat` on Windows.
+Run from source with `python gui.py`, or `run_from_source.bat` on Windows.
 
 Packaging files:
 
