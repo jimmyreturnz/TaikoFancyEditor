@@ -104,11 +104,11 @@ def parameter_labels() -> tuple[set[str], set[str]]:
     """Return (labels, choice labels) across every live parameter definition.
 
     Importing gui applies the definitions it injects into PARAMETERS, so this
-    covers both gui_draft.py originals and gui.py additions such as Font and
+    covers both parameters.py originals and gui.py additions such as Font and
     Notes per Drawing.
     """
     import gui  # noqa: F401  (import for its PARAMETERS side effects)
-    from gui_draft import PARAMETERS
+    from parameters import PARAMETERS
 
     labels: set[str] = set()
     choices: set[str] = set()
@@ -229,7 +229,7 @@ class JapaneseLookupTests(unittest.TestCase):
             ("MainWindow", "Split Don / Kat"),
             ("MainWindow", "Duration"),
             ("MainWindow", "Now"),
-            # Parameters defined in gui_draft.py.
+            # Parameters defined in parameters.py.
             ("Parameters", "Position X"),
             ("Parameters", "Position Y"),
             ("Parameters", "Traversal"),
