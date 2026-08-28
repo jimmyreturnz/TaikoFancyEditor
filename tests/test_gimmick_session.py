@@ -497,33 +497,52 @@ class IndexTests(unittest.TestCase):
         self.assertEqual(gs.gimmick_version_for("Oni"), "Oni [Gimmick]")
 
 
-class PreserveKiaiTests(unittest.TestCase):
-    """Kiai lives on the active timing point, so a gimmick line written without
-    it ends the section it lands in for everything after it."""
+class CarryActiveStateTests(unittest.TestCase):
+    """Kiai and hitsound volume both live on the active timing point, so a
+    gimmick line written without them redefines both for everything after it."""
 
     def setUp(self):
+        quiet = TimingPoint.inherited_at(5000, 1.0, kiai=True)
+        quiet.volume = 20
         self.document = [
             TimingPoint.uninherited_at(0, 180.0),
-            TimingPoint.inherited_at(5000, 1.0, kiai=True),
+            quiet,
             TimingPoint.inherited_at(20000, 1.0),
         ]
 
     def test_a_line_inside_a_kiai_section_carries_kiai(self):
         points, _ = gs.fake_slider(10000, BASE, gs.GimmickConfig(), kind="kat")
-        gs.preserve_kiai(points, self.document)
+        gs.carry_active_state(points, self.document)
         self.assertTrue(all(point.kiai for point in points))
 
     def test_a_line_outside_one_does_not(self):
         points, _ = gs.fake_slider(30000, BASE, gs.GimmickConfig(), kind="kat")
-        gs.preserve_kiai(points, self.document)
+        gs.carry_active_state(points, self.document)
         self.assertFalse(any(point.kiai for point in points))
 
     def test_the_omit_barline_bit_survives_it(self):
         """Both live in `effects`; setting one must not clear the other."""
         points, _ = gs.fake_slider(10000, BASE, gs.GimmickConfig())
-        gs.preserve_kiai(points, self.document)
+        gs.carry_active_state(points, self.document)
         self.assertTrue(all(point.omit_first_barline for point in points))
         self.assertEqual(points[0].effects, 9)
+
+    def test_a_line_inside_a_quiet_section_keeps_it_quiet(self):
+        """The regression: TimingPoint defaults to 100, so a structure placed
+        in a 20% section used to slam the rest of that section to full."""
+        points, _ = gs.fake_slider(10000, BASE, gs.GimmickConfig(), kind="kat")
+        gs.carry_active_state(points, self.document)
+        self.assertEqual([point.volume for point in points], [20] * len(points))
+
+    def test_the_volume_is_read_per_point_not_once(self):
+        """A structure can straddle a volume change; each line takes the value
+        in force where it actually lands."""
+        points = [
+            TimingPoint.uninherited_at(10000, 180.0),
+            TimingPoint.uninherited_at(25000, 180.0),
+        ]
+        gs.carry_active_state(points, self.document)
+        self.assertEqual([point.volume for point in points], [20, 100])
 
 
 class OscillatingSeriesTests(unittest.TestCase):
