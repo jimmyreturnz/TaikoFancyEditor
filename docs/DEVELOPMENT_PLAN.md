@@ -114,6 +114,48 @@ A later alternative, if Ogg accuracy turns out to matter: decode Ogg to PCM
 ourselves and hand WMF the samples, which would make every map accurate at the
 cost of a decode step on open.
 
+### STILL OPEN: the decoder switch did not fix it
+
+Reported 2026-08-28, after the switch shipped. **Slow playback is still not
+accurate.** The backend was a real bottleneck and removing it was necessary,
+but it was not sufficient, so this section stays open rather than closing as
+done. Jimmy is exploring further; what follows is what the measurements
+already rule in and out, so the next attempt does not re-derive it.
+
+**Not the cause any more:** position granularity. WMF reports 687 positions
+in 3s at 0.25x (1-4ms steps). There is plenty to interpolate between now.
+
+**Leads, in the order the evidence favours them:**
+
+1. **WMF's own rate error, which the table above understates.** The measured
+   rate was 0.2545 for an asked 0.25 -- 1.8% fast -- and 1.0044 at 1.0x.
+   That is a real, *signed* error, not jitter: 1.8% is roughly 1.1s of drift
+   per minute of slow playback, in a fixed direction, which is exactly the
+   shape of "it feels off and gets worse the longer I listen". Worth
+   measuring over a much longer window (60s+, several rates) to see whether
+   the ratio is stable. If it is stable it can simply be calibrated out --
+   scale the source clock by the *measured* rate rather than the asked one.
+   This is the cheapest candidate and the one to test first.
+2. **`HitsoundPlayer.offset_ms` is calibrated in song time** while the output
+   latency it compensates for is wall-clock, so a value tuned at 1.0x is
+   wrong at every other rate. Already recorded as item 10 below and still
+   unfixed. This one only affects hitsounds, not the playhead, so it explains
+   part of the symptom and cannot explain all of it -- but it is cheap.
+3. **Resampling quality, not timing.** Qt's rate change is a plain resample;
+   osu! uses BASS_FX time-stretching. If what still feels wrong at 25% is
+   that the *audio sounds bad* rather than that it is out of step, no clock
+   work will help and the fix is a different audio engine. Worth separating
+   from 1 and 2 before spending on either: play a click track at 0.25x and
+   ask whether the clicks are late, or merely ugly.
+
+**How to tell them apart.** The three produce different signatures, and the
+existing probe (`tools/measure_audio_backend.py`, the harness the table above came from)
+already reports what is needed: a stable ratio between song time and wall
+time points at 1, a drift that only affects hitsounds points at 2, and clean
+timing with poor sound points at 3. Measure before building, the way the
+backend investigation did -- the first three explanations tried there were
+all wrong, and only the measurement settled it.
+
 ## ~~The test suite is slow~~ — FIXED 2026-08-28
 
 **Resolved in 692f3cb.** The diagnosis below was half right: the cost was
