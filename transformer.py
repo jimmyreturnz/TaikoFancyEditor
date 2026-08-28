@@ -331,22 +331,22 @@ def _note_times(raw: Any, indexes: list[int]) -> dict[int, float]:
 
 
 def _timing_point_values(item: Any) -> tuple[float, float, bool]:
+    """Read one timing point, as a raw [TimingPoints] line or as an object.
+
+    Both shapes are live: gui.py passes osu_io TimingPoint objects, and the
+    headless API takes .osu lines.
+    """
     if isinstance(item, str):
         fields = item.strip().split(",")
         if len(fields) < 7:
             raise ValueError(f"Invalid timing-point line: {item}")
         return float(fields[0]), float(fields[1]), int(fields[6]) == 1
-    if isinstance(item, Mapping):
-        time = item.get("time_ms", item.get("time", item.get("offset_ms")))
-        beat = item.get("beat_length_ms", item.get("beatLength", item.get("beat_length")))
-        inherited = item.get("uninherited")
-    else:
-        time = getattr(item, "time_ms", getattr(item, "time", getattr(item, "offset_ms", None)))
-        beat = getattr(item, "beat_length_ms", getattr(item, "beat_length", None))
-        inherited = getattr(item, "uninherited", None)
-    if time is None or beat is None or inherited is None:
-        raise ValueError("Timing points need time_ms, beat_length_ms, and uninherited")
-    return float(time), float(beat), bool(inherited)
+    try:
+        return float(item.time), float(item.beat_length), bool(item.uninherited)
+    except AttributeError as error:
+        raise ValueError(
+            "Timing points need time, beat_length, and uninherited"
+        ) from error
 
 
 # -------------------- common chunk and geometry helpers --------------------

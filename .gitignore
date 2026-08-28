@@ -206,3 +206,9 @@ test_beatmaps/
 
 # Claude Code agent worktrees and local session state
 .claude/
+
+# Compiled translation catalog. Generated from the .ts by
+# tools/compile_translations.bat, which run_from_source.bat and
+# tools/run_tests.bat both call. Tracking it made every branch that added a
+# string conflict on a binary.
+translations/*.qm
