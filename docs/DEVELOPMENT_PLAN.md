@@ -125,36 +125,54 @@ already rule in and out, so the next attempt does not re-derive it.
 **Not the cause any more:** position granularity. WMF reports 687 positions
 in 3s at 0.25x (1-4ms steps). There is plenty to interpolate between now.
 
+**Also ruled out: WMF rate error.** The 3s runs above read 1.0044 at 1.0x and
+0.2545 at 0.25x, which looked like a signed 1.8% drift worth calibrating out.
+It is not. Re-run over longer windows and the apparent error collapses:
+
+| asked rate | 3s | 12s | 30s |
+| --- | --- | --- | --- |
+| 1.0 | 1.0041 | 1.0011 | 1.0004 |
+| 0.25 | 0.2541 | 0.2511 | 0.2504 |
+
+Every one of those is the same **fixed ~12ms of song time**, divided by a
+longer window: 0.0041 x 2940ms, 0.0011 x 11943ms and 0.0004 x 29628ms are all
+12-13ms. It is constant in *song* time and identical at both rates, so it is
+the harness starting its wall clock on a position report that is already one
+decode block into the song -- not a property of the backend. **WMF's real rate
+error is 0.04% over 30s, i.e. none.** Do not spend anything on rate
+calibration.
+
 **Leads, in the order the evidence favours them:**
 
-1. **WMF's own rate error, which the table above understates.** The measured
-   rate was 0.2545 for an asked 0.25 -- 1.8% fast -- and 1.0044 at 1.0x.
-   That is a real, *signed* error, not jitter: 1.8% is roughly 1.1s of drift
-   per minute of slow playback, in a fixed direction, which is exactly the
-   shape of "it feels off and gets worse the longer I listen". Worth
-   measuring over a much longer window (60s+, several rates) to see whether
-   the ratio is stable. If it is stable it can simply be calibrated out --
-   scale the source clock by the *measured* rate rather than the asked one.
-   This is the cheapest candidate and the one to test first.
+1. **Output latency, which has never been measured.** `position()` reports the
+   render cursor; what reaches the speakers lags it by the device buffer. That
+   lag is constant in *wall* time, so in song time it scales with the rate --
+   20ms of buffer is 20ms of song at 1.0x but 5ms at 0.25x. Every visual
+   element is drawn against song time, so a constant device lag displaces the
+   playhead against what is audible by a rate-dependent amount, which is
+   precisely the shape of "accurate at 100%, wrong everywhere else". Nothing
+   in the app compensates for it today. Measure it directly rather than
+   inferring it: compare the reported position at the moment a known transient
+   is heard, or read a `QAudioSink`'s processed frames against
+   `player.position()`.
 2. **`HitsoundPlayer.offset_ms` is calibrated in song time** while the output
-   latency it compensates for is wall-clock, so a value tuned at 1.0x is
-   wrong at every other rate. Already recorded as item 10 below and still
-   unfixed. This one only affects hitsounds, not the playhead, so it explains
-   part of the symptom and cannot explain all of it -- but it is cheap.
+   latency it compensates for is wall-clock, so a value tuned at 1.0x is wrong
+   at every other rate. Recorded as item 10 below and still unfixed. It is the
+   same units bug as lead 1, on the hitsound side rather than the playhead
+   side, which is why the two should be investigated together.
 3. **Resampling quality, not timing.** Qt's rate change is a plain resample;
-   osu! uses BASS_FX time-stretching. If what still feels wrong at 25% is
-   that the *audio sounds bad* rather than that it is out of step, no clock
-   work will help and the fix is a different audio engine. Worth separating
-   from 1 and 2 before spending on either: play a click track at 0.25x and
-   ask whether the clicks are late, or merely ugly.
+   osu! uses BASS_FX time-stretching. If what still feels wrong at 25% is that
+   the *audio sounds bad* rather than that it is out of step, no clock work
+   will help and the fix is a different audio engine.
 
-**How to tell them apart.** The three produce different signatures, and the
-existing probe (`tools/measure_audio_backend.py`, the harness the table above came from)
-already reports what is needed: a stable ratio between song time and wall
-time points at 1, a drift that only affects hitsounds points at 2, and clean
-timing with poor sound points at 3. Measure before building, the way the
-backend investigation did -- the first three explanations tried there were
-all wrong, and only the measurement settled it.
+**Separate 3 from 1 and 2 first**, because it is free and it decides whether
+any clock work is worth doing at all: play a click track at 0.25x and ask
+whether the clicks are late, or merely ugly. Then measure before building, the
+way the backend investigation did -- three explanations were tried there
+before anyone measured, and all three were wrong.
+`tools/measure_audio_backend.py` is that harness, kept for the purpose; its
+fourth argument is the sampling window in seconds, which is what overturned
+the rate-error reading above.
 
 ## ~~The test suite is slow~~ — FIXED 2026-08-28
 
