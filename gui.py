@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
     QSlider, QSpacerItem, QSpinBox, QSplitter, QStackedWidget, QStyle, QStyleOptionButton, QTabWidget, QToolButton, QVBoxLayout, QWidget, QDialog, QDialogButtonBox, QFontComboBox, QSizePolicy
 )
 
-from gui_draft import PARAMETERS
+from parameters import PARAMETERS
 from i18n import install_translator, tr
 from image_trace_dialog import ImageTraceDialog
 from model.commands import (
