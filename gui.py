@@ -2074,10 +2074,21 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
         # opposite, and the notes end up drawn on top of a solid grid.
         tick_scale = min(1.0, self.height() / self.DESIGN_HEIGHT)
         divisor = self.snap_divisor
+        snap_points = self.snap_beat_points
         timing = active_timing(
-            self.snap_points,
+            snap_points,
             start_time,
         )
+        # The walk below only moves forward, and the timing section it is in
+        # changes once or twice in a window -- but it used to binary-search the
+        # whole point list again for every single tick. Profiling one gimmick
+        # page frame caught 152 of those searches, 30 per grid draw. Hold the
+        # section until the walk reaches the next timing point instead.
+        #
+        # Conservative on purpose: an inherited point expires the section
+        # without changing which uninherited one is active, so that case costs
+        # a search that returns what we already had -- never a stale section.
+        section_expires = -math.inf
 
         # A gimmick map's "invisible note" points carry beat_length = 0.0001,
         # which puts millions of sub-pixel ticks in one window -- a hard freeze,
@@ -2101,10 +2112,11 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
         )
 
         while tick_time <= end_time + snap_length:
-            timing = active_timing(
-                self.snap_points,
-                tick_time + 0.001,
-            )
+            at = tick_time + 0.001
+            if at >= section_expires:
+                timing = active_timing(snap_points, at)
+                following = self._next_timing_time_after(tick_time)
+                section_expires = math.inf if following is None else following
 
             snap_length = timing.beat_length / divisor
             if snap_length < min_snap_length:
@@ -2908,6 +2920,10 @@ class SVEditorView(TimeAxisMixin, QWidget):
         # against the full list, once per curve segment per frame, was the SV
         # editor's entire paint cost.
         self._beat_points = uninherited_points(self.timing_points)
+        # Their times alone, so _draw_sv_curve can tell when its walk leaves
+        # the current section with one C-level bisect instead of asking
+        # active_timing again for every segment.
+        self._beat_times = [point.time for point in self._beat_points]
         if self.volume_mode:
             # Volume is a plain 0-100% scale, never the log SV ladder -- set
             # here too (not only in update_scale) so a mouse handler that
@@ -3481,10 +3497,24 @@ class SVEditorView(TimeAxisMixin, QWidget):
             # Closer points keep the diagonal, which is what makes a
             # generated sweep's easing shape (linear/sin/exponential/...)
             # readable in the first place.
+            # `visible` is time-ordered, so the beat section only moves
+            # forward -- but this asked active_timing for every single
+            # segment, which profiling caught at 219 lookups per frame across
+            # the gimmick page's SV bands, each one a binary search plus a
+            # backward walk. Hold the section until the walk leaves it.
+            beat_length = 0.0
+            section_expires = -math.inf
             for i in range(1, len(points)):
                 prev_point, point = points[i - 1], points[i]
                 prev_time, time = visible[i - 1][0], visible[i][0]
-                beat_length = active_timing(self._beat_points, prev_time).beat_length
+                if prev_time >= section_expires:
+                    beat_length = active_timing(self._beat_points, prev_time).beat_length
+                    following = bisect_right(self._beat_times, prev_time)
+                    section_expires = (
+                        self._beat_times[following]
+                        if following < len(self._beat_times)
+                        else math.inf
+                    )
                 if time - prev_time >= 2 * beat_length:
                     painter.drawLine(prev_point, QPointF(point.x(), prev_point.y()))
                     painter.drawLine(QPointF(point.x(), prev_point.y()), point)
@@ -4063,6 +4093,10 @@ class TimingOverviewBar(QWidget):
         self.duration_ms=1; self.current_time=0; self.viewport_start=0; self.viewport_end=0
         self.kiai=[]; self.timing_markers=[]; self._marker_kinds=[]; self.bookmarks=[]; self.preview_time=None; self.dragging=False
         self._marker_cache_key=None; self._marker_lines=[]
+        # Everything but the playhead, the viewport box and the preview line is
+        # fixed for the life of a document, so it is painted once into a pixmap
+        # rather than 120 times a second. Same idiom as DensityOverview below.
+        self.static_layer=QPixmap(); self.static_layer_dirty=True
         self.setFixedHeight(28); self.setCursor(Qt.PointingHandCursor)
     def load_document(self,document,duration_ms:int)->None:
         self.apply_document_data(timeline_bar_data(document,duration_ms))
@@ -4076,10 +4110,11 @@ class TimingOverviewBar(QWidget):
         """
         self.duration_ms,self.kiai,self.timing_markers,self.bookmarks,self.preview_time,self._marker_kinds=data
         self._marker_cache_key=None
+        self.static_layer_dirty=True
         self.update()
 
     def set_duration(self,value:int)->None:
-        if value>0:self.duration_ms=value;self.update()
+        if value>0:self.duration_ms=value;self.static_layer_dirty=True;self.update()
     def set_time(self,value:int)->None:self.current_time=max(0,min(value,self.duration_ms));self.update()
     def set_viewport(self,center:int,window_ms:float)->None:
         self.viewport_start=max(0,center-window_ms/2);self.viewport_end=min(self.duration_ms,center+window_ms/2);self.update()
@@ -4107,8 +4142,20 @@ class TimingOverviewBar(QWidget):
     def mouseReleaseEvent(self,event)->None:
         if self.dragging:self._seek(event.position().x())
         self.dragging=False
-    def paintEvent(self,event)->None:
-        painter=QPainter(self);painter.fillRect(self.rect(),QColor("#0d1219"));painter.setRenderHint(QPainter.Antialiasing,False)
+    def resizeEvent(self,event)->None:
+        self.static_layer_dirty=True
+        super().resizeEvent(event)
+    def _rebuild_static_layer(self)->None:
+        """The bar minus the three things that move.
+
+        A gimmick map puts a marker on most of the bar's ~1000 pixel columns,
+        and each one is a setPen and a drawLine -- measured at 1150 of each per
+        frame, 1.29ms, on a 28-pixel-tall widget that cost more than the full
+        timeline above it. None of it changes while the song plays.
+        """
+        if self.width()<=0 or self.height()<=0:return
+        layer=QPixmap(self.size());layer.fill(QColor("#0d1219"))
+        painter=QPainter(layer);painter.setRenderHint(QPainter.Antialiasing,False)
         center=self.height()//2
         kiai_height=max(3,self.height()//3);kiai_top=center-kiai_height//2
         painter.setPen(Qt.NoPen)
@@ -4117,11 +4164,21 @@ class TimingOverviewBar(QWidget):
             painter.fillRect(QRectF(x,kiai_top,w,kiai_height),QColor(255,170,0,82))
         painter.setPen(QPen(QColor(255,255,255,190),1));painter.drawLine(0,center,self.width(),center)
         colors={"yellow":QColor("#ffd400"),"red":QColor("#ff4545"),"green":QColor("#45d65a")}
-        for x,kind in self._marker_line_positions():
-            painter.setPen(QPen(colors[kind],1));painter.drawLine(x,1,x,center-1)
+        # Grouped by colour so the pen is set three times instead of once per
+        # marker: setPen was measured at the same call count as drawLine.
+        for kind,color in colors.items():
+            painter.setPen(QPen(color,1))
+            for x,marker_kind in self._marker_line_positions():
+                if marker_kind==kind:painter.drawLine(x,1,x,center-1)
         painter.setPen(QPen(QColor("#3e9bff"),1))
         for bookmark in self.bookmarks:
             x=round(bookmark/self.duration_ms*self.width());painter.drawLine(x,center+1,x,self.height()-2)
+        painter.end();self.static_layer=layer;self.static_layer_dirty=False
+    def paintEvent(self,event)->None:
+        if self.static_layer_dirty or self.static_layer.size()!=self.size():self._rebuild_static_layer()
+        painter=QPainter(self);painter.drawPixmap(0,0,self.static_layer)
+        painter.setRenderHint(QPainter.Antialiasing,False)
+        center=self.height()//2
         if self.preview_time is not None:
             x=round(self.preview_time/self.duration_ms*self.width());painter.setPen(QPen(QColor("#ffd400"),1));painter.drawLine(x,center+1,x,self.height()-2)
         if self.viewport_end>self.viewport_start:
@@ -6265,7 +6322,21 @@ class MainWindow(QMainWindow):
         # snap grid still read as belonging to what is being looked at.
         return watched if watched in views else views[0]
 
+    # The only event types the application filter below acts on. Everything
+    # else -- paints, timers, layout requests, every mouse move -- is handed
+    # straight back, which matters because this filter is installed on the
+    # QApplication and therefore sees *every* event in the process: profiling
+    # a playback frame caught it running 31 times per frame, four
+    # QEvent.type() conversions deep each time, for events it could never act
+    # on.
+    _FILTERED_EVENT_TYPES = frozenset({
+        QEvent.KeyPress, QEvent.KeyRelease, QEvent.Wheel, QEvent.MouseButtonPress,
+    })
+
     def eventFilter(self,watched,event)->bool:
+        kind=event.type()
+        if kind not in self._FILTERED_EVENT_TYPES:
+            return super().eventFilter(watched,event)
         # Shift toggles the placement preview between its normal and finisher
         # size (_draw_placement_ghost reads it fresh on every paint), but a
         # chart/SV view only repaints on mouse *move* -- so holding Shift over
@@ -6276,7 +6347,7 @@ class MainWindow(QMainWindow):
         # cursor is actually over, not every open view, so this stays a
         # handful of repaints rather than a whole-app one on every keystroke.
         if (
-            event.type() in (QEvent.KeyPress, QEvent.KeyRelease)
+            kind in (QEvent.KeyPress, QEvent.KeyRelease)
             and event.key() == Qt.Key_Shift
             and not event.isAutoRepeat()
         ):
@@ -6286,13 +6357,13 @@ class MainWindow(QMainWindow):
             # Falls through rather than returning True: nothing else treats
             # Shift as consumed, and eating it here would be a silent change
             # to every other Shift-modified gesture (Shift+click, Shift+drag).
-        if self.drawing_dialog_active and event.type()==QEvent.MouseButtonPress:return super().eventFilter(watched,event)
-        if event.type()==QEvent.Wheel:
+        if self.drawing_dialog_active and kind==QEvent.MouseButtonPress:return super().eventFilter(watched,event)
+        if kind==QEvent.Wheel:
             target = self._gimmick_wheel_target(watched)
             if target is not None:
                 target.wheelEvent(event)
                 return True
-        if event.type()==QEvent.Wheel and hasattr(self,"timeline"):
+        if kind==QEvent.Wheel and hasattr(self,"timeline"):
             modifiers=event.modifiers() | QApplication.keyboardModifiers()
             alt_down=bool(modifiers & Qt.AltModifier)
             if alt_down:
@@ -6314,7 +6385,7 @@ class MainWindow(QMainWindow):
         # the Editor page) must not clear it just because it landed outside
         # these three widgets.
         on_fancy_arranger_page = hasattr(self, "page_stack") and self.page_stack.currentWidget() is self.fancy_arranger_page
-        if event.type()==QEvent.MouseButtonPress and on_fancy_arranger_page and hasattr(self,"timeline") and self.selected:
+        if kind==QEvent.MouseButtonPress and on_fancy_arranger_page and hasattr(self,"timeline") and self.selected:
             clicked=QApplication.widgetAt(event.globalPosition().toPoint())
             inside_timeline = self._is_descendant(clicked, self.timeline)
             inside_controls = self._is_descendant(clicked, self.transform_controls_panel)
