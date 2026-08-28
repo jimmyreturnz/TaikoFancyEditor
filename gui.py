@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import os
 import random
 import csv
 import shutil
@@ -6064,6 +6065,7 @@ class MainWindow(QMainWindow):
         # and the hitsound values are read in one place so the Settings dialog
         # can re-apply them without a restart.
         self._apply_audio_settings()
+        self.player.errorOccurred.connect(self._audio_backend_failed)
         self.player.positionChanged.connect(
             self._player_position_changed
         )
@@ -6981,6 +6983,36 @@ class MainWindow(QMainWindow):
         except (RuntimeError, TypeError):
             # Already disconnected, or the C++ side is gone.
             pass
+
+    def _audio_backend_failed(self, error, message: str) -> None:
+        """Remember to use the compatible decoder after the accurate one refuses a file.
+
+        The accurate backend (Windows Media Foundation) has no Ogg Vorbis
+        decoder of its own, and osu! song folders are full of .ogg -- so the
+        first song it cannot open is the signal to stop preferring it. The
+        switch only takes effect next launch, because Qt reads
+        QT_MEDIA_BACKEND once when the multimedia plugin loads; see
+        `select_media_backend`.
+
+        Deliberately narrow. Only a decoding failure counts, and only for a
+        file that is really there: a missing or renamed audio file raises the
+        same kind of error and has nothing to do with the backend, and
+        flipping the preference on it would cost accuracy for no reason.
+        """
+        if error not in (QMediaPlayer.FormatError, QMediaPlayer.ResourceError):
+            return
+        if os.environ.get("QT_MEDIA_BACKEND", "") != ACCURATE_MEDIA_BACKEND:
+            return
+        state = self.state
+        if state is None or state.audio_path is None or not state.audio_path.is_file():
+            return
+        if self.settings.string_value(MEDIA_BACKEND_SETTING, "") == COMPATIBLE_MEDIA_BACKEND:
+            return
+        self.settings.set_value(MEDIA_BACKEND_SETTING, COMPATIBLE_MEDIA_BACKEND)
+        self.settings.sync()
+        self.show_toast(
+            tr("MainWindow", "This song's audio needs the compatible decoder. Restart to play it.")
+        )
 
     def _release_audio_file(self) -> None:
         """Let go of the song file on close.
@@ -12346,14 +12378,56 @@ register_shortcut_definitions(
 )
 
 
+# Qt reads QT_MEDIA_BACKEND once, when the multimedia plugin loads, so the
+# choice has to be made before any QMediaPlayer exists -- which is why this
+# runs in main() ahead of QApplication rather than in MainWindow.
+MEDIA_BACKEND_SETTING = "audio/backend"
+ACCURATE_MEDIA_BACKEND = "windows"
+COMPATIBLE_MEDIA_BACKEND = "ffmpeg"
+
+
+def select_media_backend(settings: SettingsManager) -> str:
+    """Choose Qt's multimedia backend for this run, and return it.
+
+    Qt's FFmpeg backend -- the default -- reports playback position in fixed
+    ~93ms steps of *song* time. At 0.25x that is one true reading every 351ms
+    of wall clock, and no amount of interpolation fixes a source that coarse:
+    the editor clock has nothing to interpolate between, so the playhead and
+    the hitsounds drift against the music at every speed below 1.0x. Windows
+    Media Foundation reports at 1ms granularity with ~4ms gaps and a measured
+    rate error of 0.00%.
+
+    WMF cannot decode Ogg Vorbis unless Microsoft's Web Media Extensions are
+    installed, and osu! song folders are full of .ogg -- so this is a
+    preference, not a decision. `MainWindow._audio_backend_failed` writes
+    "ffmpeg" here the first time a song refuses to open, and the next launch
+    uses it. An explicit QT_MEDIA_BACKEND in the environment always wins, and
+    is the way back if that fallback ever fires wrongly.
+    """
+    forced = os.environ.get("QT_MEDIA_BACKEND", "").strip()
+    if forced:
+        return forced
+
+    chosen = settings.string_value(MEDIA_BACKEND_SETTING, "").strip()
+    if not chosen:
+        chosen = ACCURATE_MEDIA_BACKEND if sys.platform == "win32" else ""
+    if chosen:
+        os.environ["QT_MEDIA_BACKEND"] = chosen
+    return chosen
+
+
 def main() -> None:
+    # Before QApplication: the multimedia plugin reads QT_MEDIA_BACKEND when
+    # it loads, and nothing can change it afterwards.
+    settings = SettingsManager()
+    select_media_backend(settings)
+
     app=QApplication(sys.argv)
     # Without these, QStandardPaths.AppDataLocation resolves to
     # AppData/Roaming/python -- shared with every other PySide app run by the
     # same interpreter, and where the song index would have been written.
     app.setOrganizationName(ORGANIZATION_NAME)
     app.setApplicationName(APPLICATION_NAME)
-    settings = SettingsManager()
     # First start only: pick a language before any UI text is built, since Qt
     # does not retranslate widgets that already exist.
     #

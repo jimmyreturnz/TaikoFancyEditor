@@ -129,6 +129,22 @@ class SettingsDialog(QDialog):
         self.music_volume.setRange(0, 100)
         self.music_volume.setSuffix("%")
         form.addRow(self.tr("Music volume"), self.music_volume)
+        # The way back from a fallback that fired wrongly, and the way in for
+        # anyone who installed an Ogg codec after the app already gave up on
+        # the accurate decoder. See gui.select_media_backend.
+        self.audio_backend = QComboBox()
+        self.audio_backend.addItem(self.tr("Automatic"), "")
+        self.audio_backend.addItem(self.tr("Accurate (Windows)"), "windows")
+        self.audio_backend.addItem(self.tr("Compatible (FFmpeg)"), "ffmpeg")
+        form.addRow(self.tr("Audio decoder"), self.audio_backend)
+        backend_note = QLabel(self.tr(
+            "The accurate decoder keeps the playhead in step with the music at "
+            "slow playback speeds, but cannot open .ogg without a system codec. "
+            "Automatic prefers it and switches to the compatible one the first "
+            "time a song will not open. Restart to apply."
+        ))
+        backend_note.setWordWrap(True)
+        form.addRow("", backend_note)
         return page
 
     def _language_page(self) -> QWidget:
@@ -212,6 +228,8 @@ class SettingsDialog(QDialog):
         self.hitsound_volume.setValue(self.settings.int_value("audio/hitsound_volume", 70))
         self.hitsound_offset_ms.setValue(self.settings.int_value("audio/hitsound_offset_ms", 0))
         self.music_volume.setValue(self.settings.int_value("audio/music_volume", 65))
+        backend = self.settings.string_value("audio/backend", "")
+        self.audio_backend.setCurrentIndex(max(0, self.audio_backend.findData(backend)))
         language = self.settings.string_value("language/current", "en")
         index = self.language_combo.findData(language if language in {"en", "ja"} else "en")
         self.language_combo.setCurrentIndex(max(0, index))
@@ -228,6 +246,7 @@ class SettingsDialog(QDialog):
             self.hitsound_volume.setValue(70)
             self.hitsound_offset_ms.setValue(0)
             self.music_volume.setValue(65)
+            self.audio_backend.setCurrentIndex(self.audio_backend.findData(""))
         elif page == 2:
             self.language_combo.setCurrentIndex(self.language_combo.findData("en"))
         elif page == 3:
@@ -269,6 +288,7 @@ class SettingsDialog(QDialog):
         self.settings.set_value("audio/hitsound_volume", self.hitsound_volume.value())
         self.settings.set_value("audio/hitsound_offset_ms", self.hitsound_offset_ms.value())
         self.settings.set_value("audio/music_volume", self.music_volume.value())
+        self.settings.set_value("audio/backend", str(self.audio_backend.currentData()))
         self.settings.set_value("language/current", selected_language)
         for action_id, sequence in self._shortcut_values().items():
             self.shortcuts.set_sequence(action_id, sequence)
