@@ -191,9 +191,12 @@ one causes per week, not by size.
    project used branches. Untracked, so it never reached GitHub, but it
    pollutes every local code search. Delete it.
 
-7. **Entry-point inconsistency.** `TaikoFancyArranger.spec` builds from
-   `gui.py`; `main.py` also exists and is what `run_from_source.bat` uses. One
-   of them should go, or the spec should build from `main.py`.
+7. ~~**Entry-point inconsistency.**~~ **Fixed.** The premise was wrong:
+   `run_from_source.bat` runs `gui.py`, same as the spec. `main.py` was a
+   pre-GUI CLI that prompted for a song folder and wrote a renamed copy --
+   nothing imported it and no build step packaged it. Both READMEs told people
+   to launch the app with `python main.py`, which ran that CLI instead of the
+   editor. Deleted; the READMEs now say `python gui.py`.
 
 8. **Flaky test teardown.** `NotADirectoryError` on the fixture's
    `audio.mp3` surfaced once in three consecutive runs: Qt's media backend still
