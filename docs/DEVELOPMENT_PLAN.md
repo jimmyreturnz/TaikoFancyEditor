@@ -73,20 +73,42 @@ large share of osu! maps ship `.ogg`, and `QT_MEDIA_BACKEND` is process-wide
 and read before `QApplication` exists, so the backend cannot be chosen per
 file.
 
-**Chosen design: auto-fallback on first failure.** Default to WMF; when a
-source fails to load with `FormatError`, record that and fall back to FFmpeg.
-Points to settle when this is built:
+**Chosen design: auto-fallback on first failure. Built 2026-08-28.**
+`gui.select_media_backend` runs before `QApplication` and asks for WMF;
+`MainWindow._audio_backend_failed` writes `audio/backend = ffmpeg` the first
+time a real file fails with `FormatError` or `ResourceError`, and the next
+launch uses it. How the four open points landed:
 
-1. The fallback needs a process restart to take effect, so it has to be
-   persisted (QSettings) and applied at the next launch -- decide whether to
-   relaunch automatically or tell the user and let them.
-2. The first Ogg map of a fresh install still fails once. Consider sniffing
-   the audio extension of the map being opened and persisting the choice
-   before the media is ever handed to Qt.
-3. Keep a manual override in Settings regardless, so a wrong auto-decision is
-   recoverable without hunting for the state file.
-4. Re-run the measurement harness after the switch to confirm the numbers
-   hold against real map audio rather than a generated WAV.
+1. **Restart: told, not automatic.** The switch is persisted to QSettings and
+   a toast says to restart. An automatic relaunch would have to re-run the
+   unsaved-changes guard and rebuild `sys.argv` for both the frozen and the
+   from-source entry points, for a one-time event.
+2. **The first Ogg map of a fresh install still fails once.** Sniffing it
+   ahead of time was costed and dropped: the only pre-`QApplication` source
+   for "does this library contain .ogg" is the song index, which does not
+   store `AudioFilename`, and adding it bumps `CACHE_VERSION` and forces a
+   full rescan on every existing install. A one-time restart is cheaper than
+   that for everyone.
+3. **Manual override shipped** -- Settings -> Audio -> Audio decoder
+   (Automatic / Accurate (Windows) / Compatible (FFmpeg)). `QT_MEDIA_BACKEND`
+   in the environment still beats both, and is the recovery path if the
+   setting itself is ever wrong.
+4. **Re-measured against real map audio**, 3s per run, 4ms sampling, sampled
+   from a real Songs folder rather than a generated WAV:
+
+| backend | file | rate @0.25x | position steps | updates in 3s |
+| --- | --- | --- | --- | --- |
+| `windows` | `audio.mp3` | 0.2545 | 1-4 ms | 687 |
+| `ffmpeg` | `audio.mp3` | 0.2395 | 26-27 ms | 27 |
+| `windows` | `audio.ogg` | -- | `FormatError: Unsupported media type.` | -- |
+| `ffmpeg` | `audio.ogg` | 0.2482 | 2-13 ms | 33 |
+
+   25x the position information on mp3, and FFmpeg's rate is 4.2% slow at
+   0.25x against WMF's 1.8% -- roughly 2.5s of drift per minute of slow
+   playback. The Ogg row is the exact error `_audio_backend_failed` keys on,
+   from a real map, which is what makes the fallback fire rather than a
+   guess. Note that FFmpeg's granularity is codec-dependent (26ms on mp3,
+   2-13ms on ogg), so the earlier 93ms figure was the generated WAV's.
 
 A later alternative, if Ogg accuracy turns out to matter: decode Ogg to PCM
 ourselves and hand WMF the samples, which would make every map accurate at the

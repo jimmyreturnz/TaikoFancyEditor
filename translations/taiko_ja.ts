@@ -106,6 +106,10 @@
     <context>
         <name>MainWindow</name>
         <message>
+            <source>This song's audio needs the compatible decoder. Restart to play it.</source>
+            <translation>この曲のオーディオには互換デコーダーが必要です。再起動して再生してください。</translation>
+        </message>
+        <message>
             <source>4. Red Line</source>
             <translation>4. 赤線</translation>
         </message>
@@ -1844,6 +1848,26 @@ Taiko Fancy Arranger を閉じて、そのフォルダーの TaikoFancyArranger.
         <message>
             <source>Hitsound offset (ms)</source>
             <translation>ヒットサウンドのオフセット (ms)</translation>
+        </message>
+        <message>
+            <source>Audio decoder</source>
+            <translation>オーディオデコーダー</translation>
+        </message>
+        <message>
+            <source>Automatic</source>
+            <translation>自動</translation>
+        </message>
+        <message>
+            <source>Accurate (Windows)</source>
+            <translation>高精度 (Windows)</translation>
+        </message>
+        <message>
+            <source>Compatible (FFmpeg)</source>
+            <translation>互換 (FFmpeg)</translation>
+        </message>
+        <message>
+            <source>The accurate decoder keeps the playhead in step with the music at slow playback speeds, but cannot open .ogg without a system codec. Automatic prefers it and switches to the compatible one the first time a song will not open. Restart to apply.</source>
+            <translation>高精度デコーダーは低速再生でも再生位置を音楽と同期させますが、システムコーデックがないと .ogg を開けません。自動では高精度を優先し、曲を開けなかった時点で互換デコーダーに切り替えます。適用するには再起動してください。</translation>
         </message>
         <message>
             <source>Music volume</source>

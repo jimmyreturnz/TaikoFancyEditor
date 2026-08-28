@@ -55,6 +55,14 @@ Notes make sound during playback, using hitsound samples shipped in `assets/se/`
 
 The **Audio** settings page carries hitsound enable and volume, a latency offset in milliseconds, and music volume, which previously had no UI at all.
 
+### Audio decoder
+
+Slow playback speeds depend on how finely Qt reports the playback position. On a real map at 0.25x, Windows Media Foundation reports 687 positions in three seconds; the FFmpeg decoder reports 27. That difference is what makes the playhead and the hitsounds hold their place against the music at 25%, 50% and 75%, and no amount of interpolation substitutes for it — there is nothing to interpolate between.
+
+Windows Media Foundation cannot open `.ogg` without a system codec, though, and osu! song folders are full of it. So **Automatic** asks for the accurate decoder and switches to the compatible one the first time a song will not open, remembering the choice. That one song will not play until you restart; every song after it will.
+
+**Audio decoder** on the Audio settings page overrides this — pick *Accurate (Windows)* if you later install an Ogg codec, or *Compatible (FFmpeg)* to stop it trying. Setting the `QT_MEDIA_BACKEND` environment variable to `windows` or `ffmpeg` beats both, and is the way back if the setting itself is ever wrong. A restart applies any of them.
+
 ---
 
 ## Download and run
