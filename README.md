@@ -14,6 +14,8 @@ Everything stays a playable osu! beatmap. Sections the editor does not model —
 
 The original idea came from a random chat with maruaki101. Other inspirations include Alchyr's ranked maps *13 Stairs* and *Helios*, which use unusual note placement to create visual expression. You should go check it out [here!](https://osu.ppy.sh/beatmapsets/1093671#taiko/3819326)
 
+Many thanks to Mew’s beatmaps for studying reference that made the tool creation possible, and other player’s ideas!
+
 ---
 
 ## What is new in 3.0.0
