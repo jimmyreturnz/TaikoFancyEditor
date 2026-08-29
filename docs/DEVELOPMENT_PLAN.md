@@ -73,6 +73,8 @@ large share of osu! maps ship `.ogg`, and `QT_MEDIA_BACKEND` is process-wide
 and read before `QApplication` exists, so the backend cannot be chosen per
 file.
 
+> **Superseded 2026-08-29.** Everything from here to the next heading describes code that no longer exists: `select_media_backend`, `_audio_backend_failed` and the decoder setting were all removed when `audio_engine` took over playback. Kept for the measurements and for why the backend was a dead end.
+
 **Chosen design: auto-fallback on first failure. Built 2026-08-28.**
 `gui.select_media_backend` runs before `QApplication` and asks for WMF;
 `MainWindow._audio_backend_failed` writes `audio/backend = ffmpeg` the first
@@ -114,65 +116,105 @@ A later alternative, if Ogg accuracy turns out to matter: decode Ogg to PCM
 ourselves and hand WMF the samples, which would make every map accurate at the
 cost of a decode step on open.
 
-### STILL OPEN: the decoder switch did not fix it
+### ~~STILL OPEN~~ — CLOSED 2026-08-29 by owning the transport
 
-Reported 2026-08-28, after the switch shipped. **Slow playback is still not
-accurate.** The backend was a real bottleneck and removing it was necessary,
-but it was not sufficient, so this section stays open rather than closing as
-done. Jimmy is exploring further; what follows is what the measurements
-already rule in and out, so the next attempt does not re-derive it.
+`QMediaPlayer` is gone for song playback. `audio_engine.TrackPlayer` decodes
+with `QAudioDecoder` and drives `QAudioSink` on its own thread, which is the
+architecture osu! has and Qt's player cannot expose. No new dependency.
 
-**Not the cause any more:** position granularity. WMF reports 687 positions
-in 3s at 0.25x (1-4ms steps). There is plenty to interpolate between now.
+**What the measurements said, in the order they landed:**
 
-**Also ruled out: WMF rate error.** The 3s runs above read 1.0044 at 1.0x and
-0.2545 at 0.25x, which looked like a signed 1.8% drift worth calibrating out.
-It is not. Re-run over longer windows and the apparent error collapses:
-
-| asked rate | 3s | 12s | 30s |
+| | QMediaPlayer (WMF) | QMediaPlayer (FFmpeg) | `audio_engine` |
 | --- | --- | --- | --- |
-| 1.0 | 1.0041 | 1.0011 | 1.0004 |
-| 0.25 | 0.2541 | 0.2511 | 0.2504 |
+| song time lost on 0.25x -> 1.0x | **114ms** | not resolvable | **0** |
+| song time lost on 1.0x -> 0.75x | 67ms | not resolvable | 0 |
+| pitch at 0.25x | resample (down an octave) | resample | **preserved** |
+| `.ogg` | `FormatError` | yes | yes |
+| clock source | signal, whole ms | signal, whole ms | sample cursor |
+| deprecated | **yes, removed next major** | no | n/a |
 
-Every one of those is the same **fixed ~12ms of song time**, divided by a
-longer window: 0.0041 x 2940ms, 0.0011 x 11943ms and 0.0004 x 29628ms are all
-12-13ms. It is constant in *song* time and identical at both rates, so it is
-the harness starting its wall clock on a position report that is already one
-decode block into the song -- not a property of the backend. **WMF's real rate
-error is 0.04% over 30s, i.e. none.** Do not spend anything on rate
-calibration.
+The stall was the answer to "the offset deviates when I click a speed button",
+and it was never drift: the editor's clock free-ran at the new rate through a
+backend that had stopped producing song time, so the playhead ended up 114ms
+ahead and then either snapped back or -- at 0.25x, where the drift stayed under
+an unscaled tolerance -- silently stayed wrong.
 
-**Leads, in the order the evidence favours them:**
+**Three things came straight from `ppy/osu`:**
 
-1. **Output latency, which has never been measured.** `position()` reports the
-   render cursor; what reaches the speakers lags it by the device buffer. That
-   lag is constant in *wall* time, so in song time it scales with the rate --
-   20ms of buffer is 20ms of song at 1.0x but 5ms at 0.25x. Every visual
-   element is drawn against song time, so a constant device lag displaces the
-   playhead against what is audible by a rate-dependent amount, which is
-   precisely the shape of "accurate at 100%, wrong everywhere else". Nothing
-   in the app compensates for it today. Measure it directly rather than
-   inferring it: compare the reported position at the moment a known transient
-   is heard, or read a `QAudioSink`'s processed frames against
-   `player.position()`.
-2. **`HitsoundPlayer.offset_ms` is calibrated in song time** while the output
-   latency it compensates for is wall-clock, so a value tuned at 1.0x is wrong
-   at every other rate. Recorded as item 10 below and still unfixed. It is the
-   same units bug as lead 1, on the hitsound side rather than the playhead
-   side, which is why the two should be investigated together.
-3. **Resampling quality, not timing.** Qt's rate change is a plain resample;
-   osu! uses BASS_FX time-stretching. If what still feels wrong at 25% is that
-   the *audio sounds bad* rather than that it is out of step, no clock work
-   will help and the fix is a different audio engine.
+1. `InterpolatingFramedClock`'s tolerance is `AllowableErrorMilliseconds *
+   Rate`. This port had dropped the multiply, so 0.25x tolerated 133ms of real
+   drift against 1.0x's 33ms -- the loosest tolerance at the speed needing the
+   tightest.
+2. Drift recovery is `Interpolation.DampContinuously` against a half-life, not
+   a fixed fraction per frame. The old 1/8-per-frame made the correction speed
+   depend on the frame rate.
+3. The editor slows down with `AdjustableProperty.Tempo` (BASS_FX), not
+   `Frequency`, at exactly the four rates this app offers. Pitch preservation
+   in an editor is the reference behaviour, not a luxury.
 
-**Separate 3 from 1 and 2 first**, because it is free and it decides whether
-any clock work is worth doing at all: play a click track at 0.25x and ask
-whether the clicks are late, or merely ugly. Then measure before building, the
-way the backend investigation did -- three explanations were tried there
-before anyone measured, and all three were wrong.
-`tools/measure_audio_backend.py` is that harness, kept for the purpose; its
-fourth argument is the sampling window in seconds, which is what overturned
-the rate-error reading above.
+**What was rejected, with the number that rejected it:** research said
+pitch-preserving stretch needs numpy and could not be done in pure Python.
+`tools/bench_timestretch.py` measured the WSOLA inner loop at **0.11x realtime
+mono, ~0.22x stereo** -- roughly 4.5x headroom -- so the estimate was simply
+wrong. `sum(map(mul, ...))` over `array` slices runs the multiply-add in C.
+That is the fourth time on this project an unmeasured estimate lost to a
+harness.
+
+**Still worth knowing:** osu! disables its speed control in timing mode, with
+the note *"Timing at slower speeds is inaccurate due to resampling artifacts."*
+Even with BASS_FX and a sample-accurate clock they do not trust slow playback
+for precise timing work.
+
+**Left deliberately undone:** output latency is still uncompensated by default.
+`audio/output_offset_ms` exists and is applied as a real-time constant
+(`offset * rate`, lazer's `OffsetCorrectionClock` model), but it ships at zero
+rather than carrying a guessed value -- lazer's own
+`WINDOWS_BASE_AUDIO_OFFSET = 15` comes with the comment *"We need to eventually
+figure out why, with a bit of luck."* A tap-along calibration wizard
+(Quaver/StepMania style, stddev-gated) is the next step if the offset turns out
+to matter in practice.
+
+## ~~Scrolling fast produced a painfully loud hitsound burst~~ — FIXED 2026-08-29
+
+Reported from use, and the only failure mode in this program that can injure
+somebody, so it is written down rather than just fixed.
+
+`HitsoundPlayer.advance` sounded **every** note in whatever window it was
+handed, with no bound on the window. Ordinary playback hands it one frame --
+about 8ms -- but a seek arriving as an advance, or the clock catching up after
+a stall, hands it seconds. Every note in that span then starts on the same
+instant, and simultaneous samples *sum*: thirty overlapping hits are far louder
+than one, loud enough to hurt on headphones, and convey nothing because nobody
+can hear thirty notes at once.
+
+`HITSOUND_MAX_WINDOW_MS` (200ms of **wall** time, scaled by the playback rate
+like every other offset here) now makes `advance` treat an oversized window as
+what it is -- a jump -- and move the cursor without sounding anything. The
+guard is on the window rather than on a count of samples, because a count limit
+would still let its allowance start on one millisecond.
+
+Bounded at the choke point on purpose: `advance` is the only path that sounds a
+note, so no caller can reintroduce this, including ones not written yet.
+
+## Gimmick page zoom: the shared range is the intersection
+
+Raised 2026-08-29. All seven gimmick layers zoom together, and now do so inside
+one range rather than each clamping to its own. The ranges differ on purpose:
+`SVEditorView.MAX_WINDOW_MS` is 120s against the chart views' 60s, because an
+SV sweep is read across a whole section and a note pattern is not.
+
+Broadcasting unclamped let the Kiai/Volume layer -- an SV view -- push every
+chart view to 120s, past a limit those views enforce for themselves. The next
+notch of the wheel on a chart layer clamped straight back to 60s, so zooming
+stepped by a factor of two in one direction and not the other.
+
+`_gimmick_zoom_changed` now clamps the broadcast to the narrowest range the
+participating layers agree on, so nothing is ever pushed outside its own
+limits. **The cost is that on this page the SV and Kiai/Volume layers reach 60s
+rather than their own 120s.** The other way to make the page consistent is to
+widen the chart views to 120s, which wants a look at whether 120 seconds of
+notes is legible at `GIMMICK_LAYER_HEIGHT` before it is worth doing -- if it
+is, the intersection stops costing anything and this note goes away.
 
 ## ~~The test suite is slow~~ — FIXED 2026-08-28
 
@@ -238,66 +280,76 @@ should move to the per-file runner.
 
 ## Refactor backlog
 
-Opened 2026-08-27 while shipping v3.1.0. None of these is a bug; all of them
-are things the v3.1.0 work kept tripping over. Ordered by how much pain each
-one causes per week, not by size.
+Opened 2026-08-27 while shipping v3.1.0. Re-audited against the code on
+2026-08-29 -- six of the ten had been fixed or were never true, and a stale
+backlog sends the next session at the wrong thing. Ordered by pain per week.
 
-1. **Split `gui.py`.** It is ~11,600 lines in one file, and five parallel
-   workstreams on it in one day had to be run in separate git worktrees purely
-   to avoid lost updates. The natural seams are already visible: the view
-   widgets (`TimelineGameplay`, `SVEditorView`, `GameplayViewerView`,
-   `TimingOverviewBar`, `DensityOverview`), the dozen-plus `QDialog`
-   subclasses, and the gimmick page's `MainWindow` methods. Do the dialogs
-   first — they are the cleanest cut and touch the least shared state.
+1. **Split `gui.py`.** Now **12,982 lines** (11,600 when this was written; the
+   audio engine, skin support and gameplay work since have all been additions
+   elsewhere, but the file still grew). Five parallel workstreams on it in one
+   day had to run in separate git worktrees purely to avoid lost updates. The
+   seams are visible: the view widgets (`TimelineGameplay`, `SVEditorView`,
+   `GameplayViewerView`, `TimingOverviewBar`, `DensityOverview`), the
+   dozen-plus `QDialog` subclasses, and the gimmick page's `MainWindow`
+   methods. Do the dialogs first -- cleanest cut, least shared state.
+   `audio_engine.py`, `skin.py` and `offset_calibration.py` came out cleanly
+   as separate modules, which is evidence the seams hold.
 
-2. **`MainWindow` is a god object** at roughly 6,000 lines. Extracting the
-   gimmick page into its own controller is the biggest single win and falls
-   out of item 1.
+2. **`MainWindow` is a god object.** Extracting the gimmick page into its own
+   controller is the biggest single win and falls out of item 1.
 
-3. **Rename `gui_draft.py`.** It is not a draft: `gui.py` imports `PARAMETERS`
-   from it and the i18n gate reads it. It is the Fancy Arranger's parameter
-   registry and should be named for that. Three references to update.
+3. ~~**Rename `gui_draft.py`.**~~ **Done.** It is `parameters.py`, and the 420
+   lines of prototype GUI that were in it are deleted.
 
-4. **`translations/taiko_ja.qm` is a tracked build artifact** and conflicts on
-   every branch that adds a string — it conflicted twice in one day. It cannot
-   simply be untracked, because running from source would then ship no
-   Japanese at all. Either commit to generating it in `run_from_source.bat`,
-   or add a merge driver that regenerates it from the `.ts`.
+4. ~~**`taiko_ja.qm` is a tracked build artifact.**~~ **Done.** Untracked,
+   `translations/*.qm` is in `.gitignore`, and `run_from_source.bat` compiles
+   it, so running from source still ships Japanese.
 
-5. **Delete `transformer.py`'s `_timing_point_values`** (the `len(fields) < 7`
-   / `fields[6]` string parser). It is the last surviving ad-hoc timing reader
-   and is already dead — `gui.py` hands it real `TimingPoint` objects. Carried
-   over from the M5 notes, still true.
+5. **`transformer._timing_point_values`'s string branch is NOT dead** -- the
+   premise this was filed under was wrong. `gui.py` hands it real
+   `TimingPoint` objects, but `tests/test_new_features.py` passes
+   `"0,500,4,1,0,100,1,0"`, so the branch is live and deleting it breaks that
+   test. It was narrowed from three shapes to two on 2026-08-28. Either update
+   that test to pass objects (matching the only real caller) and then delete
+   the branch, or accept string input as part of `transform()`'s public shape
+   and stop calling it dead. A decision, not a deletion.
 
-6. **`patches_backup/`** holds ~60 one-shot patch scripts from before the
-   project used branches. Untracked, so it never reached GitHub, but it
-   pollutes every local code search. Delete it.
+6. **`patches_backup/`** now holds **106** one-shot patch scripts from before
+   the project used branches (~60 when filed). Untracked, so it never reached
+   GitHub, but it pollutes every local code search -- `CLAUDE.md` warns about
+   it for that reason. Deleting it is the fix; it is the owner's call, since
+   nothing in the repo can restore it.
 
 7. ~~**Entry-point inconsistency.**~~ **Fixed.** The premise was wrong:
    `run_from_source.bat` runs `gui.py`, same as the spec. `main.py` was a
-   pre-GUI CLI that prompted for a song folder and wrote a renamed copy --
-   nothing imported it and no build step packaged it. Both READMEs told people
-   to launch the app with `python main.py`, which ran that CLI instead of the
-   editor. Deleted; the READMEs now say `python gui.py`.
+   pre-GUI CLI nothing imported; both READMEs pointed people at it. Deleted.
 
-8. **Flaky test teardown.** `NotADirectoryError` on the fixture's
-   `audio.mp3` surfaced once in three consecutive runs: Qt's media backend still
-   holds the file when `TemporaryDirectory` cleans up. It is a teardown race,
-   not a product bug, but it makes a red run ambiguous. Close the player
-   explicitly in `tearDown`.
+8. ~~**Flaky test teardown.**~~ **Addressed.** The `NotADirectoryError` was
+   Qt's media backend still holding the fixture's `audio.mp3` at cleanup.
+   `MainWindow._release_audio_file` clears the source in `closeEvent`, and
+   `TrackPlayer.shutdown` now releases the decoder and sink through a
+   *blocking* call before the audio thread's loop is asked to quit -- a queued
+   stop would never have run. The same lock bit the offset-calibration dialog
+   deleting its own temporary click track, which is how the blocking path got
+   found. Not provable by one green run, so: reopen if it returns.
 
-9. **Test suite runtime.** The full suite is slow enough that it was removed
-   from the release workflow in v3.1.0 (see `tools/run_tests.bat`).
-   `tests/test_gimmick_editor.py` alone runs for roughly 19 minutes. Most of
-   the cost is constructing a real `MainWindow` per test; a shared
-   class-scoped window would cut it hard. Until this lands, CI cannot be
-   given the gate back.
+9. ~~**Test suite runtime.**~~ **Fixed.** `tests/test_gimmick_editor.py` ran
+   roughly 19 minutes when this was filed; it is now **194 tests in 47.7s**,
+   and the whole suite is 38 files green in about two minutes run six at a
+   time. The cause was never the test count -- see the entry above on the
+   application-wide event filter. CI can have the gate back.
 
-10. **`HitsoundPlayer.offset_ms` is calibrated in song time** but the output
-    latency it compensates for is wall-clock, so a value tuned at 1.0x is
-    wrong at 0.25x. Not changed in v3.1.0 because it would invalidate every
-    existing user's calibration on an unmeasured guess — it needs a real
-    audio device to settle.
+10. ~~**`HitsoundPlayer.offset_ms` is calibrated in song time.**~~ **Fixed.**
+    It is held in wall milliseconds and converted at the point of use
+    (`offset = self.offset_ms * abs(self.playback_rate)`), so one value is
+    right at every rate. `audio/output_offset_ms` follows the same rule for
+    the music path, and Settings -> Audio -> Calibrate measures it.
+
+11. **Chart views are registered through `_register_chart_view` -- keep it
+    that way.** Three places build them, and when the skin was added the
+    gimmick page's layers were missed because each site appended to
+    `_chart_views` itself. `tests/test_gimmick_editor.GimmickSkinTests` asserts
+    there is exactly one `_chart_views.append(` in the file.
 
 
 ## Progress
@@ -471,42 +523,56 @@ an outright failure to write on an unusual section order, not silent corruption.
 
 ## Next steps
 
-In order.
+Re-audited 2026-08-29. Both numbered items below had **already shipped** and
+were still written as upcoming, along with a claim about `transformer.py` that
+was never true. Kept, struck through, because the reasoning behind them is
+still worth reading.
 
-M6 was built ahead of these, at the owner's request, and did not need the extraction below: a
-distance axis shares no mechanics with a time axis beyond the wheel step, which is now
-`wheel_seek_time()`.
+1. ~~**Extract a `TimeAxisWidget` base from `TimelineGameplay` /
+   `SVEditorView`.**~~ **Done** -- it is `time_axis.TimeAxisMixin`, and it
+   carries `zoom_changed`, the `set_time` throttle, snapping, the wheel step
+   (`wheel_seek_time`), rubber-band selection and `auto_scroll_step`. The
+   reasoning held: the gimmick page became the third widget on that axis and
+   inherited all of it rather than growing a third spelling.
 
-1. **Extract a `TimeAxisWidget` base from `TimelineGameplay` / `SVEditorView`.** M4 deferred this
-   deliberately; the third feedback round then duplicated `zoom_changed`, the `set_time` throttle,
-   selection + Delete, and the hover-ghost pattern across both, in two slightly different
-   spellings. M5's gimmick editor is a third widget on the same axis, so this is the last cheap
-   moment — after M5 it is three copies, not two. This is a prerequisite for M5, not optional
-   cleanup. The fourth round added a third pair to the pile: rubber-band range selection plus
-   `_auto_scroll_selection` now exists in both widgets, in two spellings that differ only in what
-   they select.
-2. **M5 — gimmick editor, on its own page** (tools `7` fake slider, `8` gimmick effect), as
-   specced below. Locked with the owner 2026-08-10: it is a **fourth tab in the global header**
-   (`Songs | Editor | Gimmick | Fancy Arranger`), *not* a view type inside the Editor page — so
-   the `gimmick` entry in `AddViewDialog` and its placeholder frame go away when this lands. See
-   "M5 — Gimmick editor" below for what that changes. Two things it must confirm rather than
-   assume:
-   - the barline pass generates **uninherited** points in dense clusters at `t ± 2/4/6`, and the
-     one-object-per-millisecond rule the third round added is deliberately **inherited-only**, so
-     it does not stand in the way — but nothing tests that interaction yet;
-   - `transformer.py:333` `_timing_point_values` still carries the old `len(fields) < 7` /
-     `fields[6]` string parser (the last surviving ad-hoc timing reader). It is dead for the app
-     today, since `gui.py` hands it real `TimingPoint` objects and it takes the attribute branch.
-     Delete it rather than let a gimmick code path find it.
+2. ~~**M5 -- gimmick editor, on its own page.**~~ **Done**, as the fourth tab
+   in the global header (`Songs | Editor | Gimmick | Fancy Arranger`). The
+   `gimmick` entry in `AddViewDialog` and its placeholder frame are gone.
 
-Deferred, not blocking: R5 (`set_document_background` index repair), R10 (bounded undo stacks,
-now multiplied by open difficulties), R3/R4 as recorded in the risk table.
+   Of the two things it was told to confirm rather than assume:
+   - the barline pass and the one-object-per-millisecond rule: covered by
+     `tests/test_gimmick_editor.py`, which is now 194 tests;
+   - `transformer._timing_point_values`: **the claim was wrong.** It is not
+     dead. `gui.py` does hand it real `TimingPoint` objects and take the
+     attribute branch, but `tests/test_new_features.py` passes a string, so
+     deleting the parser breaks that test. See backlog item 5 -- it needs a
+     decision about `transform()`'s public shape, not a deletion.
 
-**Risk-table corrections found while re-reading:** R1 and R6 are **already fixed** and were
-mis-recorded as open. `gui.py`'s `kiai_ranges` delegates to `osu_io.timing.kiai_spans` (which
-masks `EFFECT_KIAI` correctly) and `extract_timing_points` delegates to `uninherited_points`
-(which has no field-count requirement). Both were replaced during M1's consolidation; only the
-table entries were left behind. They are struck through below.
+**What is actually next**, in order of pain per week:
+
+1. **Splitting `gui.py`** (backlog 1 and 2). It is 12,982 lines and is the
+   thing every other task pays for. The dialogs first.
+2. **Deciding backlog item 5** -- one small decision that then removes code.
+3. **Deleting `patches_backup/`** (backlog 6), which is the owner's call.
+4. **Measuring where the remaining frame time goes at 120fps.** Two specific
+   leads, neither yet tested: `tools/profile_playback.py` has never run with
+   playback actually started, so the audio thread's time-stretch -- pure
+   Python, roughly 20% of a core, which does not release the GIL -- has never
+   been present during a frame measurement; and the render timer is
+   phase-independent of the Windows compositor, which cannot be seen offscreen
+   at all. `ctypes.windll.dwmapi.DwmFlush()` measures the second without a new
+   dependency.
+
+Deferred, not blocking: R5 (`set_document_background` index repair), R10
+(bounded undo stacks, now multiplied by open difficulties), R3/R4 as recorded
+in the risk table.
+
+**Risk-table corrections found while re-reading:** R1 and R6 are **already
+fixed** and were mis-recorded as open. `gui.py`'s `kiai_ranges` delegates to
+`osu_io.timing.kiai_spans` (which masks `EFFECT_KIAI` correctly) and
+`extract_timing_points` delegates to `uninherited_points` (which has no
+field-count requirement). Both were replaced during M1's consolidation; only
+the table entries were left behind. They are struck through below.
 
 ---
 

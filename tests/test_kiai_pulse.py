@@ -15,9 +15,11 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtGui import QColor, QImage
 from PySide6.QtWidgets import QApplication
 
 import gui
+import skin
 from model.hit_object import HitObject
 from osu_io.parser import parse_osu
 from osu_io.timing import TimingPoint
@@ -60,35 +62,48 @@ class PulseTests(unittest.TestCase):
     def test_with_an_anchor_it_is_full_at_the_section_start(self):
         self.assertAlmostEqual(gui.beat_pulse(self.points, 3000.0, anchor_ms=3000.0), 1.0, places=9)
 
-    def test_with_an_anchor_the_period_is_a_measure_not_a_beat(self):
-        """4 beats * 500ms = 2000ms period, not 500ms."""
+    def test_with_an_anchor_the_period_is_one_beat(self):
+        """A chorus pulses on the beat. On a measure -- which this was for a
+        while -- three beats out of four have nothing happening on them."""
         points = [TimingPoint(time=0.0, beat_length=500.0, meter=4)]
-        # A whole beat (500ms) into the measure: still fading, not back to 1.0.
-        self.assertAlmostEqual(gui.beat_pulse(points, 500.0, anchor_ms=0.0), 0.75, places=9)
-        # A full measure later (2000ms): back to full strength.
-        self.assertAlmostEqual(gui.beat_pulse(points, 2000.0, anchor_ms=0.0), 1.0, places=9)
+        for beat in range(4):
+            with self.subTest(beat=beat):
+                self.assertAlmostEqual(
+                    gui.beat_pulse(points, beat * 500.0, anchor_ms=0.0), 1.0, places=9)
+        self.assertAlmostEqual(gui.beat_pulse(points, 250.0, anchor_ms=0.0), 0.5, places=9)
 
-    def test_with_an_anchor_it_decays_monotonically_across_the_measure(self):
+    def test_with_an_anchor_it_decays_monotonically_across_each_beat(self):
         points = [TimingPoint(time=0.0, beat_length=500.0, meter=4)]
-        samples = [gui.beat_pulse(points, t, anchor_ms=0.0) for t in range(0, 2000, 50)]
+        samples = [gui.beat_pulse(points, t, anchor_ms=0.0) for t in range(0, 500, 25)]
         self.assertTrue(all(a >= b for a, b in zip(samples, samples[1:])))
 
+    def test_the_meter_no_longer_changes_the_period(self):
+        """It used to: the period was beat_length * meter, so a 3/4 section
+        pulsed at a different rate from a 4/4 one at the same BPM."""
+        for meter in (3, 4, 7):
+            points = [TimingPoint(time=0.0, beat_length=500.0, meter=meter)]
+            with self.subTest(meter=meter):
+                self.assertAlmostEqual(
+                    gui.beat_pulse(points, 500.0, anchor_ms=0.0), 1.0, places=9)
+
     def test_a_slower_bpm_fades_slower(self):
-        """Same elapsed time since the anchor, a slower BPM (longer beat_length,
-        so a longer measure) has faded less -- the period IS the fade."""
+        """Same elapsed time since the anchor, a slower BPM (a longer beat) has
+        faded less -- the beat IS the fade, so nothing else needs tuning."""
         fast = [TimingPoint(time=0.0, beat_length=500.0, meter=4)]
         slow = [TimingPoint(time=0.0, beat_length=1000.0, meter=4)]
-        elapsed = 800.0
+        elapsed = 200.0
         self.assertGreater(
             gui.beat_pulse(slow, elapsed, anchor_ms=0.0),
             gui.beat_pulse(fast, elapsed, anchor_ms=0.0),
         )
 
-    def test_an_anchor_with_meter_3_gives_a_three_beat_period(self):
-        points = [TimingPoint(time=0.0, beat_length=500.0, meter=3)]
-        # 3 * 500ms = 1500ms period.
-        self.assertAlmostEqual(gui.beat_pulse(points, 1500.0, anchor_ms=0.0), 1.0, places=9)
-        self.assertAlmostEqual(gui.beat_pulse(points, 750.0, anchor_ms=0.0), 0.5, places=9)
+    def test_the_anchor_only_moves_the_phase(self):
+        """With and without an anchor the period is the same beat; the anchor
+        decides where beat one of the pulse falls, so a section starting off
+        the timing point's own grid still flashes on its first beat."""
+        points = [TimingPoint(time=0.0, beat_length=500.0, meter=4)]
+        self.assertAlmostEqual(gui.beat_pulse(points, 3120.0, anchor_ms=3120.0), 1.0, places=9)
+        self.assertAlmostEqual(gui.beat_pulse(points, 3620.0, anchor_ms=3120.0), 1.0, places=9)
 
     def test_kiai_reads_the_green_lines_too(self):
         """The fixture switches kiai on with an inherited point at 2000 and off
@@ -105,6 +120,185 @@ class PulseTests(unittest.TestCase):
         self.assertFalse(gui.in_kiai(gui.uninherited_points(points), 2500.0))
 
 
+class ShinyGlowTests(unittest.TestCase):
+    """A fake slider is #fbb706 outside a chorus, whatever is stacked on it.
+
+    There is no separate "shiny" effect and no brightening with stack depth: a
+    pile of fake sliders is a pile of identical opaque heads and reads as one,
+    which is what it is. Inside a chorus every object on the pile takes its own
+    stamp in the flash pass, so a deep pile pulses harder than a lone one.
+
+    Several richer models were tried against real readings and none of them
+    closed; this one is true by construction, which is why it is here.
+    """
+
+    def _view(self, stack: int, kiai: bool = False, note: bool = False,
+              kat: bool = False):
+        view = gui.GameplayViewerView()
+        view.resize(900, 200)
+        point = TimingPoint(time=0.0, beat_length=500.0, meter=4)
+        view.timing_points = [point]
+        view.beat_points = [point]
+        view._beat_times = [0.0]
+        view.slider_multiplier = 1.4
+        view.kiai_bands = [(0, 20000)] if kiai else []
+        view._rebuild_velocities()
+        notes = []
+        if note:
+            notes.append(HitObject(x=256, y=192, time=1500, type=1,
+                                   hit_sound=8 if kat else 0))
+        notes += [
+            HitObject(x=256, y=192, time=1500, type=2, hit_sound=0,
+                      extras=("L|624:192", "1", "-100.0"))
+            for _ in range(stack)
+        ]
+        view.notes = notes
+        view.note_times = [1500.0] * len(notes)
+        view._end_times, view._phantom_ends, view._max_extend_ms = {}, {}, 0.0
+        for each in view.notes:
+            phantom = view._compute_phantom_end(each)
+            if phantom is not None:
+                view._phantom_ends[each.uid] = phantom
+        view.current_time = 1000.0
+        return view
+
+    def _colour(self, stack: int, **kwargs):
+        view = self._view(stack, **kwargs)
+        image = view.grab().toImage()
+        return image.pixelColor(round(view.x_for_time(1500.0)), 100)
+
+    def _brightness(self, stack: int, **kwargs) -> float:
+        view = self._view(stack, **kwargs)
+        image = view.grab().toImage()
+        cx, cy = round(view.x_for_time(1500.0)), 100
+        radius = round(view.height() * gui.TAIKO_NOTE_SIZE / 2.0 * 0.6)
+        total = count = 0
+        for y in range(cy - radius, cy + radius):
+            for x in range(cx - radius, cx + radius):
+                pixel = image.pixelColor(x, y)
+                total += pixel.red() + pixel.green() + pixel.blue()
+                count += 3
+        return total / count
+
+    def test_a_pile_outside_kiai_is_flat_drumroll_yellow(self):
+        """However deep. This is the rule the whole thing reduces to."""
+        for stack in (1, 2, 3, 5, 8, 16):
+            with self.subTest(stack=stack):
+                shown = self._colour(stack)
+                self.assertEqual(
+                    (shown.red(), shown.green(), shown.blue()), gui.DRUMROLL_COLOR)
+
+    def test_nothing_is_left_of_the_separate_shine(self):
+        """It was a second effect on top of the pulse and it never matched a
+        real reading; the pulse alone does the job."""
+        self.assertFalse(hasattr(gui, "SHINY_GLOW_COLOR"))
+        self.assertFalse(hasattr(gui, "draw_shiny_glow"))
+
+    def test_a_note_over_a_pile_is_untouched_outside_kiai(self):
+        plain = self._colour(0, note=True)
+        for stack in (3, 8):
+            with self.subTest(stack=stack):
+                shown = self._colour(stack, note=True)
+                self.assertEqual(
+                    (shown.red(), shown.green(), shown.blue()),
+                    (plain.red(), plain.green(), plain.blue()),
+                )
+
+    def test_in_kiai_a_deeper_pile_pulses_harder(self):
+        readings = [self._brightness(stack, kiai=True) for stack in (1, 2, 3, 5, 8)]
+        for dimmer, brighter in zip(readings, readings[1:]):
+            self.assertGreater(brighter, dimmer, readings)
+
+    def test_the_pulse_leaves_the_black_parts_alone(self):
+        """The light is masked to the colourable part of a note, so the rim and
+        the face keep whatever the skinner drew them as.
+
+        Asserted on the stamp rather than on a rendered frame: what the mask
+        guarantees is that the stamp carries no alpha where the overlay is
+        opaque, and `tests/test_skin.py::FlashMaskTests` pins that directly on
+        known artwork. Sampling a render for it means guessing which pixels are
+        the face, which is how the first version of this test came to measure
+        the lit part instead.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            base = QImage(16, 16, QImage.Format_ARGB32)
+            base.fill(QColor("white"))
+            base.save(str(folder / "taikohitcircle.png"))
+            overlay = QImage(16, 16, QImage.Format_ARGB32)
+            overlay.fill(QColor(0, 0, 0, 255))
+            overlay.save(str(folder / "taikohitcircleoverlay.png"))
+            loaded = skin.TaikoSkin(folder)
+            stamp = loaded.flash("taikohitcircle", 16, QColor("white")).toImage()
+        self.assertEqual(stamp.pixelColor(8, 8).alpha(), 0, "fully covered")
+
+    def test_and_the_pulse_only_happens_in_kiai(self):
+        for stack in (1, 8):
+            with self.subTest(stack=stack):
+                self.assertGreater(
+                    self._brightness(stack, kiai=True), self._brightness(stack))
+
+
+class TailFlashTests(unittest.TestCase):
+    """A roll's `taiko-roll-end` cap is part of the object and pulses with it.
+
+    Stamped on the cap's own shape and anchored the way the cap is (origin
+    TopLeft, butted onto the end of the track), or the light lands on the track
+    instead of on the thing it is lighting.
+    """
+
+    def _tail(self, kiai: bool, at: float):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            image = QImage(32, 32, QImage.Format_ARGB32)
+            image.fill(QColor("white"))
+            image.save(str(folder / "taiko-roll-end.png"))
+            view = gui.GameplayViewerView()
+            view.resize(900, 200)
+            point = TimingPoint(time=0.0, beat_length=500.0, meter=4)
+            view.timing_points = [point]
+            view.beat_points = [point]
+            view._beat_times = [0.0]
+            view.slider_multiplier = 1.4
+            view.kiai_bands = [(0, 20000)] if kiai else []
+            view._rebuild_velocities()
+            view.set_skin(skin.TaikoSkin(folder))
+            note = HitObject(x=256, y=192, time=1500, type=2, hit_sound=0,
+                             extras=("L|624:192", "1", "300.0"))
+            view.notes = [note]
+            view.note_times = [1500.0]
+            view._end_times, view._phantom_ends, view._max_extend_ms = {}, {}, 0.0
+            end = view._compute_end_time(note)
+            view._end_times[note.uid] = end
+            view._max_extend_ms = end - note.time
+            view.current_time = at
+            painted = view.grab().toImage()
+            x = view.x_for_time(note.time)
+            end_x = x + (
+                (end - note.time) * view.velocity_at(note.time) * view.px_per_beat
+            )
+            # A few pixels into the cap, which starts at the end and runs right.
+            return painted.pixelColor(round(end_x) + 6, 100)
+
+    def test_the_cap_pulses_in_kiai(self):
+        plain = self._tail(False, 1000.0)
+        on_beat = self._tail(True, 1000.0)
+        self.assertGreater(on_beat.green(), plain.green())
+        self.assertGreater(on_beat.blue(), plain.blue())
+
+    def test_and_fades_across_the_beat(self):
+        on_beat = self._tail(True, 1000.0)
+        late = self._tail(True, 1240.0)
+        self.assertGreater(on_beat.blue(), late.blue())
+
+    def test_outside_kiai_it_is_just_the_drumroll_colour(self):
+        """#fbb706 and nothing added to it -- if the anchor were wrong this
+        would be sampling the track, or the lane."""
+        plain = self._tail(False, 1000.0)
+        self.assertEqual(
+            (plain.red(), plain.green(), plain.blue()), gui.DRUMROLL_COLOR)
+
+
 class FlashRenderTests(unittest.TestCase):
     """Rendered brightness, since the flash is only ever an overlay."""
 
@@ -117,8 +311,13 @@ class FlashRenderTests(unittest.TestCase):
             document.timing_points.append(
                 TimingPoint(time=kiai_from, beat_length=-100.0, uninherited_flag=0, effects=1)
             )
+        # Short of the playhead, not on it: a circle *at* the hit position has
+        # been hit and is no longer drawn, so a stack parked there measured the
+        # lane wash and nothing else -- which is a test that cannot fail.
+        note_time = int(playhead) + 200
         document.hit_objects = [
-            HitObject(x=256, y=192, time=2000, type=1, hit_sound=0) for _ in range(stack)
+            HitObject(x=256, y=192, time=note_time, type=1, hit_sound=0)
+            for _ in range(stack)
         ]
         view = gui.GameplayViewerView()
         view.resize(800, 200)

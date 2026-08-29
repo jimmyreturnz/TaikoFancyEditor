@@ -5,6 +5,8 @@ from pathlib import Path
 
 from PySide6.QtCore import QProcess, Qt
 from PySide6.QtGui import QKeySequence
+
+from skin import available_skins, skins_root
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -12,6 +14,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QFrame,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -19,6 +22,8 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMessageBox,
     QPushButton,
+    QScrollArea,
+    QSlider,
     QSpinBox,
     QStackedWidget,
     QTableWidget,
@@ -29,7 +34,14 @@ from PySide6.QtWidgets import (
 )
 
 import updater
-from settings import SettingsManager, ShortcutRegistry, duplicate_shortcuts, normalize_sequence
+from settings import (
+    NOTE_OPACITY_DEFAULT_PERCENT,
+    NOTE_OPACITY_MIN_PERCENT,
+    SettingsManager,
+    ShortcutRegistry,
+    duplicate_shortcuts,
+    normalize_sequence,
+)
 
 
 class SettingsDialog(QDialog):
@@ -41,6 +53,8 @@ class SettingsDialog(QDialog):
         self.shortcuts = shortcuts
         self.setWindowTitle(self.tr("Settings"))
         self.resize(760, 500)
+        # Small enough to fit a short laptop screen once the pages scroll.
+        self.setMinimumSize(560, 360)
         self.setStyleSheet(
             """
             QDialog, QWidget { background: #ffffff; color: #000000; }
@@ -54,6 +68,26 @@ class SettingsDialog(QDialog):
         self._update_check: object | None = None
         self._build_ui()
         self._load_current_values()
+        self._fit_to_screen()
+
+    def _fit_to_screen(self) -> None:
+        """Never open taller or wider than the screen it opens on.
+
+        The size above is a preference, not a promise: pages grow as settings
+        are added, and a laptop's work area is smaller than the desktop the
+        number was picked on. Clamped to the *available* geometry, so a taskbar
+        or a dock is already discounted -- and the pages scroll, so clamping
+        hides nothing.
+        """
+        screen = self.screen() or QApplication.primaryScreen()
+        if screen is None:
+            return
+        available = screen.availableGeometry()
+        self.resize(
+            min(self.width(), int(available.width() * 0.9)),
+            min(max(self.height(), self.sizeHint().height()),
+                int(available.height() * 0.9)),
+        )
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -61,19 +95,31 @@ class SettingsDialog(QDialog):
         self.nav = QListWidget()
         self.nav.setFixedWidth(160)
         self.pages = QStackedWidget()
-        for title, page in (
-            (self.tr("General"), self._general_page()),
-            (self.tr("Audio"), self._audio_page()),
-            (self.tr("Language"), self._language_page()),
-            (self.tr("Shortcuts"), self._shortcuts_page()),
-            (self.tr("Advanced"), self._advanced_page()),
+        self._page_ids: list[str] = []
+        for page_id, title, page in (
+            ("general", self.tr("General"), self._general_page()),
+            ("audio", self.tr("Audio"), self._audio_page()),
+            ("skin", self.tr("Skin"), self._skin_page()),
+            ("language", self.tr("Language"), self._language_page()),
+            ("shortcuts", self.tr("Shortcuts"), self._shortcuts_page()),
+            ("advanced", self.tr("Advanced"), self._advanced_page()),
         ):
             self.nav.addItem(QListWidgetItem(title))
             self.pages.addWidget(page)
+            self._page_ids.append(page_id)
         self.nav.currentRowChanged.connect(self.pages.setCurrentIndex)
         self.nav.setCurrentRow(0)
         body.addWidget(self.nav)
-        body.addWidget(self.pages, 1)
+        # The pages scroll rather than forcing the dialog to be as tall as the
+        # tallest of them. Without this the Audio page alone -- offset,
+        # calibration, skin, and the paragraphs explaining each -- decides the
+        # window height for every page, and on a short screen the buttons at
+        # the bottom go off the edge where they cannot be reached.
+        scroller = QScrollArea()
+        scroller.setWidgetResizable(True)
+        scroller.setFrameShape(QFrame.NoFrame)
+        scroller.setWidget(self.pages)
+        body.addWidget(scroller, 1)
         root.addLayout(body, 1)
 
         footer = QHBoxLayout()
@@ -129,23 +175,91 @@ class SettingsDialog(QDialog):
         self.music_volume.setRange(0, 100)
         self.music_volume.setSuffix("%")
         form.addRow(self.tr("Music volume"), self.music_volume)
-        # The way back from a fallback that fired wrongly, and the way in for
-        # anyone who installed an Ogg codec after the app already gave up on
-        # the accurate decoder. See gui.select_media_backend.
-        self.audio_backend = QComboBox()
-        self.audio_backend.addItem(self.tr("Automatic"), "")
-        self.audio_backend.addItem(self.tr("Accurate (Windows)"), "windows")
-        self.audio_backend.addItem(self.tr("Compatible (FFmpeg)"), "ffmpeg")
-        form.addRow(self.tr("Audio decoder"), self.audio_backend)
-        backend_note = QLabel(self.tr(
-            "The accurate decoder keeps the playhead in step with the music at "
-            "slow playback speeds, but cannot open .ogg without a system codec. "
-            "Automatic prefers it and switches to the compatible one the first "
-            "time a song will not open. Restart to apply."
+        # Separate from the hitsound offset above on purpose: the music leaves
+        # through the media player and the hitsounds through QSoundEffect, two
+        # output paths with two different latencies. Ships at zero -- the right
+        # value is a property of the user's device, not something to guess.
+        self.output_offset_ms = QSpinBox()
+        self.output_offset_ms.setRange(-500, 500)
+        offset_row = QHBoxLayout()
+        offset_row.addWidget(self.output_offset_ms)
+        self.calibrate_button = QPushButton(self.tr("Calibrate…"))
+        self.calibrate_button.clicked.connect(self._calibrate_offset)
+        offset_row.addWidget(self.calibrate_button)
+        offset_row.addStretch(1)
+        form.addRow(self.tr("Music offset (ms)"), offset_row)
+        output_note = QLabel(self.tr(
+            "Shift the playhead to match when the music actually reaches your "
+            "ears. Raise it if the notes look early against what you hear. "
+            "Measured in real time, so one value stays correct at every "
+            "playback speed."
         ))
-        backend_note.setWordWrap(True)
-        form.addRow("", backend_note)
+        output_note.setWordWrap(True)
+        form.addRow("", output_note)
         return page
+
+    def _skin_page(self) -> QWidget:
+        """Skin selection. Its own page rather than a row on the Audio one:
+        nothing here is about sound."""
+        page = QWidget()
+        form = QFormLayout(page)
+        # Skins live beside the songs folder the user already chose, so this
+        # asks for nothing new. Only folders carrying taiko note art are
+        # offered -- an osu! install collects dozens of skins for other modes,
+        # and listing those would be a menu of choices that change nothing.
+        self.skin_combo = QComboBox()
+        self.skin_combo.addItem(self.tr("Built-in"), "")
+        root = skins_root(self.settings.string_value("library/songs_folder", ""))
+        for name in available_skins(root):
+            self.skin_combo.addItem(name, name)
+        form.addRow(self.tr("Gameplay skin"), self.skin_combo)
+        skin_note = QLabel(self.tr(
+            "Uses the note, drumroll and hit-explosion art from one of your "
+            "osu! skins in the gameplay preview. Anything a skin does not "
+            "provide falls back to the built-in drawing."
+        ))
+        skin_note.setWordWrap(True)
+        form.addRow("", skin_note)
+
+        # A slider, because this is a look rather than a number: nobody knows
+        # they want 62%, they want it a bit fainter than it is. The readout
+        # beside it is what makes the position mean something.
+        self.note_opacity = QSlider(Qt.Horizontal)
+        self.note_opacity.setRange(NOTE_OPACITY_MIN_PERCENT, 100)
+        self.note_opacity.setSingleStep(1)
+        self.note_opacity.setPageStep(10)
+        self.note_opacity.setTickInterval(10)
+        self.note_opacity.setTickPosition(QSlider.TicksBelow)
+        self.note_opacity_value = QLabel()
+        self.note_opacity_value.setMinimumWidth(44)
+        self.note_opacity.valueChanged.connect(
+            lambda percent: self.note_opacity_value.setText(f"{percent} %"))
+        opacity_row = QHBoxLayout()
+        opacity_row.addWidget(self.note_opacity, 1)
+        opacity_row.addWidget(self.note_opacity_value)
+        form.addRow(self.tr("Note opacity"), opacity_row)
+        opacity_note = QLabel(self.tr(
+            "How solid notes are drawn in the editor timeline layers. Lower "
+            "leaves the snap grid and the lines behind them easier to read "
+            "through a dense section; 100% draws them opaque. The gameplay "
+            "preview is unaffected."
+        ))
+        opacity_note.setWordWrap(True)
+        form.addRow("", opacity_note)
+        return page
+
+    def _calibrate_offset(self) -> None:
+        """Tap along to a click track and take the number it settles on.
+
+        Only ever writes the spin box above, which is the app-wide music
+        offset. No beatmap's own offset is read or written by any of this --
+        the value being measured belongs to the sound card, not to a chart.
+        """
+        from offset_calibration import OffsetCalibrationDialog
+
+        dialog = OffsetCalibrationDialog(self)
+        if dialog.exec() == QDialog.Accepted and dialog.result_offset is not None:
+            self.output_offset_ms.setValue(dialog.result_offset)
 
     def _language_page(self) -> QWidget:
         page = QWidget()
@@ -228,8 +342,11 @@ class SettingsDialog(QDialog):
         self.hitsound_volume.setValue(self.settings.int_value("audio/hitsound_volume", 70))
         self.hitsound_offset_ms.setValue(self.settings.int_value("audio/hitsound_offset_ms", 0))
         self.music_volume.setValue(self.settings.int_value("audio/music_volume", 65))
-        backend = self.settings.string_value("audio/backend", "")
-        self.audio_backend.setCurrentIndex(max(0, self.audio_backend.findData(backend)))
+        self.output_offset_ms.setValue(self.settings.int_value("audio/output_offset_ms", 0))
+        self.note_opacity.setValue(self.settings.int_value(
+            "appearance/note_opacity", NOTE_OPACITY_DEFAULT_PERCENT))
+        chosen = self.settings.string_value("appearance/skin", "")
+        self.skin_combo.setCurrentIndex(max(0, self.skin_combo.findData(chosen)))
         language = self.settings.string_value("language/current", "en")
         index = self.language_combo.findData(language if language in {"en", "ja"} else "en")
         self.language_combo.setCurrentIndex(max(0, index))
@@ -237,22 +354,32 @@ class SettingsDialog(QDialog):
             editor.setKeySequence(QKeySequence(self.shortcuts.sequence(action_id)))
 
     def _restore_current_page_defaults(self) -> None:
-        page = self.pages.currentIndex()
-        if page == 0:
+        """Reset whichever page is showing.
+
+        Dispatched on the page's own identifier rather than its position:
+        adding the Skin page between Audio and Language silently shifted every
+        index below it, so Restore Defaults on Language reset the shortcuts and
+        the last page pointed past the end.
+        """
+        page = self._page_ids[self.pages.currentIndex()]
+        if page == "general":
             self.confirm_overwrite.setChecked(True)
             self.check_updates_on_startup.setChecked(True)
-        elif page == 1:
+        elif page == "audio":
             self.hitsounds_enabled.setChecked(True)
             self.hitsound_volume.setValue(70)
             self.hitsound_offset_ms.setValue(0)
+            self.output_offset_ms.setValue(0)
             self.music_volume.setValue(65)
-            self.audio_backend.setCurrentIndex(self.audio_backend.findData(""))
-        elif page == 2:
+        elif page == "skin":
+            self.skin_combo.setCurrentIndex(0)
+            self.note_opacity.setValue(NOTE_OPACITY_DEFAULT_PERCENT)
+        elif page == "language":
             self.language_combo.setCurrentIndex(self.language_combo.findData("en"))
-        elif page == 3:
+        elif page == "shortcuts":
             for action_id, editor in self._shortcut_editors.items():
                 editor.setKeySequence(QKeySequence(self.shortcuts.default_sequence(action_id)))
-        elif page == 4:
+        elif page == "advanced":
             QMessageBox.information(self, self.tr("Settings"), self.tr("Use Reset All Settings to clear every saved setting."))
 
     def _reset_all_settings(self) -> None:
@@ -288,7 +415,9 @@ class SettingsDialog(QDialog):
         self.settings.set_value("audio/hitsound_volume", self.hitsound_volume.value())
         self.settings.set_value("audio/hitsound_offset_ms", self.hitsound_offset_ms.value())
         self.settings.set_value("audio/music_volume", self.music_volume.value())
-        self.settings.set_value("audio/backend", str(self.audio_backend.currentData()))
+        self.settings.set_value("audio/output_offset_ms", self.output_offset_ms.value())
+        self.settings.set_value("appearance/skin", str(self.skin_combo.currentData()))
+        self.settings.set_value("appearance/note_opacity", self.note_opacity.value())
         self.settings.set_value("language/current", selected_language)
         for action_id, sequence in self._shortcut_values().items():
             self.shortcuts.set_sequence(action_id, sequence)

@@ -14,6 +14,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+# How opaque the editor layers draw their notes, as a percentage. The notes
+# are translucent so the snap grid, the barlines and the SV curve stay readable
+# *through* them, and where that balance sits is a preference: a dense gimmick
+# map wants the grid showing, a sparse one wants the notes solid. The alphas in
+# TimelineGameplay.__init__ are the built-in look, so this is the number that
+# reproduces them -- see TimelineGameplay.set_note_opacity.
+NOTE_OPACITY_DEFAULT_PERCENT = 70
+NOTE_OPACITY_MIN_PERCENT = 20
+
 ORGANIZATION_NAME = "jimmyreturnz"
 APPLICATION_NAME = "TaikoFancyArranger"
 

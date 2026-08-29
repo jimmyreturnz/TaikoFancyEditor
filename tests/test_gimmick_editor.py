@@ -99,6 +99,479 @@ class _GimmickFixture:
             return self.window._enter_gimmick_page()
 
 
+class GimmickSharedZoomTests(_GimmickFixture, unittest.TestCase):
+    """Every layer on the page zooms together, inside one shared range."""
+
+    def _layers(self):
+        return [
+            view for view in (
+                getattr(frame, "chart_view", None) or getattr(frame, "sv_view", None)
+                for frame in self.window._gimmick_views
+            )
+            if view is not None and not isinstance(view, gui.GameplayViewerView)
+        ]
+
+    def _layer(self, layer_id: str):
+        for view in self._layers():
+            if getattr(view, "gimmick_layer", None) == layer_id:
+                return view
+        self.fail(f"no {layer_id} layer")
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.assertTrue(self._enter(gui.GimmickEntryDialog.CREATE))
+
+    def test_the_kiai_and_volume_layer_zooms_with_everything_else(self):
+        chart = self._layer("chart")
+        chart.window_ms = 8000.0
+        chart.zoom_changed.emit(8000.0)
+        self.assertEqual({view.window_ms for view in self._layers()}, {8000.0})
+
+    def test_zooming_from_the_kiai_layer_moves_the_rest(self):
+        kiai = self._layer("kiai_sound")
+        kiai.window_ms = 12000.0
+        kiai.zoom_changed.emit(12000.0)
+        self.assertEqual({view.window_ms for view in self._layers()}, {12000.0})
+
+    def test_no_layer_is_pushed_past_a_limit_it_enforces_itself(self):
+        """The Kiai/Volume layer is an SVEditorView, which allows a 120s window
+        while the chart views allow 60s. Broadcasting unclamped set the chart
+        views to 120s -- past their own maximum -- and the next notch of the
+        wheel on one of them snapped back, so zooming stepped by a factor of
+        two one way and not the other.
+        """
+        kiai = self._layer("kiai_sound")
+        self.assertGreater(kiai.MAX_WINDOW_MS, self._layer("chart").MAX_WINDOW_MS)
+
+        kiai.window_ms = kiai.MAX_WINDOW_MS
+        kiai.zoom_changed.emit(kiai.MAX_WINDOW_MS)
+
+        for view in self._layers():
+            self.assertLessEqual(view.window_ms, view.MAX_WINDOW_MS, view.gimmick_layer)
+            self.assertGreaterEqual(view.window_ms, view.MIN_WINDOW_MS, view.gimmick_layer)
+        self.assertEqual(len({view.window_ms for view in self._layers()}), 1)
+
+    def test_the_shared_floor_is_respected_too(self):
+        chart = self._layer("chart")
+        chart.zoom_changed.emit(1.0)
+        floor = max(view.MIN_WINDOW_MS for view in self._layers())
+        self.assertEqual({view.window_ms for view in self._layers()}, {floor})
+
+
+class GimmickSkinTests(_GimmickFixture, unittest.TestCase):
+    """The gimmick layers are chart views too, so a skin has to reach them.
+
+    It did not: three places built chart views and each appended to
+    `_chart_views` itself, so adding the skin to the Editor path reached two of
+    the three. The gimmick layers stayed on the built-in art until Settings was
+    applied again *after* the page had been opened, which read as the same
+    chart looking different on the two pages.
+    """
+
+    def test_every_gimmick_layer_gets_the_window_s_skin(self):
+        marker = object()
+        self.window.skin = marker
+        self.assertTrue(self._enter(gui.GimmickEntryDialog.CREATE))
+
+        layers = [frame.chart_view for frame in self.window._gimmick_views
+                  if getattr(frame, "chart_view", None) is not None]
+        self.assertGreater(len(layers), 0, "the page builds chart layers")
+        for view in layers:
+            self.assertIs(view.skin, marker)
+
+    def test_the_shared_timeline_and_the_layers_agree(self):
+        """The complaint this comes from: the two pages showing the same chart
+        with different note art.
+
+        Driven through `_apply_appearance_settings`, the way Settings does it, rather
+        than by assigning `window.skin` -- the point is that opening the
+        gimmick page afterwards cannot leave a view behind.
+        """
+        self.window._apply_appearance_settings()
+        self.assertTrue(self._enter(gui.GimmickEntryDialog.CREATE))
+
+        self.assertGreater(len(self.window._chart_views), 1)
+        for view in self.window._chart_views:
+            self.assertIs(view.skin, self.window.skin)
+
+    def test_registration_is_the_only_way_into_the_broadcast(self):
+        """Guards the fix rather than its effect: a fourth call site appending
+        to `_chart_views` directly would silently reintroduce this."""
+        source = Path(gui.__file__).read_text(encoding="utf-8")
+        self.assertEqual(
+            source.count("_chart_views.append("), 1,
+            "chart views are registered through _register_chart_view only",
+        )
+
+
+class NoteOpacityTests(_GimmickFixture, unittest.TestCase):
+    """The setting reaches every layer that draws a note, by the same route the
+    skin does -- which is the whole reason `_register_chart_view` exists.
+
+    The store is stubbed rather than written: `SettingsManager` wraps the real
+    `QSettings`, so a test that sets a value edits the running user's own
+    configuration. Every other settings test in this suite stubs it for the
+    same reason; these four did not, and left whatever the last one wrote
+    behind in the registry.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self._stored: dict[str, object] = {}
+        settings = self.window.settings
+        real_int = settings.int_value
+        settings.set_value = self._stored.__setitem__
+        settings.int_value = (
+            lambda key, default=0: int(self._stored.get(key, real_int(key, default)))
+        )
+
+    def _set_opacity(self, percent: int) -> None:
+        self.window.settings.set_value("appearance/note_opacity", percent)
+        self.window._apply_appearance_settings()
+
+    def _opacities(self):
+        return [view.don_brush.alpha() for view in self.window._chart_views]
+
+    def test_the_default_reproduces_the_built_in_look(self):
+        self._set_opacity(gui.NOTE_OPACITY_DEFAULT_PERCENT)
+        self.assertEqual(self.window.timeline.don_brush.alpha(), 180)
+
+    def test_a_higher_setting_makes_every_layer_more_solid(self):
+        self._set_opacity(100)
+        self.assertTrue(self._enter(gui.GimmickEntryDialog.CREATE))
+        self.assertGreater(len(self.window._chart_views), 1)
+        for alpha in self._opacities():
+            self.assertEqual(alpha, 255)
+
+    def test_a_layer_opened_afterwards_is_not_left_behind(self):
+        """The bug the skin had: a view built after Settings applied kept the
+        built-in value until Settings was applied again."""
+        self._set_opacity(40)
+        self.assertTrue(self._enter(gui.GimmickEntryDialog.CREATE))
+        for alpha in self._opacities():
+            self.assertEqual(alpha, round(180 * 40 / gui.NOTE_OPACITY_DEFAULT_PERCENT))
+
+    def test_repeated_applications_do_not_compound(self):
+        """Scaled from the captured base rather than from the current alpha --
+        otherwise applying Settings twice halves the notes twice."""
+        self._set_opacity(35)
+        once = self.window.timeline.don_brush.alpha()
+        self.window._apply_appearance_settings()
+        self.assertEqual(self.window.timeline.don_brush.alpha(), once)
+
+    def test_the_ghosts_stay_fainter_than_the_notes(self):
+        """What a ghost is, is "fainter than a note" -- pinning them while the
+        notes went solid would have inverted that."""
+        for percent in (20, 70, 100):
+            with self.subTest(percent=percent):
+                self.window.timeline.set_note_opacity(percent)
+                self.assertLess(self.window.timeline.ghost_don_brush.alpha(),
+                                self.window.timeline.don_brush.alpha())
+
+    def test_a_chosen_value_is_remembered_and_re_applied(self):
+        """What "remember it" means in practice: Settings writes the store,
+        and the next read -- a reopened dialog, or the next launch -- gets the
+        number back rather than the default."""
+        from settings_dialog import SettingsDialog
+
+        dialog = SettingsDialog(self.window.settings, self.window.shortcuts, self.window)
+        dialog.note_opacity.setValue(45)
+        dialog.apply()
+        self.assertEqual(self._stored["appearance/note_opacity"], 45)
+
+        reopened = SettingsDialog(
+            self.window.settings, self.window.shortcuts, self.window)
+        self.assertEqual(reopened.note_opacity.value(), 45)
+        self.window._apply_appearance_settings()
+        self.assertEqual(self.window.note_opacity_percent, 45)
+        for dead in (dialog, reopened):
+            dead.deleteLater()
+
+
+class ViewReorderTests(_GimmickFixture, unittest.TestCase):
+    """The ▲/▼ chrome buttons. Driven through the buttons rather than through
+    `_move_view`, because half of what could break is the wiring: the gimmick
+    page builds its frames on a different path from the Editor page, and that
+    is exactly how the skin came to reach only one of them.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self._enter(gui.GimmickEntryDialog.USE_CURRENT)
+
+    def _order(self) -> list[str]:
+        layout = self.window.gimmick_views_layout
+        return [
+            layout.itemAt(i).widget().gimmick_layer
+            for i in range(layout.count())
+            if isinstance(layout.itemAt(i).widget(), gui.EditorViewFrame)
+        ]
+
+    def _frame(self, layer_id):
+        return next(f for f in self.window._gimmick_views
+                    if f.gimmick_layer == layer_id)
+
+    def test_down_swaps_a_layer_with_the_one_below_it(self):
+        before = self._order()
+        self.assertGreater(len(before), 2)
+        self._frame(before[0]).move_down_button.click()
+        expected = [before[1], before[0], *before[2:]]
+        self.assertEqual(self._order(), expected)
+
+    def test_up_puts_it_back(self):
+        before = self._order()
+        self._frame(before[0]).move_down_button.click()
+        self._frame(before[0]).move_up_button.click()
+        self.assertEqual(self._order(), before)
+
+    def test_the_list_follows_the_layout(self):
+        """`_gimmick_views[0]` decides which layer the tool row and copy/paste
+        act on, so a list that disagreed with the screen would aim them at a
+        layer the user is not looking at."""
+        before = self._order()
+        self._frame(before[0]).move_down_button.click()
+        self.assertEqual(
+            [f.gimmick_layer for f in self.window._gimmick_views], self._order())
+
+    def test_the_ends_do_nothing_rather_than_wrapping(self):
+        before = self._order()
+        self._frame(before[0]).move_up_button.click()
+        self.assertEqual(self._order(), before)
+        self._frame(before[-1]).move_down_button.click()
+        self.assertEqual(self._order(), before)
+
+    def test_the_trailing_stretch_stays_last(self):
+        """The column is held up by a stretch after the frames; stepping onto
+        it would file a layer below the thing holding the column open."""
+        layout = self.window.gimmick_views_layout
+        before = self._order()
+        self._frame(before[-1]).move_down_button.click()
+        last = layout.itemAt(layout.count() - 1)
+        self.assertIsNone(last.widget())
+
+
+class EditorPageReorderTests(_GimmickFixture, unittest.TestCase):
+    """The same buttons on the Editor page, whose frames go into a layout per
+    difficulty group rather than one shared column."""
+
+    def _frames(self):
+        return [f for f in self.window._editor_views if f.view_type != "density"]
+
+    def _layout_order(self, frame):
+        layout = self.window._frame_layout(frame)
+        return [
+            layout.itemAt(i).widget() for i in range(layout.count())
+            if isinstance(layout.itemAt(i).widget(), gui.EditorViewFrame)
+        ]
+
+    def test_two_views_in_one_group_swap(self):
+        self.window._add_editor_view("chart", self.path)
+        self.window._add_editor_view("sv", self.path)
+        first, second = self._frames()[-2:]
+        before = self._layout_order(first)
+        index = before.index(first)
+        self.assertIs(before[index + 1], second, "the two land adjacent")
+        first.move_down_button.click()
+        after = self._layout_order(first)
+        self.assertIs(after[index], second)
+        self.assertIs(after[index + 1], first)
+
+    def test_a_density_view_can_be_moved_off_the_bottom(self):
+        """Density is pinned last when a view is *added*; that is a default for
+        where things land, not a rule about where they may sit."""
+        self.window._add_editor_view("chart", self.path)
+        self.window._add_editor_view("density", self.path)
+        density = self.window._editor_views[-1]
+        self.assertIs(self._layout_order(density)[-1], density)
+        density.move_up_button.click()
+        self.assertIsNot(self._layout_order(density)[-1], density)
+
+    def test_a_view_never_leaves_its_own_difficulty_group(self):
+        """The two groups are separate layouts, so the walk cannot step out of
+        one -- which is what would file a view under the wrong difficulty."""
+        self.window._add_editor_view("chart", self.path)
+        frame = self.window._editor_views[-1]
+        layout = self.window._frame_layout(frame)
+        frame.move_up_button.click()
+        frame.move_down_button.click()
+        self.assertIs(self.window._frame_layout(frame), layout)
+
+
+class DialogWheelIsolationTests(_GimmickFixture, unittest.TestCase):
+    """A dialog's wheel belongs to the dialog.
+
+    `MainWindow` installs its event filter on the *application*, so every event
+    in the process runs through it -- including the ones inside a dialog. One
+    notch in the Settings dialog seeked the gimmick layer behind it by 125ms.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self._enter(gui.GimmickEntryDialog.USE_CURRENT)
+        # Shown, because `_gimmick_wheel_target` only claims a wheel while the
+        # gimmick page is current -- without this the routing below is never
+        # exercised and the wheel only worked by reaching the layer directly.
+        self.window._show_page(gui.PAGE_GIMMICK)
+        self.layer = self.window._gimmick_views[0].chart_view
+
+    def _wheel(self, widget, modifiers=Qt.NoModifier, delta=-120) -> None:
+        centre = QPointF(widget.width() / 2, widget.height() / 2)
+        QApplication.sendEvent(widget, QWheelEvent(
+            centre, QPointF(widget.mapToGlobal(centre.toPoint())),
+            QPoint(0, 0), QPoint(0, delta),
+            Qt.NoButton, modifiers, Qt.NoScrollPhase, False,
+        ))
+        QApplication.processEvents()
+
+    def _dialog(self):
+        from settings_dialog import SettingsDialog
+
+        dialog = SettingsDialog(
+            self.window.settings, self.window.shortcuts, self.window)
+        self.addCleanup(dialog.deleteLater)
+        dialog.show()
+        QApplication.processEvents()
+        return dialog
+
+    def test_scrolling_a_dialog_does_not_seek_the_page_behind_it(self):
+        dialog = self._dialog()
+        before = self.layer.current_time
+        self._wheel(dialog.note_opacity)
+        self.assertEqual(self.layer.current_time, before)
+
+    def test_alt_wheel_in_a_dialog_does_not_change_the_snap_divisor(self):
+        dialog = self._dialog()
+        before = self.window.editor_snap_combo.currentData()
+        self._wheel(dialog.note_opacity, modifiers=Qt.AltModifier)
+        self.assertEqual(self.window.editor_snap_combo.currentData(), before)
+
+    def test_the_page_still_takes_its_own_wheel(self):
+        """The guard is scoped to other windows -- what it must not do is stop
+        the editor working when no dialog is open.
+
+        Routing first, then a gesture rather than one notch: a notch is one
+        snap division, and this fixture's gimmick lines are 60000 BPM, where
+        that division is a quarter of a millisecond and rounds to the same
+        millisecond. A single notch doing nothing there is the *correct*
+        behaviour, not a lost event.
+        """
+        self.assertIsNotNone(self.window._gimmick_wheel_target(self.layer))
+        before = self.layer.current_time
+        for _ in range(8):
+            self._wheel(self.layer)
+        self.assertNotEqual(self.layer.current_time, before)
+
+
+class ScrollBarWheelTests(_GimmickFixture, unittest.TestCase):
+    """The scrollbar is the one control on the page whose whole job is the
+    wheel, and it was the one control that did not get it.
+
+    `_gimmick_wheel_target` hands every wheel on the gimmick page to a layer so
+    that seeking works wherever the pointer is. Six bands do not fit on one
+    screen, so the page has a scrollbar -- and a wheel over it seeked a layer
+    and left the scroll position where it was, which made everything below the
+    fold reachable only by dragging the bar.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self._enter(gui.GimmickEntryDialog.USE_CURRENT)
+        # The page has to be *shown*: an unshown scroll area is never laid out,
+        # so its bar has no range -- and `_gimmick_wheel_target` only claims a
+        # wheel while the gimmick page is current, so without this the "a layer
+        # still seeks" test below would pass for the wrong reason.
+        self.window._show_page(gui.PAGE_GIMMICK)
+        # Short enough that the bands cannot all fit: the whole point is the
+        # scrollbar, and there is none on a window tall enough to show them.
+        self.window.resize(1200, 480)
+        for _ in range(8):
+            QApplication.processEvents()
+        self.scroll = self.window.gimmick_scroll
+        self.bar = self.scroll.verticalScrollBar()
+        self.layer = self.window._gimmick_views[0].chart_view
+
+    def _wheel(self, widget, delta=-120) -> None:
+        centre = QPointF(widget.width() / 2, widget.height() / 2)
+        QApplication.sendEvent(widget, QWheelEvent(
+            centre, QPointF(widget.mapToGlobal(centre.toPoint())),
+            QPoint(0, 0), QPoint(0, delta),
+            Qt.NoButton, Qt.NoModifier, Qt.NoScrollPhase, False,
+        ))
+        QApplication.processEvents()
+
+    def test_the_bands_overflow_so_there_is_something_to_scroll(self):
+        """If this ever stops being true the rest of the class proves nothing."""
+        self.assertGreater(self.bar.maximum(), 0)
+
+    def test_a_wheel_over_the_scrollbar_scrolls_the_page(self):
+        self.bar.setValue(0)
+        self._wheel(self.bar)
+        self.assertGreater(self.bar.value(), 0)
+
+    def test_the_gaps_between_bands_seek_rather_than_scroll(self):
+        """The bar is the only surface here that does not move. Letting the
+        gaps scroll too meant scrolling slid the bands under a stationary
+        cursor, so one gesture landed alternately on a gap and on a band and
+        did half a scroll and half a seek."""
+        self.bar.setValue(0)
+        before = self.layer.current_time
+        self._wheel(self.scroll.viewport())
+        self.assertEqual(self.bar.value(), 0)
+        self.assertNotEqual(self.layer.current_time, before)
+
+    def test_one_gesture_across_gaps_and_bands_only_ever_seeks(self):
+        """What "scrolling horizontal and vertical simultaneously" was: half
+        the notches of a single gesture scrolled and half of them seeked."""
+        self.bar.setValue(0)
+        times = [self.layer.current_time]
+        for index in range(6):
+            self._wheel(self.layer if index % 2 else self.scroll.viewport())
+            times.append(self.layer.current_time)
+        self.assertEqual(self.bar.value(), 0, "the page never slid")
+        for earlier, later in zip(times, times[1:]):
+            self.assertGreaterEqual(later, earlier, "and none of it went back")
+        self.assertGreater(times[-1], times[0])
+
+    def test_the_page_chrome_outside_the_scroll_area_still_seeks(self):
+        """The regression this comes from. Scrolling is scoped to the scroll
+        area's own space; the timing bar and tool rows above it are not in it,
+        and making every off-band wheel scroll left them doing nothing at
+        all -- reported as "scrolling no longer moves the view horizontally"."""
+        for name in ("gimmick_timing_bar", "gimmick_page"):
+            widget = getattr(self.window, name, None)
+            if widget is None:
+                continue
+            with self.subTest(widget=name):
+                self.bar.setValue(0)
+                before = self.layer.current_time
+                self._wheel(widget)
+                self.assertNotEqual(self.layer.current_time, before)
+                self.assertEqual(self.bar.value(), 0, "and does not scroll")
+
+    def test_only_the_scrollbar_is_exempt(self):
+        """Everything else on the page belongs to a band, whatever the
+        modifiers -- which is what it has always done."""
+        self.assertIsNone(self.window._gimmick_wheel_target(self.bar))
+        for widget in (self.scroll.viewport(), self.layer, self.window.gimmick_page):
+            with self.subTest(widget=type(widget).__name__):
+                self.assertIsNotNone(self.window._gimmick_wheel_target(widget))
+
+    def test_and_does_not_seek_a_layer_at_the_same_time(self):
+        self.bar.setValue(0)
+        before = self.layer.current_time
+        self._wheel(self.bar)
+        self.assertEqual(self.layer.current_time, before)
+
+    def test_a_wheel_over_a_layer_still_seeks(self):
+        """The rule this narrows, not replaces: seeking has to keep working
+        wherever else the pointer is on the page."""
+        self.bar.setValue(0)
+        before = self.layer.current_time
+        self._wheel(self.layer)
+        self.assertNotEqual(self.layer.current_time, before)
+        self.assertEqual(self.bar.value(), 0)
+
+
 class GimmickEntryTests(_GimmickFixture, unittest.TestCase):
     def test_no_creates_nothing_and_refuses_the_page(self):
         self.assertFalse(self._enter(gui.GimmickEntryDialog.CANCEL))
@@ -2108,6 +2581,12 @@ class GimmickWheelTests(_GimmickFixture, unittest.TestCase):
         self.assertEqual(self.window.timeline.snap_divisor, before)
 
     def test_a_plain_wheel_over_the_page_background_seeks(self):
+        """Seeking is what the wheel means on this page wherever the pointer
+        is, so the page's own chrome -- its timing bar, its tool rows -- keeps
+        it. Only the scroll area's own space (the gaps between bands, and the
+        scrollbar) scrolls instead; see ScrollBarWheelTests. Making *everything*
+        off a band scroll turned this chrome into a dead zone, which is what
+        "scrolling no longer moves the view horizontally" was."""
         before = self.layers[0].current_time
         QApplication.sendEvent(self.page, _wheel(self.page, -120))
         self.assertNotEqual(self.layers[0].current_time, before)

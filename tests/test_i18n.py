@@ -31,7 +31,8 @@ ROOT = Path(__file__).resolve().parents[1]
 TS_PATH = ROOT / "translations" / "taiko_ja.ts"
 
 # Files whose visible strings are looked up through explicit contexts.
-SOURCE_FILES = ("gui.py", "settings_dialog.py", "image_trace_dialog.py", "updater.py")
+SOURCE_FILES = ("gui.py", "settings_dialog.py", "image_trace_dialog.py", "updater.py",
+                "offset_calibration.py")
 
 _APP: QApplication | None = None
 
@@ -138,6 +139,7 @@ class CatalogIntegrityTests(unittest.TestCase):
             "DrawingDialog",
             "ImageTraceDialog",
             "SettingsDialog",
+            "OffsetCalibrationDialog",
         }
         self.assertLessEqual(set(load_catalog()), allowed)
 

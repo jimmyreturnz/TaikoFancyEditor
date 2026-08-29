@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import math
-import os
 import random
 import csv
 import shutil
@@ -18,15 +17,17 @@ from PySide6.QtCore import (
     QUrl, Signal,
 )
 from PySide6.QtGui import QImageReader, QColor, QFont, QFontDatabase, QFontMetrics, QKeySequence, QPainter, QPen, QPixmap, QPolygonF, QShortcut, QIcon
-from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer, QSoundEffect
+from PySide6.QtMultimedia import QMediaPlayer, QSoundEffect
 from PySide6.QtWidgets import (
-    QAbstractSpinBox, QApplication, QButtonGroup, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
-    QGraphicsOpacityEffect, QGridLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem,
+    QAbstractSlider, QAbstractSpinBox, QApplication, QButtonGroup, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
+    QBoxLayout, QGraphicsOpacityEffect, QGridLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QMainWindow, QMessageBox,
     QProgressBar, QPushButton, QScrollArea,
     QSlider, QSpacerItem, QSpinBox, QSplitter, QStackedWidget, QStyle, QStyleOptionButton, QTabWidget, QToolButton, QVBoxLayout, QWidget, QDialog, QDialogButtonBox, QFontComboBox, QSizePolicy
 )
 
+from audio_engine import TrackPlayer
+from skin import TaikoSkin, skins_root
 from parameters import PARAMETERS
 from i18n import install_translator, tr
 from image_trace_dialog import ImageTraceDialog
@@ -37,6 +38,8 @@ from model.commands import (
 from model.editor_state import DifficultyState
 from model.hit_object import HITSOUND_CLAP, HITSOUND_FINISH, HitObject, TYPE_CIRCLE, TYPE_NEW_COMBO, TYPE_SLIDER, TYPE_SPINNER
 from settings import (
+    NOTE_OPACITY_DEFAULT_PERCENT,
+    NOTE_OPACITY_MIN_PERCENT,
     APPLICATION_NAME, ORGANIZATION_NAME, SettingsManager, ShortcutDefinition, ShortcutRegistry,
     register_shortcut_definitions, should_ignore_shortcut_focus,
 )
@@ -95,12 +98,56 @@ PLAYFIELD_HEIGHT = 384
 # every frame instead of only at report time is what makes the correction
 # invisible; osu!'s own numbers for both constants are kept rather than
 # re-tuned, since they were already chosen for this exact smoothing problem.
-POSITION_INTERPOLATION_DIVISOR = 8.0
+#
+# The blend is an exponential decay toward the source rather than a fixed
+# fraction per frame, matching what upstream does now:
+#
+#     currentTime = Interpolation.DampContinuously(
+#         currentTime, framedSourceClock.CurrentTime,
+#         DriftRecoveryHalfLife, realtimeClock.ElapsedFrameTime);
+#
+# A fixed 1/8 per frame (which this port used first, from an older revision)
+# makes the correction speed depend on the frame rate -- the same drift is
+# absorbed twice as fast at 120fps as at 60fps. Halving the remaining error
+# every DRIFT_RECOVERY_HALF_LIFE_MS of *real* time does not care.
+#
+# The tolerance is multiplied by the playback rate at the point of use, which
+# the first version of this port left out. Upstream does it -- `withinAllowable
+# Error = Math.Abs(...) <= AllowableErrorMilliseconds * Rate` -- and the reason
+# is in its own doc comment: the constant is a budget in *real* time, so it has
+# to be converted into the song time the comparison is made in. Unscaled, 33ms
+# of song is 33ms of real drift at 1.0x but 133ms of it at 0.25x, so the one
+# speed that most needs a tight playhead got the loosest tolerance of all.
+DRIFT_RECOVERY_HALF_LIFE_MS = 80.0
 POSITION_ALLOWABLE_ERROR_MS = 1000.0 / 60.0 * 2.0
 
 # The song-folder scan runs on the UI thread, sliced by time rather than by a
 # file count: one frame's worth of work per timer tick, so a folder with a few
 # fast files and one with thousands of slow ones both stay responsive.
+# Placeholder the timeline info line is split on, so the unchanging halves
+# either side of the playhead position can be built once and reused. A NUL
+# cannot occur in any translated label, which is the whole requirement.
+_INFO_POSITION_SLOT = chr(0)
+
+# Tool buttons are a dense row of many small targets, not the app's ordinary
+# call-to-action buttons, so they do not take the app-wide 8px/16px padding.
+# The vertical half of that was doing nothing but fighting TOOL_BUTTON_HEIGHT,
+# which is already fixed, while the horizontal half widened every button in a
+# row that has to fit ten of them plus a caption. The Editor and SV rows were
+# silently keeping the app-wide value while the gimmick rows overrode it, so
+# the three never matched.
+#
+# Only the properties named here are overridden: a leaf widget's own
+# QPushButton{} rule leaves the inherited pink background, hover and checked
+# states alone, which is why this is set per button rather than by restyling.
+# Measured, not chosen: at the app-wide 8px/16px an Editor tool row is 32px
+# tall and 477px wide; these bring it to 26x429 without the labels getting
+# cramped. The gimmick rows stay strictly smaller than the Editor row -- they
+# carry up to ten tools plus Config, and one shared size would either overflow
+# that row or bloat this one.
+TOOL_BUTTON_STYLE = "QPushButton { padding: 5px 12px; font-size: 12px; }"
+GIMMICK_TOOL_BUTTON_STYLE = "QPushButton { padding: 3px 9px; font-size: 11px; }"
+
 SCAN_SLICE_SECONDS = 0.008
 
 # page_stack / page_button_group indices.
@@ -436,6 +483,20 @@ HITSOUND_SAMPLES = {
 # effect each.
 HITSOUND_POOL_SIZE = 8
 
+# The largest window `advance` will sound, in **wall** milliseconds.
+#
+# One rendered frame covers about 8ms of wall time. A window far larger than
+# that is not playback: it is a seek that arrived as an advance, or the clock
+# catching up after a stall. Sounding every note such a window crossed fires
+# dozens of samples on the same instant, and simultaneous samples *sum* -- the
+# result is far louder than any single hit, loud enough to hurt, and it is not
+# information either, because nobody can hear thirty notes played at once.
+#
+# So a jump is treated as a jump: move the cursor, sound nothing. 200ms is
+# roughly 24 frames, wide enough that ordinary jitter still plays normally and
+# narrow enough that no burst survives it.
+HITSOUND_MAX_WINDOW_MS = 200.0
+
 
 def hitsound_key(note) -> str | None:
     """Which sample `note` asks for, or None when it is silent."""
@@ -446,20 +507,42 @@ def hitsound_key(note) -> str | None:
     return "clap" if note.is_kat else "normal"
 
 
-def hitsound_schedule(hit_objects) -> tuple[list[float], list[str]]:
-    """(times, sample keys) for every audible note, in time order.
+def hitsound_schedule(
+    hit_objects, timing_points=(),
+) -> tuple[list[float], list[str], list[float]]:
+    """(times, sample keys, volume fractions) for every audible note, in order.
 
     Built once per edit and binary-searched per frame. Scanning the hit objects
     on every frame instead would be a full pass over thousands of notes at
     120Hz, which is the cost this file avoids everywhere else it looks
     something up by time.
+
+    The volume is what the Kiai and Sound Volume layer edits, made audible: a
+    timing point's `volume` is osu!'s hitsound volume for the section it opens,
+    so 100 plays the sample at full and 0 silences it. Resolved by one forward
+    merge over the sorted points rather than a lookup per note, because
+    `active_point_at` walks backwards a point at a time and a gimmick
+    difficulty has thousands of them between any two notes.
     """
     scheduled = sorted(
         (float(note.time), key)
         for note, key in ((note, hitsound_key(note)) for note in hit_objects)
         if key is not None
     )
-    return [time_ms for time_ms, _key in scheduled], [key for _time, key in scheduled]
+    times = [time_ms for time_ms, _key in scheduled]
+    keys = [key for _time, key in scheduled]
+    ordered = sorted_by_time(list(timing_points))
+    volumes = []
+    index = 0
+    # Before the first timing point there is no section to read a volume from,
+    # so a note there plays at full rather than silently.
+    current = 1.0
+    for time_ms in times:
+        while index < len(ordered) and ordered[index].time <= time_ms:
+            current = max(0, min(100, int(ordered[index].volume))) / 100.0
+            index += 1
+        volumes.append(current)
+    return times, keys, volumes
 
 
 class HitsoundPlayer(QObject):
@@ -497,6 +580,9 @@ class HitsoundPlayer(QObject):
         self.playback_rate = 1.0
         self._times: list[float] = []
         self._keys: list[str] = []
+        # Per-note hitsound volume, 0.0-1.0, from the timing point in force at
+        # that note. Parallel to _times, so one window indexes both.
+        self._volumes: list[float] = []
         self._cursor = 0.0
         self._pools: dict[str, list[QSoundEffect]] = {}
         self._next: dict[str, int] = {}
@@ -504,6 +590,8 @@ class HitsoundPlayer(QObject):
         # set from the settings long before the first sound is ever played.
         self._volume = 1.0
         self._built = False
+        # {key: Path} from the chosen skin, or empty for the built-in samples.
+        self._skin_sounds: dict[str, object] = {}
 
     def _build_pools(self) -> None:
         """Build every pool, once, the first time a sound is actually wanted.
@@ -525,14 +613,18 @@ class HitsoundPlayer(QObject):
             return
         self._built = True
         for key, filename in HITSOUND_SAMPLES.items():
-            path = next(
-                (
-                    candidate for candidate in
-                    (root / "assets" / "se" / filename for root in resource_roots())
-                    if candidate.is_file()
-                ),
-                None,
-            )
+            # The skin's sample when it has one, per key: a skin that ships
+            # only a don keeps the built-in kat rather than falling silent.
+            path = self._skin_sounds.get(key)
+            if path is None:
+                path = next(
+                    (
+                        candidate for candidate in
+                        (root / "assets" / "se" / filename for root in resource_roots())
+                        if candidate.is_file()
+                    ),
+                    None,
+                )
             if path is None:
                 continue
             pool = []
@@ -544,6 +636,24 @@ class HitsoundPlayer(QObject):
             self._pools[key] = pool
             self._next[key] = 0
 
+    def set_skin_sounds(self, sounds) -> None:
+        """Play a skin's samples instead of the built-in ones.
+
+        Tears the pools down rather than editing them: a QSoundEffect's source
+        is set once when it is built, and a pool half on the old skin would
+        play whichever effect the round robin happened to reach.
+        """
+        if dict(sounds) == self._skin_sounds:
+            return
+        self._skin_sounds = dict(sounds)
+        for pool in self._pools.values():
+            for effect in pool:
+                effect.stop()
+                effect.deleteLater()
+        self._pools.clear()
+        self._next.clear()
+        self._built = False
+
     def set_volume(self, fraction: float) -> None:
         """Remembered as well as applied: the settings are read at startup,
         long before any pool exists, and `_build_pools` reads it back."""
@@ -552,8 +662,9 @@ class HitsoundPlayer(QObject):
             for effect in pool:
                 effect.setVolume(self._volume)
 
-    def set_schedule(self, hit_objects) -> None:
-        self._times, self._keys = hitsound_schedule(hit_objects)
+    def set_schedule(self, hit_objects, timing_points=()) -> None:
+        self._times, self._keys, self._volumes = hitsound_schedule(
+            hit_objects, timing_points)
 
     def reset_to(self, position_ms: float) -> None:
         """Move the firing cursor without sounding anything.
@@ -571,21 +682,47 @@ class HitsoundPlayer(QObject):
         tile the timeline exactly: a note on a window boundary fires in one
         frame and never in both.
         """
+        first, last = self._window(previous_ms, current_ms)
+        return self._keys[first:last]
+
+    def _window(self, previous_ms: float, current_ms: float) -> tuple[int, int]:
+        """Schedule bounds for `(previous, current]`, or an empty range.
+
+        Separate from `pending` so `advance` can read the *volumes* over the
+        same window without `pending` having to return pairs -- which notes a
+        window crosses is the interesting half, and it stays a list of keys.
+        """
         if not self.enabled or current_ms <= previous_ms:
-            return []
+            return 0, 0
         # See `offset_ms`: wall milliseconds, so the window it shifts has to be
         # scaled into song time by whatever rate the song is playing at.
         offset = self.offset_ms * abs(self.playback_rate)
-        first = bisect_right(self._times, previous_ms - offset)
-        last = bisect_right(self._times, current_ms - offset)
-        return self._keys[first:last]
+        return (bisect_right(self._times, previous_ms - offset),
+                bisect_right(self._times, current_ms - offset))
 
     def advance(self, current_ms: float) -> None:
-        for key in self.pending(self._cursor, current_ms):
-            self._play(key)
+        """Sound whatever the playhead crossed, unless it did not cross it.
+
+        The guard is on the window rather than on the number of samples: what
+        makes a burst dangerous is that the notes land together, and a count
+        limit would still let thirty of them start on the same millisecond.
+        Scaled by the rate for the same reason `offset_ms` is -- the cap is
+        about what reaches the ear, which does not care how fast the song is
+        being read.
+        """
+        if current_ms - self._cursor > HITSOUND_MAX_WINDOW_MS * max(0.01, abs(self.playback_rate)):
+            self.reset_to(current_ms)
+            return
+        first, last = self._window(self._cursor, current_ms)
+        for index in range(first, last):
+            self._play(self._keys[index], self._volumes[index])
         self._cursor = float(current_ms)
 
-    def _play(self, key: str) -> None:
+    def _play(self, key: str, volume: float = 1.0) -> None:
+        """`volume` is the section's hitsound volume as a fraction of the
+        user's own hitsound level. Zero is silent, which is a thing mappers set
+        deliberately, so it is obeyed rather than treated as a floor.
+        """
         self._build_pools()
         pool = self._pools.get(key)
         if not pool:
@@ -594,6 +731,7 @@ class HitsoundPlayer(QObject):
         self._next[key] = (index + 1) % len(pool)
         effect = pool[index]
         if effect.isLoaded():
+            effect.setVolume(self._volume * volume)
             effect.play()
 
 
@@ -619,8 +757,52 @@ def active_timing(
 # paint their own overlay, so a stack reads brighter than a lone note without
 # anything having to count them. Drumroll yellow rather than white: the shine
 # mappers stack fake sliders for is that yellow showing through.
-KIAI_PULSE_COLOR = (255, 206, 92)
-KIAI_PULSE_ALPHA = 80
+# The note colours, and the ones every note part is tinted from. One place
+# each, because the editor timeline and the gameplay preview draw the same
+# objects and had drifted to four slightly different values between them.
+DON_COLOR = (229, 76, 46)
+KAT_COLOR = (67, 141, 171)
+# The drumroll yellow, and the colour every drumroll part is tinted from --
+# head, `taiko-roll-middle` and `taiko-roll-end` alike. One constant because
+# the editor timeline and the gameplay preview draw the same object and had
+# drifted to two slightly different yellows.
+DRUMROLL_COLOR = (251, 183, 6)
+
+# **A fake slider is #fbb706 and nothing else, outside a chorus.** There is no
+# separate "shiny" effect and no brightening with stack depth: a pile of them
+# is a pile of identical opaque heads and reads as one, which is what it is.
+# Inside a chorus they pulse like everything else -- each object on the pile
+# takes its own stamp in the flash pass below, so a deep stack pulses harder
+# than a lone one, and outside a chorus there is nothing to see.
+#
+# Several richer models were tried against real readings and none of them
+# closed; this is the one that is simply true by construction.
+#
+# The pulse is the drumroll's own yellow, and **nothing goes white**. Additive
+# light keeps whatever hue it is given, and #fbb706 carries 6 of 255 blue, so
+# it saturates to a hot yellow and stops there.
+#
+# That is the right end point rather than a limitation. osu! composites hit
+# sprites with normal alpha and reserves additive for one thing, `CirclePiece`'s
+# flash box -- and alpha compositing *converges* on the sprite's own colour, it
+# cannot pass it. A stack of drumroll heads therefore gets rapidly more solid
+# and stops at yellow; it never washes out. A white term was added here to make
+# it do otherwise and was simply wrong.
+KIAI_PULSE_COLOR = DRUMROLL_COLOR
+# osu!taiko's CirclePiece flashes at `kiai_flash_opacity = 0.15f` on each kiai
+# beat, and does it with `BlendingParameters.Additive`. Both matter: 0.31 (what
+# this was) is twice the brightness, and drawn as ordinary alpha it lays a film
+# over the note's colour instead of lighting it, which is why kiai used to wash
+# don and kat toward the same pale orange.
+# osu!'s own `kiai_flash_opacity` is 0.15. This is deliberately well above it,
+# and the reason is `TaikoSkin.flash`: the light is masked to the *colourable*
+# part of a note and then weighted by how bright the artwork is there, so it
+# reaches far less of the disc than a flat overlay did. 0.15 across what is
+# left read as almost nothing. Measured on a don in kiai, on the beat:
+#
+#     stack       0         1         3         8
+#             #ea6c2f   #f19d31   #f9d435   #fef93f
+KIAI_PULSE_ALPHA = round(0.337 * 255)
 # Deliberately far below KIAI_PULSE_ALPHA: this one washes the *entire* view
 # rect rather than a single note-sized circle, so the same alpha that reads as
 # a glow on a note would read as a floodlight over the whole lane.
@@ -648,11 +830,12 @@ def beat_pulse(
 
     `anchor_ms` is the start of the kiai section `time_ms` falls in (the
     caller already has this from its kiai bands, so this doesn't search for
-    it). With an anchor, the pulse hits 1.0 there and repeats every `meter`
-    beats (a measure) instead of every single beat -- one linear fade across
-    the whole measure, so a slower BPM fades slower for free, no separate
-    constant needed. Without one, falls back to the old one-beat, point-phased
-    behaviour so existing callers are unaffected.
+    it). With an anchor, the pulse hits 1.0 there and repeats **every 1/1
+    beat**, fading linearly across it -- so a slower BPM fades slower for free,
+    with no separate constant. It ran on a measure for a while, which at 4/4 is
+    three beats out of four with nothing happening on them; a chorus pulses on
+    the beat. Without an anchor, falls back to the same one-beat period phased
+    from the timing point instead of from the section.
     """
     # Binary search to the last point at or before the playhead, then walk back
     # from there -- not a scan from the end of the list. This runs once per
@@ -663,11 +846,8 @@ def beat_pulse(
     while index >= 0:
         point = timing_points[index]
         if point.beat_length >= KIAI_PULSE_MIN_BEAT_MS:
-            if anchor_ms is None:
-                return 1.0 - ((time_ms - point.time) / point.beat_length) % 1.0
-            meter = point.meter if point.meter > 0 else 4
-            period = point.beat_length * meter
-            return 1.0 - ((time_ms - anchor_ms) / period) % 1.0
+            phase = point.time if anchor_ms is None else anchor_ms
+            return 1.0 - ((time_ms - phase) / point.beat_length) % 1.0
         index -= 1
     return 0.0
 
@@ -686,9 +866,17 @@ _NOTE_SPRITES: dict[tuple, QPixmap] = {}
 
 
 def draw_note_sprite(
-    painter: QPainter, fill: QColor, outline: QPen, x: float, y: float, radius: float
+    painter: QPainter, fill: QColor, outline: QPen, x: float, y: float, radius: float,
+    skin=None, big: bool = False,
 ) -> None:
     """Draw a note circle from a cached pixmap instead of stroking an ellipse.
+
+    With a skin loaded the circle is the skin's own artwork: its base with
+    `fill` multiplied in, and its overlay laid on top untinted. `fill`'s
+    **alpha** is carried across as painter opacity rather than into the tint,
+    because the editor's chart views deliberately draw notes semi-transparent
+    so the snap grid stays visible through them -- skin art is opaque, and
+    multiplying by a translucent colour would not have reproduced that.
 
     A filled, stroked, antialiased ellipse costs the raster engine ~70us; the
     same circle blitted costs ~2us. A screenful of a dense map is 3ms a frame
@@ -696,6 +884,21 @@ def draw_note_sprite(
     identical circles in a handful of colours and two sizes, so there is nothing
     to redraw per frame in the first place.
     """
+    if skin is not None:
+        element = "taikobigcircle" if big else "taikohitcircle"
+        diameter = round(radius * 2)
+        base = skin.scaled(element, diameter, QColor(fill.red(), fill.green(), fill.blue()))
+        if base is not None:
+            previous = painter.opacity()
+            painter.setOpacity(previous * fill.alphaF())
+            target = QRectF(x - radius, y - radius, radius * 2, radius * 2)
+            painter.drawPixmap(target, base, QRectF(base.rect()))
+            overlay = skin.scaled(element + "overlay", diameter)
+            if overlay is not None:
+                painter.drawPixmap(target, overlay, QRectF(overlay.rect()))
+            painter.setOpacity(previous)
+            return
+
     ratio = painter.device().devicePixelRatioF()
     radius_px = round(radius)
     key = (fill.rgba(), outline.color().rgba(), round(outline.widthF() * 2), radius_px, ratio)
@@ -727,23 +930,86 @@ def kiai_flash_strength(note) -> float:
     A circle glows *slightly*: it is already a solid, saturated red or blue and
     a full-strength overlay on top of it reads as the note changing colour
     rather than as the chorus lighting up. A drumroll -- every fake slider and
-    every shiny -- takes the flash at full strength, because washing that
-    yellow out toward white is the effect mappers stack them for in the first
-    place. A shiny then compounds on top of that all by itself: it is several
-    drumrolls on one millisecond, each painting its own overlay.
+    every shiny -- takes the flash at full strength, because brightening that
+    yellow is the effect mappers stack them for in the first place. A shiny
+    then compounds all by itself: it is several drumrolls on one millisecond
+    and each one takes its own stamp, so a deep pile pulses harder than a lone
+    fake slider. Outside a chorus none of this happens and a fake slider is
+    flat #fbb706 -- see KIAI_PULSE_COLOR.
     """
     return CIRCLE_KIAI_STRENGTH if note.is_circle else 1.0
 
 
-def draw_kiai_flash(
-    painter: QPainter, x: float, y: float, radius: float, pulse: float, strength: float = 1.0,
+def draw_note_light(
+    painter: QPainter, x: float, y: float, radius: float, alpha: int,
+    colour: tuple[int, int, int], skin=None, big: bool = False,
+    element: str | None = None, top_left: bool = False,
 ) -> None:
-    painter.setPen(Qt.NoPen)
-    alpha = round(KIAI_PULSE_ALPHA * pulse * strength)
+    """Add `alpha` of `colour` to the note at `x, y`, clipped to its own shape.
+
+    **Additive**, like `CirclePiece`'s flash box: it adds light to whatever the
+    note already is, so a don stays red and a kat stays blue while both
+    brighten. Plain alpha blending replaced the colour instead, which is what
+    made every note in a kiai section drift toward the same pale orange.
+
+    And **clipped to the artwork**, not a disc laid over it. osu!'s flashBox is
+    a child of the circle piece and inherits its masking, so the light stops
+    exactly where the note does. Drawn as a plain ellipse it lit the whole
+    bounding circle including the transparent rim, which reads as a glow
+    radiating from behind the note rather than the note pulsing -- and it
+    ignored the shape of every skin that does not draw a full disc.
+
+    `element` names the artwork to take the shape from, defaulting to the note
+    circle `big` selects; `top_left` anchors it the way the wiki anchors that
+    element rather than centring it. Both exist for `taiko-roll-end`, which is
+    a cap butted onto the end of a roll -- lighting a centred circle there
+    would put the glow somewhere nothing is drawn.
+
+    Shared by the kiai pulse and the shiny stack, which are the same operation
+    with a different colour and a different reason.
+    """
     if alpha <= 0:
         return
-    painter.setBrush(QColor(*KIAI_PULSE_COLOR, alpha))
-    painter.drawEllipse(QPointF(x, y), radius, radius)
+    previous = painter.compositionMode()
+    painter.setCompositionMode(QPainter.CompositionMode_Plus)
+    stamp = None
+    if skin is not None:
+        if element is None:
+            element = "taikobigcircle" if big else "taikohitcircle"
+        stamp = skin.flash(element, round(radius * 2), QColor(*colour))
+    if stamp is not None:
+        # Opacity rather than the colour's alpha: the silhouette is already the
+        # right colour at the artwork's own alpha, and multiplying a second
+        # alpha into it is what the painter's opacity does for free.
+        opacity = painter.opacity()
+        painter.setOpacity(opacity * min(255, alpha) / 255.0)
+        # Centred at the artwork's own size rather than forced into a square:
+        # a note circle is square and comes out identical either way, but
+        # `taiko-roll-end` is 64x128 and squaring it would squash the light off
+        # the shape it is meant to be lighting.
+        left = x if top_left else x - stamp.width() / 2.0
+        painter.drawPixmap(QPointF(left, y - stamp.height() / 2.0), stamp)
+        painter.setOpacity(opacity)
+    else:
+        # No skin: the built-in note *is* a full disc, so the ellipse is its
+        # own shape rather than an approximation of one.
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(*colour, min(255, alpha)))
+        painter.drawEllipse(QPointF(x, y), radius, radius)
+    painter.setCompositionMode(previous)
+
+
+def draw_kiai_flash(
+    painter: QPainter, x: float, y: float, radius: float, pulse: float,
+    strength: float = 1.0, skin=None, big: bool = False,
+    element: str | None = None, top_left: bool = False,
+) -> None:
+    """The kiai beat pulse. See `draw_note_light` and `KIAI_PULSE_COLOR`."""
+    draw_note_light(
+        painter, x, y, radius, round(KIAI_PULSE_ALPHA * pulse * strength),
+        KIAI_PULSE_COLOR, skin, big, element, top_left,
+    )
+
 
 
 def format_time(time_ms: int) -> str:
@@ -1478,25 +1744,43 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
         # be a plain click rather than a drag.
         self._move_fallback: tuple | None = None
 
-        self.don_brush = QColor(255, 65, 30, 180)
-        self.kat_brush = QColor(55, 145, 255, 180)
-        self.slider_brush = QColor(255, 210, 60, 180)
-        self.ghost_don_brush = QColor(255, 65, 30, 90)
-        self.ghost_kat_brush = QColor(55, 145, 255, 90)
-        self.ghost_slider_brush = QColor(255, 210, 60, 90)
-        # A shiny note is several translucent drumrolls on one millisecond, and
-        # what the stack actually looks like in game is the yellow washing out
-        # to white. The layer draws that result directly rather than painting
-        # three overlapping yellows, which at this size is just a brighter blob.
-        # Deliberately near-white -- a shiny is the stack mappers build to read
-        # as "brighter than a note", so its fill is pushed toward pure white
-        # rather than toward any particular hue.
+        self.don_brush = QColor(*DON_COLOR, 180)
+        self.kat_brush = QColor(*KAT_COLOR, 180)
+        self.slider_brush = QColor(*DRUMROLL_COLOR, 180)
+        # An osu! skin's note art, or None for the built-in circles.
+        self.skin = None
+        self.ghost_don_brush = QColor(*DON_COLOR, 90)
+        self.ghost_kat_brush = QColor(*KAT_COLOR, 90)
+        self.ghost_slider_brush = QColor(*DRUMROLL_COLOR, 90)
+        # A shiny note is several drumrolls on one millisecond, drawn as one
+        # mark rather than as three overlapping yellows (which at this size is
+        # just a blob).
+        #
+        # **White, for separation.** This layer is an editing view and the
+        # colour is a label, not a simulation: white is the one thing that
+        # cannot be mistaken for the drumroll yellow beside it, so a stack is
+        # tellable from a lone fake slider at a glance.
+        #
+        # It is deliberately *not* what the game does, and the comment that
+        # used to be here claimed otherwise -- that a stack "washes out to
+        # white" in play. It does not: a pile of opaque heads reads as one
+        # head, which is why the gameplay preview draws it flat #fbb706.
         self.shiny_brush = QColor(255, 254, 245, 235)
         self.ghost_shiny_brush = QColor(255, 254, 245, 120)
         # Spinner extent: grey so it reads as "this span is occupied" rather
         # than competing with don/kat/slider colour coding.
         self.spinner_band_brush = QColor(190, 195, 205, 70)
         self.spinner_edge_pen = QPen(QColor(220, 226, 236, 170), 2)
+        # Captured here, after every fill above is built, so set_note_opacity
+        # scales from the built-in look instead of compounding each time it is
+        # called -- and so a fill added later is picked up by naming it once.
+        self._base_note_alphas = {
+            name: getattr(self, name).alpha() for name in (
+                "don_brush", "kat_brush", "slider_brush",
+                "ghost_don_brush", "ghost_kat_brush", "ghost_slider_brush",
+                "shiny_brush", "ghost_shiny_brush", "spinner_band_brush",
+            )
+        }
         self.ghost_pen = QPen(QColor(255, 255, 255, 110), 2)
         self.normal_note_pen = QPen(QColor(255, 255, 255, 220), 2)
         self.selected_note_pen = QPen(QColor(255, 220, 110, 235), 3)
@@ -1529,6 +1813,60 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
 
         self.setMinimumHeight(self.DESIGN_HEIGHT)
         self.setFocusPolicy(Qt.StrongFocus)
+
+    def _draw_skinned_roll_body(self, painter, x, end_x, center_y, radius) -> bool:
+        """A drumroll's stretched body and its tail cap, from the skin.
+
+        The head is not drawn here: every note in this view goes through one
+        `draw_note_sprite` call below, and a drumroll's head is that call with
+        the drumroll colour. Returns whether the skin supplied the art, so the
+        caller can fall back to its own bar.
+
+        The alpha the view draws notes at is carried as painter opacity, the
+        same way `draw_note_sprite` carries it -- these layers are deliberately
+        translucent so the snap grid reads through them, and skin art is opaque.
+        """
+        skin = self.skin
+        if skin is None:
+            return False
+        diameter = round(radius * 2)
+        fill = self.slider_brush
+        middle = skin.scaled("taiko-roll-middle", diameter,
+                             QColor(fill.red(), fill.green(), fill.blue()))
+        if middle is None:
+            return False
+        previous = painter.opacity()
+        painter.setOpacity(previous * fill.alphaF())
+        body_end = max(end_x, x)
+        if body_end > x:
+            painter.drawPixmap(
+                QRectF(x, center_y - radius, body_end - x, radius * 2),
+                middle, QRectF(middle.rect()),
+            )
+        # Origin TopLeft, per the wiki: the cap butts onto the end of the track
+        # and reaches past it, the way the head reaches back past the start. A
+        # negative length collapses the track, not the cap -- see
+        # GameplayViewerView._draw_skinned_roll.
+        tail = skin.scaled("taiko-roll-end", diameter,
+                           QColor(fill.red(), fill.green(), fill.blue()))
+        if tail is not None:
+            painter.drawPixmap(
+                QPointF(body_end, center_y - tail.height() / 2.0), tail)
+        painter.setOpacity(previous)
+        return True
+
+    def set_note_opacity(self, percent: float) -> None:
+        """Scale every note fill's alpha; NOTE_OPACITY_DEFAULT_PERCENT is the
+        built-in look, and 100 draws them solid.
+
+        The ghosts and the spinner band scale with the notes rather than being
+        pinned, because what they are is "fainter than a note" -- holding them
+        still while the notes went solid would have inverted that.
+        """
+        scale = max(NOTE_OPACITY_MIN_PERCENT, float(percent)) / NOTE_OPACITY_DEFAULT_PERCENT
+        for name, alpha in self._base_note_alphas.items():
+            getattr(self, name).setAlpha(max(1, min(255, round(alpha * scale))))
+        self.update()
 
     def load_document(self, document) -> None:
         self.refresh_notes(document)
@@ -2409,15 +2747,26 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
 
             if note.is_slider:
                 end_time = self._note_end_time(note)
+                end_x = x
                 if end_time is not None and end_time > note.time:
                     end_x = self.x_for_time(end_time + shift)
-                    if end_x > x:
-                        bar = QRectF(x, note_center_y - radius * 0.4, end_x - x, radius * 0.8)
-                        painter.setBrush(self.slider_brush)
-                        painter.setPen(Qt.NoPen)
-                        painter.drawRoundedRect(bar, radius * 0.4, radius * 0.4)
+                # A drumroll is `taikohitcircle` + `taiko-roll-middle` +
+                # `taiko-roll-end`, here as well as in the gameplay preview: the
+                # skin is meant to reach every view that draws a note, and a
+                # timeline that drew its own bar beside a skinned head was the
+                # one place the two disagreed. The head itself is drawn by the
+                # shared call below, so this is the body and its cap.
+                if not self._draw_skinned_roll_body(
+                    painter, x, end_x, note_center_y, radius
+                ) and end_x > x:
+                    bar = QRectF(x, note_center_y - radius * 0.4, end_x - x, radius * 0.8)
+                    painter.setBrush(self.slider_brush)
+                    painter.setPen(Qt.NoPen)
+                    painter.drawRoundedRect(bar, radius * 0.4, radius * 0.4)
 
-            # Semi-transparent fill keeps the snap grid visible through notes.
+            # Semi-transparent fill keeps the snap grid visible through notes;
+            # with a skin loaded that alpha becomes painter opacity so the art
+            # stays see-through too. See draw_note_sprite.
             draw_note_sprite(
                 painter,
                 self.shiny_brush if shiny
@@ -2427,6 +2776,8 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
                 x,
                 note_center_y,
                 radius,
+                self.skin,
+                big=note.is_finisher,
             )
 
         self._draw_placement_ghost(painter, baseline_y, normal_note_radius, finisher_note_radius)
@@ -2484,7 +2835,7 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
             self._row_y(baseline_y, shiny) if self.split_rows
             else baseline_y if self.symmetric
             else baseline_y - radius,
-            radius,
+            radius, self.skin, big=note.is_finisher,
         )
 
     def _draw_extend_ghost(
@@ -2714,6 +3065,11 @@ class SVEditorView(TimeAxisMixin, QWidget):
     # single undo step instead of interleaving two command shapes that can't
     # merge with each other.
     point_sv_edit_requested = Signal(int, float)
+    # (uid, volume 0-100). The Kiai and Sound Volume layer's own edit: its
+    # vertical axis is hitsound volume, not SV, so a drag there writes this.
+    point_volume_edit_requested = Signal(int, int)
+    # Double click in that layer: type the volume, with no time field.
+    point_volume_dialog_requested = Signal(int)
     # uid -- right click near an inherited point.
     point_delete_requested = Signal(int)
     # uid -- double click on a line of either kind. Same signal and same dialog
@@ -3087,11 +3443,14 @@ class SVEditorView(TimeAxisMixin, QWidget):
         "time" (retime). An uninherited point has no SV, so it is always
         "time" -- see SV_DOT_HIT_RADIUS_PX for the threshold.
 
-        Always "time" in volume_mode too: this layer has nothing to do with
-        SV, and a vertical drag there must retime the line, never write one.
+        **Always "value" in volume_mode**, dot or no dot. That layer's vertical
+        axis is hitsound volume, and its lines belong to the milliseconds they
+        sit on -- a barline, a note, a kiai edge. Retiming one there does not
+        move a value, it moves the section boundary out from under whatever put
+        it there, so the layer offers no horizontal drag at all.
         """
         if self.volume_mode:
-            return "time"
+            return "value"
         if point.uninherited:
             return "time"
         dot = self._dot_position(point)
@@ -3113,7 +3472,13 @@ class SVEditorView(TimeAxisMixin, QWidget):
         if point is None:
             super().mouseDoubleClickEvent(event)
             return
-        self.timing_line_edit_requested.emit(point.uid)
+        if self.volume_mode:
+            # Same rule as the drag above: this layer types a volume, and the
+            # generic line dialog would have offered a time field that must not
+            # be there.
+            self.point_volume_dialog_requested.emit(point.uid)
+        else:
+            self.timing_line_edit_requested.emit(point.uid)
         event.accept()
 
     def _begin_point_drag(self, point: TimingPoint, axis: str) -> None:
@@ -3250,8 +3615,14 @@ class SVEditorView(TimeAxisMixin, QWidget):
             return
         if self._drag_point is not None:
             if self._drag_axis == "value":
-                sv = self._y_to_sv(event.position().y(), self._graph_top(), self._graph_bottom())
-                self.point_sv_edit_requested.emit(self._drag_point.uid, sv)
+                value = self._y_to_sv(event.position().y(), self._graph_top(), self._graph_bottom())
+                if self.volume_mode:
+                    # _y_to_sv is linear 0-100 here (see update_scale), so the
+                    # number already is a volume percentage.
+                    self.point_volume_edit_requested.emit(
+                        self._drag_point.uid, int(round(value)))
+                else:
+                    self.point_sv_edit_requested.emit(self._drag_point.uid, value)
             else:
                 # Same rule as placement: in a layer keyed to its own objects,
                 # a line dragged between them would vanish from the layer that
@@ -3567,6 +3938,36 @@ class SVEditorView(TimeAxisMixin, QWidget):
 # Screen distance one whole beat covers at 1.0x SV. osu!taiko's scroll speed is
 # proportional to BPM x SV, so a beat occupies the same distance at every BPM --
 # which is what makes this a constant rather than a function of beat length.
+# Object sizes, taken from osu!taiko rather than chosen. `TaikoHitObject
+# .DEFAULT_SIZE = 0.475f` is a fraction of the playfield height (its
+# `BASE_HEIGHT` is 200), so a note's diameter is 0.475 of the lane and its
+# radius half of that. What was here before -- `min(30.0, height * 0.19)` --
+# was both too small and capped at a pixel count, so the notes stopped growing
+# with the view and the proportions drifted further the taller it got.
+TAIKO_NOTE_SIZE = 0.475
+# `TaikoStrongableHitObject.STRONG_SCALE = 1 / 0.65f`, i.e. a finisher is about
+# 1.538x a normal note, not the 1.4x assumed here before.
+TAIKO_STRONG_SCALE = 1.0 / 0.65
+
+
+# --- Playfield geometry, in osu!'s own units --------------------------------
+# `TaikoPlayfield.BASE_HEIGHT = 200`, and every playfield element in the
+# skinning wiki is sized against that same 200: the bar is 1024x200, the
+# barline 4x175, the scrolling background 776x162. So
+# this view's height *is* the 200, and each fraction below is the wiki's number
+# over 200 -- which is also what keeps the note at `TAIKO_NOTE_SIZE` of the
+# height without the two systems disagreeing.
+PLAYFIELD_UNIT = 200.0
+# taiko-slider, 776x162: the background that scrolls behind the bar.
+PLAYFIELD_BACKGROUND_HEIGHT = 162.0 / PLAYFIELD_UNIT
+# taiko-barline, 4x175, centred on the bar.
+PLAYFIELD_BARLINE_WIDTH = 4.0 / PLAYFIELD_UNIT
+PLAYFIELD_BARLINE_HEIGHT = 175.0 / PLAYFIELD_UNIT
+# approachcircle is 126x126 where taikohitcircle is 118x118, so the hit target
+# ring is a touch larger than the note that lands in it. Measured on screen:
+# 122px against a 114px note, which is the ring the note lands inside.
+PLAYFIELD_HIT_TARGET_SCALE = 126.0 / 118.0
+
 GAMEPLAY_PX_PER_BEAT = 200.0
 GAMEPLAY_PX_PER_BEAT_MIN = 40.0
 GAMEPLAY_PX_PER_BEAT_MAX = 900.0
@@ -3629,11 +4030,20 @@ class GameplayViewerView(QWidget):
         self.wheel_accumulator = 0.0
         self.last_rendered_time = -1.0
 
-        self.don_brush = QColor(240, 60, 45)
-        self.kat_brush = QColor(50, 135, 240)
-        self.slider_brush = QColor(255, 200, 60)
+        self.don_brush = QColor(*DON_COLOR)
+        self.kat_brush = QColor(*KAT_COLOR)
+        self.slider_brush = QColor(*DRUMROLL_COLOR)
         self.spinner_band_brush = QColor(190, 195, 205, 90)
         self.note_pen = QPen(QColor(15, 18, 24, 220), 2)
+        # An osu! skin's own note art, or the built-in drawing when no skin is
+        # chosen and for any element a chosen skin does not ship.
+        self.skin = TaikoSkin()
+
+        # A fake slider's backwards body: the same drumroll yellow, but
+        # translucent and dashed, because the region is drawn by osu! and
+        # never hittable. See _draw_phantom_body.
+        self.phantom_brush = QColor(*DRUMROLL_COLOR, 45)
+        self.phantom_pen = QPen(QColor(*DRUMROLL_COLOR, 120), 1, Qt.DashLine)
         self.barline_pen = QPen(QColor(225, 230, 240, 90), 1)
         self.hit_pen = QPen(QColor(255, 255, 255, 120), 2)
         self.lane_brush = QColor(28, 33, 43)
@@ -3672,16 +4082,28 @@ class GameplayViewerView(QWidget):
         # over the full point list.
         self._max_extend_ms = 0.0
         self._end_times = {}
+        self._phantom_ends = {}
         for note in self.notes:
             end = self._compute_end_time(note)
             if end is not None:
                 self._end_times[note.uid] = end
                 self._max_extend_ms = max(self._max_extend_ms, end - note.time)
+                continue
+            # A fake slider's body runs *backwards* from its head. Cached in the
+            # same pass rather than recomputed while painting, because a shiny
+            # note is a stack of twenty of them on one millisecond.
+            phantom = self._compute_phantom_end(note)
+            if phantom is not None:
+                self._phantom_ends[note.uid] = phantom
         self.update()
 
     # Timing points move the notes here (that is the whole point of the view),
     # so an SV edit refreshes exactly like a note edit does.
     refresh_points = refresh_notes
+
+    def set_skin(self, skin: TaikoSkin) -> None:
+        self.skin = skin
+        self.update()
 
     def set_snap_divisor(self, divisor: int) -> None:
         self.snap_divisor = divisor
@@ -3695,6 +4117,38 @@ class GameplayViewerView(QWidget):
     def _note_end_time(self, note) -> float | None:
         """End time of a slider or spinner; None for a circle."""
         return self._end_times.get(note.uid)
+
+    def _phantom_end_time(self, note) -> float | None:
+        """Where a negative-length slider's body would reach, behind its head.
+
+        Only fake sliders have one. See `_compute_phantom_end`.
+        """
+        return self._phantom_ends.get(note.uid)
+
+    def _compute_phantom_end(self, note) -> float | None:
+        """The end time of a fake slider, which is *before* its start.
+
+        A fake slider is a drumroll with a negative `length` -- the canonical
+        one is `256,192,54692,2,12,L|624:192,643,-0.0001`. The duration derived
+        from it is negative, so the drumroll ends before it begins, no tick is
+        ever generated and nothing is hittable, while osu! still draws the head.
+        That is the whole trick, and it is why `GimmickConfig.__post_init__`
+        rejects a non-negative length instead of clamping it: a positive one is
+        a real, scoreable drumroll.
+
+        The negative extent is real geometry, not an error to swallow, so it is
+        computed and handed to the painter rather than discarded. Drawn, it
+        shows how far behind the head the body reaches -- which is what decides
+        whether two stacked fake sliders overlap.
+        """
+        if not note.is_slider or note.length is None or note.slides is None:
+            return None
+        timing = active_uninherited_at(self.beat_points, note.time)
+        duration = duration_for_slider_length(
+            note.length * note.slides, timing.beat_length,
+            sv_at(self.timing_points, note.time), self.slider_multiplier,
+        )
+        return note.time + duration if duration < 0 else None
 
     def _compute_end_time(self, note) -> float | None:
         if note.is_spinner:
@@ -3725,6 +4179,9 @@ class GameplayViewerView(QWidget):
         Stored in beats rather than pixels so the base scroll speed stays a
         pure render-time scale: Ctrl+wheel costs a repaint, not a rebuild.
         """
+        # Read once for the whole table rather than per point: it is a
+        # property of the map, and it cannot change inside one rebuild.
+        scroll_scale = self._scroll_scale
         points = self.timing_points
         beat_length = active_uninherited_at(points, points[0].time if points else 0.0).beat_length
         sv = 1.0
@@ -3751,14 +4208,35 @@ class GameplayViewerView(QWidget):
             else:
                 sv = 1.0
             times.append(time_ms)
-            velocities.append(self._beats_per_ms(beat_length, sv))
+            velocities.append(self._beats_per_ms(beat_length, sv) * scroll_scale)
         if not times:
-            times, velocities = [0.0], [self._beats_per_ms(beat_length, 1.0)]
+            times, velocities = [0.0], [self._beats_per_ms(beat_length, 1.0) * scroll_scale]
         self._velocity_times = times
         self._velocities = velocities
         # The slowest section decides how far ahead a full screen can reach,
         # and so how many notes the visible-range lookup has to consider.
         self._slowest_velocity = min(velocities)
+
+    @property
+    def _scroll_scale(self) -> float:
+        """The map's own SliderMultiplier, as a factor on scroll speed.
+
+        osu!taiko's scroll distance is
+        `base_distance(100) * SliderMultiplier * VELOCITY_MULTIPLIER(1.4) *
+        ScrollSpeed / beatLength` (`DrumRoll.cs`, `TaikoBeatmapConverter.cs`),
+        so SliderMultiplier moves every object on screen. This view used to
+        leave it out entirely, which meant two maps whose SliderMultiplier
+        differed -- 0.6 against 2.0 is an ordinary spread -- were previewed at
+        identical spacing while scrolling more than three times apart in game.
+        The map's own value only reached the drumroll *durations*, so the
+        bodies were right and the space between notes was not.
+
+        Normalised against the value assumed before the parser read the real
+        one, so a typical map previews at the scale it always has and only maps
+        that actually differ move. The absolute speed is the Ctrl+wheel zoom's
+        business; this is about the ratios between maps.
+        """
+        return max(0.01, self.slider_multiplier) / SLIDER_MULTIPLIER_ASSUMED
 
     @staticmethod
     def _beats_per_ms(beat_length: float, sv: float) -> float:
@@ -3767,7 +4245,11 @@ class GameplayViewerView(QWidget):
         return max(0.01, sv) / max(1e-4, beat_length)
 
     def velocity_at(self, time_ms: float) -> float:
-        """Scroll velocity, in beats per millisecond, in force at `time_ms`."""
+        """Scroll velocity in force at `time_ms`, in scroll units per ms.
+
+        Beats per millisecond scaled by `_scroll_scale`, so the map's
+        SliderMultiplier is already in it -- see that property.
+        """
         index = max(0, bisect_right(self._velocity_times, time_ms) - 1)
         return self._velocities[index]
 
@@ -3938,63 +4420,13 @@ class GameplayViewerView(QWidget):
         painter.fillRect(self.rect(), QColor("#12161d"))
 
         center_y = self.height() / 2
-        normal_radius = min(30.0, self.height() * 0.19)
-        big_radius = normal_radius * 1.4
-        painter.fillRect(
-            QRectF(0, center_y - big_radius * 1.2, self.width(), big_radius * 2.4),
-            self.lane_brush,
-        )
+        normal_radius = self.height() * TAIKO_NOTE_SIZE / 2.0
+        big_radius = normal_radius * TAIKO_STRONG_SCALE
 
-        start_time, end_time = self.visible_time_range()
-        hit_x = self._hit_x()
-
-        first = bisect_left(self.note_times, start_time - self._max_extend_ms)
-        after_last = bisect_right(self.note_times, end_time)
-
-        # Real drumroll bodies go under everything, barlines included. One is a
-        # band tens of seconds wide, and drawn in with the notes it covered every
-        # barline and every fake slider stacked on top of it. A fake slider has
-        # no body (its length is zero or negative), so it stays with the notes.
-        painter.setRenderHint(QPainter.Antialiasing, True)
-        bodies, foreground = [], []
-        for note in self.notes[first:after_last]:
-            has_body = note.is_slider and self._note_end_time(note) is not None
-            (bodies if has_body else foreground).append(note)
-        for note in reversed(bodies):
-            self._draw_note(painter, note, center_y, normal_radius, big_radius)
-
-        painter.setRenderHint(QPainter.Antialiasing, False)
-        painter.setPen(self.barline_pen)
-        top, bottom = round(center_y - big_radius * 1.2), round(center_y + big_radius * 1.2)
-        for time_ms in self.barline_times(start_time, end_time):
-            x = self.x_for_time(time_ms)
-            if -1.0 <= x <= self.width() + 1.0:
-                painter.drawLine(round(x), top, round(x), bottom)
-
-        painter.setRenderHint(QPainter.Antialiasing, True)
-        painter.setPen(self.hit_pen)
-        painter.setBrush(Qt.NoBrush)
-        painter.drawEllipse(QPointF(hit_x, center_y), normal_radius, normal_radius)
-        # Back to front: the note nearest the hit position is the one being
-        # played, so it belongs on top -- osu!taiko draws them the same way.
-        # Bodies are already down, under the barlines.
-        for note in reversed(foreground):
-            self._draw_note(painter, note, center_y, normal_radius, big_radius)
-
-        # Second pass, so stacked objects compound: a note drawn on top of an
-        # earlier note's flash would wipe it, and stacking a fake slider on a
-        # note is exactly how a mapper makes that note read brighter.
-        #
-        # Gated on the *playhead* alone. Arriving at a chorus lights up the
-        # whole screen, which is what it does in game -- so every visible
-        # object flashes, not only the ones whose own millisecond is inside
-        # the section. Notes were previously filtered by their own kiai state
-        # as well, which meant the section's first beat lit up a handful of
-        # notes and left the rest of the screen dark.
-        # Anchor the pulse to the kiai section under the playhead, not to
-        # whatever timing point governs it -- see beat_pulse. kiai_bands is
-        # sorted by start, so bisect straight to the band the playhead could
-        # be in rather than scanning it.
+        # The kiai pulse is needed before anything is drawn -- the playfield
+        # itself lights up, not only the notes -- so it is computed here rather
+        # than in the flash pass at the bottom. kiai_bands is sorted by start,
+        # so bisect straight to the band the playhead could be in.
         band_index = bisect_right(self.kiai_bands, self.current_time, key=lambda band: band[0]) - 1
         anchor_ms = None
         if 0 <= band_index < len(self.kiai_bands):
@@ -4002,19 +4434,156 @@ class GameplayViewerView(QWidget):
             if band_start <= self.current_time < band_end:
                 anchor_ms = band_start
         pulse = beat_pulse(self.beat_points, self.current_time, anchor_ms) if anchor_ms is not None else 0.0
+
+        painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+        self._draw_playfield(painter, center_y, normal_radius, big_radius, pulse)
+
+        start_time, end_time = self.visible_time_range()
+        hit_x = self._hit_x()
+
+        first = bisect_left(self.note_times, start_time - self._max_extend_ms)
+        after_last = bisect_right(self.note_times, end_time)
+
+        # Three layers, bottom to top: real drumrolls and spinners, then fake
+        # sliders, then the hittable notes.
+        #
+        # * **anything with a body goes under everything**, barlines included.
+        #   One is a band tens of seconds wide, so drawn in with the notes it
+        #   covered every barline and every object stacked on top of it.
+        # * **fake sliders sit above those but below the notes.** A fake slider
+        #   is what a mapper stacks around a note -- a shiny note is several of
+        #   them on one millisecond -- and the note is the thing being played,
+        #   so the note stays readable and the decoration sits behind it.
+        # * hittable notes on top.
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        bodies, fakes, plain = [], [], []
+        for note in self.notes[first:after_last]:
+            if note.is_spinner or (note.is_slider and self._note_end_time(note) is not None):
+                bodies.append(note)
+            elif note.is_slider:
+                fakes.append(note)
+            else:
+                plain.append(note)
+        for note in reversed(bodies):
+            self._draw_note(painter, note, center_y, normal_radius, big_radius)
+
+        painter.setRenderHint(QPainter.Antialiasing, False)
+        marker = self.skin.stretched(
+            "taiko-barline",
+            max(1, round(self.height() * PLAYFIELD_BARLINE_WIDTH)),
+            round(self.height() * PLAYFIELD_BARLINE_HEIGHT),
+        )
+        painter.setPen(self.barline_pen)
+        top, bottom = round(center_y - big_radius * 1.2), round(center_y + big_radius * 1.2)
+        for time_ms in self.barline_times(start_time, end_time):
+            x = self.x_for_time(time_ms)
+            if not -1.0 <= x <= self.width() + 1.0:
+                continue
+            if marker is not None:
+                painter.drawPixmap(
+                    QPointF(x - marker.width() / 2.0, center_y - marker.height() / 2.0),
+                    marker,
+                )
+            else:
+                painter.drawLine(round(x), top, round(x), bottom)
+
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        if not self._draw_centred(
+            painter, "approachcircle", hit_x, center_y,
+            normal_radius * 2 * PLAYFIELD_HIT_TARGET_SCALE,
+        ):
+            painter.setPen(self.hit_pen)
+            painter.setBrush(Qt.NoBrush)
+            painter.drawEllipse(QPointF(hit_x, center_y), normal_radius, normal_radius)
+        # Back to front within each layer: the note nearest the hit position is
+        # the one being played, so it belongs on top -- osu!taiko draws them the
+        # same way. Bodies are already down, under the barlines.
+        for note in reversed(fakes):
+            self._draw_note(painter, note, center_y, normal_radius, big_radius)
+        for note in reversed(plain):
+            self._draw_note(painter, note, center_y, normal_radius, big_radius)
+
+        # Second pass, so stacked objects compound: a note drawn on top of an
+        # earlier note's flash would wipe it, and stacking a fake slider on a
+        # note is exactly how a mapper makes that note read brighter.
+        #
+        # This pass *is* the shine. A shiny note is a stack of fake sliders
+        # under one note, and each of them takes its own kiai stamp here -- so
+        # the note above them reads brighter the deeper the stack, with no
+        # counting and no separate effect. It must not happen outside a chorus:
+        # a glow that is always on is not a pulse, it is just a differently
+        # coloured note, and it made every stack glow everywhere.
+        #
+        # Gated on the *playhead* alone. Arriving at a chorus lights up the
+        # whole screen, which is what it does in game -- so every visible
+        # object flashes, not only the ones whose own millisecond is inside
+        # the section. Notes were previously filtered by their own kiai state
+        # as well, which meant the section's first beat lit up a handful of
+        # notes and left the rest of the screen dark.
         if pulse > 0.0:
-            # Subtle white wash over the whole lane, drawn before the per-note
-            # flashes below so notes still read brighter than the background.
-            playfield_alpha = round(PLAYFIELD_PULSE_ALPHA * pulse)
-            if playfield_alpha > 0:
-                painter.fillRect(self.rect(), QColor(255, 255, 255, playfield_alpha))
+            # The built-in stand-in for `taiko-bar-right-glow`: only drawn
+            # when the skin has no kiai state of its own for the lane, or the
+            # lane would be washed twice over.
+            if not self.skin.has("taiko-bar-right-glow"):
+                playfield_alpha = round(PLAYFIELD_PULSE_ALPHA * pulse)
+                if playfield_alpha > 0:
+                    painter.fillRect(self.rect(), QColor(255, 255, 255, playfield_alpha))
             for note in self.notes[first:after_last]:
+                # A circle that has been played is gone and has nothing to
+                # light. A slider always has something: its cap, which outlives
+                # its head.
+                hit = self._has_been_hit(note)
+                if hit and not note.is_slider:
+                    continue
                 x = self.x_for_time(note.time)
                 radius = big_radius if (note.is_finisher or note.is_spinner) else normal_radius
-                if -radius <= x <= self.width() + radius:
+                if not -radius <= x <= self.width() + radius:
+                    continue
+                strength = kiai_flash_strength(note)
+                big = note.is_finisher or note.is_spinner
+                if not hit:
                     draw_kiai_flash(
-                        painter, x, center_y, radius, pulse, kiai_flash_strength(note),
+                        painter, x, center_y, radius, pulse, strength, self.skin, big)
+                # A roll's cap is part of the object and pulses with it. Its own
+                # shape and its own anchor, or the light lands on the track
+                # rather than on the cap -- see draw_note_light.
+                #
+                # **Only where the cap can be seen.** The head is drawn last and
+                # covers it, so on a roll with no body -- every fake slider --
+                # the cap is behind the head and lighting it puts a second stamp
+                # on the head's right half and nowhere else, which reads as a
+                # note lit down one side. Once the head is gone the cap is all
+                # there is, so then it lights on its own.
+                if note.is_slider:
+                    end_time = self._note_end_time(note)
+                    end_x = x if end_time is None else x + (
+                        (end_time - note.time)
+                        * self.velocity_at(note.time) * self.px_per_beat
                     )
+                    if hit or end_x > x:
+                        draw_kiai_flash(
+                            painter, max(end_x, x), center_y, radius, pulse,
+                            strength, self.skin, big, "taiko-roll-end", True,
+                        )
+
+    def _has_been_hit(self, note) -> bool:
+        """Whether `note`'s circle head is played, and so off the screen.
+
+        osu!taiko takes a circle away the instant it reaches the hit position:
+        that *is* what being hit looks like. Letting it carry on past the
+        target is a thing the game never shows.
+
+        A **fake slider** counts too, but only its head: what is left behind is
+        the region it draws and never lets anybody hit, which is the whole
+        point of the object and the thing worth still seeing.
+
+        A real drumroll is still being hit while its body crosses the target,
+        so it travels through and out the far side; a spinner occupies its
+        whole span in place. Neither is ever "hit" in this sense.
+        """
+        if note.is_spinner or note.time > self.current_time:
+            return False
+        return not (note.is_slider and self._note_end_time(note) is not None)
 
     def _draw_note(self, painter, note, center_y, normal_radius, big_radius) -> None:
         x = self.x_for_time(note.time)
@@ -4047,6 +4616,14 @@ class GameplayViewerView(QWidget):
             return
 
         if note.is_slider:
+            if end_time is None:
+                if self._has_been_hit(note):
+                    self._draw_fake_slider_tail(painter, note, x, center_y, radius)
+                    return
+                self._draw_phantom_body(painter, note, x, center_y, radius)
+            if self._draw_skinned_roll(
+                painter, x, end_x, center_y, radius, note.is_finisher):
+                return
             painter.setPen(self.note_pen)
             painter.setBrush(self.slider_brush)
             painter.drawRoundedRect(
@@ -4056,9 +4633,201 @@ class GameplayViewerView(QWidget):
             )
             return
 
+        if self._has_been_hit(note):
+            return
         draw_note_sprite(
             painter, self.kat_brush if note.is_kat else self.don_brush, self.note_pen,
-            x, center_y, radius,
+            x, center_y, radius, self.skin,
+            big=note.is_finisher or note.is_spinner,
+        )
+
+    def _draw_playfield(self, painter, center_y, normal_radius, big_radius, pulse) -> None:
+        """The skin's playfield, back to front, under everything else.
+
+        Layered the way osu! layers it: the scrolling background, the bar,
+        then the bar's kiai overlay. Every element is optional on its own -- a
+        skin with a bar and no background gets the bar and the built-in lane
+        colour behind it, the same per-element fallback the notes use.
+
+        No `taiko-glow` or `lighting`: those are a bloom around the hit target,
+        and nothing is being judged there. Kiai shows as the notes pulsing and
+        the lane taking its kiai state, both of which say something.
+        """
+        width, height = self.width(), self.height()
+        skin = self.skin
+        background = skin.scaled(
+            "taiko-slider", round(height * PLAYFIELD_BACKGROUND_HEIGHT))
+        if background is not None:
+            # "Scrolls in a seamless loop, from the right side towards the
+            # left." Aspect kept and tiled at the artwork's own width -- the
+            # tile *is* the loop, so stretching it to the view would have made
+            # the seam move with the window instead of with the music.
+            step = max(1.0, float(background.width()))
+            offset = -((self.current_time * self.velocity_at(self.current_time)
+                        * self.px_per_beat) % step)
+            top = center_y - background.height() / 2.0
+            x = offset
+            while x < width:
+                painter.drawPixmap(QPointF(x, top), background)
+                x += step
+        else:
+            painter.fillRect(
+                QRectF(0, center_y - big_radius * 1.2, width, big_radius * 2.4),
+                self.lane_brush,
+            )
+
+        bar = skin.stretched("taiko-bar-right", width, height)
+        if bar is not None:
+            painter.drawPixmap(QPointF(0.0, 0.0), bar)
+            if pulse > 0.0:
+                glow = skin.stretched("taiko-bar-right-glow", width, height)
+                if glow is not None:
+                    opacity = painter.opacity()
+                    painter.setOpacity(opacity * pulse)
+                    painter.drawPixmap(QPointF(0.0, 0.0), glow)
+                    painter.setOpacity(opacity)
+
+
+    def _draw_centred(
+        self, painter, element, x, y, diameter, opacity=1.0, additive=False,
+        colour=None,
+    ) -> bool:
+        """One skin element centred on `x, y` at `diameter` tall, keeping its
+        own aspect. Returns whether the skin had it."""
+        pixmap = self.skin.scaled(element, round(diameter), colour)
+        if pixmap is None or opacity <= 0.0:
+            return pixmap is not None
+        previous_mode = painter.compositionMode()
+        previous_opacity = painter.opacity()
+        if additive:
+            painter.setCompositionMode(QPainter.CompositionMode_Plus)
+        painter.setOpacity(previous_opacity * min(1.0, opacity))
+        painter.drawPixmap(
+            QPointF(x - pixmap.width() / 2.0, y - pixmap.height() / 2.0), pixmap)
+        painter.setOpacity(previous_opacity)
+        painter.setCompositionMode(previous_mode)
+        return True
+
+    def _cap_height(self, diameter: int) -> int:
+        """`taiko-roll-end`'s drawn height, so its *ink* matches the note's.
+
+        Skins pad the two elements differently -- one real skin fills 0.83 of
+        `taikohitcircle`'s box and 1.00 of `taiko-roll-end`'s -- so scaling both
+        to the note diameter drew a cap visibly larger than the note it caps,
+        with its yellow showing past the note's edge. Dividing by each one's own
+        ink ratio makes the two agree however a skin padded them.
+        """
+        head_ink = self.skin.ink_height("taikohitcircle")
+        cap_ink = self.skin.ink_height("taiko-roll-end")
+        if cap_ink <= 0.0:
+            return diameter
+        return max(1, round(diameter * head_ink / cap_ink))
+
+    def _draw_skinned_roll(
+        self, painter, x, end_x, center_y, radius, big: bool = False,
+    ) -> bool:
+        """A drumroll as its three skin pieces: head, stretched body, tail cap.
+
+        `taikohitcircle` + `taiko-roll-middle` + `taiko-roll-end`, laid out the
+        way the skinning wiki specifies them:
+
+        * the head is the ordinary note circle in the drumroll's colour, which
+          is what osu! does (`DrumRollCirclePiece` is a circle piece with the
+          drumroll accent);
+        * `taiko-roll-middle` is **1px wide, origin TopLeft** -- it is the
+          track, meant to be stretched the length of the body rather than
+          tiled, so it is drawn from the head's own x across the span;
+        * `taiko-roll-end` is **64x128, origin TopLeft** -- "the end part of a
+          roll". TopLeft, so it butts onto the far end of the track and reaches
+          *past* it by its own width, exactly as the head reaches back past the
+          start by its radius. Centred on the end (which is what this did) the
+          roll came up half a radius short.
+
+        A **negative** length does not remove the cap, it only collapses the
+        track: `max(end_x, x)` clamps the body to nothing, so the cap butts
+        onto the head itself and reaches to its *right*, which is where osu!
+        draws it. Skipping it there left a fake slider as a bare head.
+
+        All three tint from the drumroll colour, multiplicatively, which is the
+        blend mode the wiki gives for both roll pieces.
+        """
+        diameter = round(radius * 2)
+        cap = self._cap_height(diameter)
+        middle = self.skin.scaled("taiko-roll-middle", diameter, self.slider_brush)
+        if middle is None:
+            return False
+        body_end = max(end_x, x)
+        if body_end > x:
+            painter.drawPixmap(
+                QRectF(x, center_y - radius, body_end - x, radius * 2),
+                middle, QRectF(middle.rect()),
+            )
+        tail = self.skin.scaled("taiko-roll-end", cap, self.slider_brush)
+        if tail is not None:
+            painter.drawPixmap(
+                QPointF(body_end, center_y - tail.height() / 2.0), tail)
+        # `big` matters here as much as it does for a finisher note: a big
+        # drumroll's head is `taikobigcircle`, which skinners redraw rather
+        # than scale up -- some are a different shape, some carry a second ring
+        # the small one does not have. Scaling `taikohitcircle` to the finisher
+        # diameter drew the wrong artwork at the right size.
+        draw_note_sprite(
+            painter, self.slider_brush, self.note_pen, x, center_y, radius,
+            self.skin, big=big)
+        return True
+
+    def _draw_fake_slider_tail(self, painter, note, x, center_y, radius) -> None:
+        """All that is left of a fake slider once it passes the hit position.
+
+        The head is played and gone the way a circle's is, and the backwards
+        extent goes with it; the drumroll's tail cap carries on travelling out
+        to the left.
+
+        Anchored the way the cap is anchored everywhere else -- origin
+        TopLeft, butted onto where the track ended. A fake slider's track has
+        no width, so that is the head's own x and the cap sits to its right.
+
+        Without a skin there is no cap art, so the built-in stand-in is the
+        drumroll colour in the shape a built-in drumroll ends in: a disc.
+        """
+        tail = self.skin.scaled(
+            "taiko-roll-end", self._cap_height(round(radius * 2)), self.slider_brush)
+        if tail is not None:
+            painter.drawPixmap(
+                QPointF(x, center_y - tail.height() / 2.0), tail)
+            return
+        painter.setPen(self.note_pen)
+        painter.setBrush(self.slider_brush)
+        painter.drawEllipse(QPointF(x + radius / 2.0, center_y), radius, radius)
+
+    def _draw_phantom_body(self, painter, note, x, center_y, radius) -> None:
+        """The backwards extent of a negative-length fake slider.
+
+        Drawn **to scale**, which means the canonical `-0.0001` fake slider
+        shows nothing at all: its body reaches about a tenth of a pixel behind
+        its head, and that is exactly why it is invisible in game. Anything
+        else -- a minimum width, an exaggeration factor -- would be inventing
+        geometry the map does not have, and this view exists to answer what the
+        map will really look like.
+
+        What it does show is a fake slider whose length was chosen large
+        enough to matter, where the body genuinely reaches back over earlier
+        objects. Dashed and translucent because it is a region that is drawn
+        but never hittable, which is the distinction the head alone cannot
+        make.
+        """
+        end_time = self._phantom_end_time(note)
+        if end_time is None:
+            return
+        end_x = x + (end_time - note.time) * self.velocity_at(note.time) * self.px_per_beat
+        if end_x >= x - 0.5:
+            return
+        painter.setPen(self.phantom_pen)
+        painter.setBrush(self.phantom_brush)
+        painter.drawRoundedRect(
+            QRectF(end_x - radius, center_y - radius, (x - end_x) + 2 * radius, radius * 2),
+            radius,
+            radius,
         )
 
 
@@ -4114,7 +4883,13 @@ class TimingOverviewBar(QWidget):
         self.update()
 
     def set_duration(self,value:int)->None:
-        if value>0:self.duration_ms=value;self.static_layer_dirty=True;self.update()
+        # Guarded on an actual change, like DensityOverview's. The duration is
+        # re-asserted by the timeline info refresh many times a second, and
+        # dirtying the static layer each time rebuilt ~1150 marker lines for a
+        # value that had not moved -- which is exactly the cost that layer
+        # exists to avoid.
+        if value>0 and value!=self.duration_ms:
+            self.duration_ms=value;self.static_layer_dirty=True;self.update()
     def set_time(self,value:int)->None:self.current_time=max(0,min(value,self.duration_ms));self.update()
     def set_viewport(self,center:int,window_ms:float)->None:
         self.viewport_start=max(0,center-window_ms/2);self.viewport_end=min(self.duration_ms,center+window_ms/2);self.update()
@@ -4298,7 +5073,7 @@ class ElidedLabel(QLabel):
 
 
 class EditorViewFrame(QWidget):
-    """Chrome around one Editor-page view: close, lock, and a difficulty label.
+    """Chrome around one Editor-page view: close, reorder, lock, and a label.
 
     The difficulty name is shown exactly once per view, at the **right** of
     this chrome row. It used to appear twice for a chart view -- once here and
@@ -4313,6 +5088,10 @@ class EditorViewFrame(QWidget):
     """
 
     closed = Signal(object)
+    # (frame, -1 up / +1 down). Two buttons rather than one, because a single
+    # glyph cannot say which way -- and a drag handle would have to fight the
+    # views underneath it, every one of which already drags.
+    move_requested = Signal(object, int)
 
     def __init__(self, view_type: str, difficulty_label: str, compact: bool = False) -> None:
         super().__init__()
@@ -4354,6 +5133,22 @@ class EditorViewFrame(QWidget):
         self.close_button.clicked.connect(lambda: self.closed.emit(self))
         chrome.addWidget(self.close_button)
 
+        # Between close and lock, in the order the row reads: get rid of it,
+        # move it, freeze it.
+        self.move_up_button = QPushButton("▲")
+        self.move_up_button.setToolTip(tr("MainWindow", "Move view up"))
+        self.move_up_button.setFocusPolicy(Qt.NoFocus)
+        self.move_up_button.setStyleSheet(chrome_button_style)
+        self.move_up_button.clicked.connect(lambda: self.move_requested.emit(self, -1))
+        chrome.addWidget(self.move_up_button)
+
+        self.move_down_button = QPushButton("▼")
+        self.move_down_button.setToolTip(tr("MainWindow", "Move view down"))
+        self.move_down_button.setFocusPolicy(Qt.NoFocus)
+        self.move_down_button.setStyleSheet(chrome_button_style)
+        self.move_down_button.clicked.connect(lambda: self.move_requested.emit(self, 1))
+        chrome.addWidget(self.move_down_button)
+
         self.lock_button = QPushButton("🔒")
         self.lock_button.setCheckable(True)
         self.lock_button.setToolTip(tr("MainWindow", "Lock view (read-only)"))
@@ -4379,7 +5174,10 @@ class EditorViewFrame(QWidget):
         # drew nothing. Measured after polish (and after parenting, which is
         # what makes the app-wide sheet apply), like the playback rows.
         super().showEvent(event)
-        equalize_button_widths((self.close_button, self.lock_button))
+        equalize_button_widths((
+            self.close_button, self.move_up_button, self.move_down_button,
+            self.lock_button,
+        ))
 
     def set_content(self, widget: QWidget) -> None:
         self.content = widget
@@ -4642,11 +5440,17 @@ class GimmickConfigDialog(QDialog):
         # Mirrored reads as one object centred on the note; unticked, the bars
         # all trail it -- a squash on the note and its restores after it, which
         # is the style several hand-made maps are written in and which nothing
-        # here could ask for before.
-        self.mirror_lines_check = QCheckBox(
-            tr("MainWindow", "Mirror bars on both sides")
+        # here could ask for before. One box per kind, beside that kind's own
+        # spacings: Don and Kat are separate structures layered on one region,
+        # and a single box made a centred Don force a centred Kat.
+        self.mirror_don_check = QCheckBox(
+            tr("MainWindow", "Mirror Don bars on both sides")
         )
-        self.mirror_lines_check.setChecked(config.mirror_lines)
+        self.mirror_don_check.setChecked(config.mirror_don_lines)
+        self.mirror_kat_check = QCheckBox(
+            tr("MainWindow", "Mirror Kat bars on both sides")
+        )
+        self.mirror_kat_check.setChecked(config.mirror_kat_lines)
 
         self.offset_spin = QSpinBox()
         self.offset_spin.setRange(-1000, 1000)
@@ -4715,13 +5519,14 @@ class GimmickConfigDialog(QDialog):
             layout.addRow(hint)
         elif barline:
             layout.addRow(tr("MainWindow", "Don Spacing (ms)"), self.spacing_spin)
+            layout.addRow("", self.mirror_don_check)
             layout.addRow(tr("MainWindow", "Kat Spacing 1 (ms)"), self.kat_spacing1_spin)
             layout.addRow(tr("MainWindow", "Kat Spacing 2 (ms)"), self.kat_spacing2_spin)
             layout.addRow(tr("MainWindow", "Kat Spacing 3 (ms)"), self.kat_spacing3_spin)
+            layout.addRow("", self.mirror_kat_check)
             layout.addRow(tr("MainWindow", "Red line offset (ms)"), self.offset_spin)
             layout.addRow(tr("MainWindow", "Redline BPM"), self.red_bpm_widget)
             layout.addRow("", self.place_notes_check)
-            layout.addRow("", self.mirror_lines_check)
         else:
             layout.addRow(tr("MainWindow", "Fake slider offset (ms)"), self.fake_offset_spin)
             layout.addRow(tr("MainWindow", "Fake slider length"), self.length_spin)
@@ -4813,7 +5618,8 @@ class GimmickConfigDialog(QDialog):
             fake_slider_offset_ms=self.fake_offset_spin.value(),
             fake_slider_sv=self.fake_sv_spin.value(),
             place_notes=self.place_notes_check.isChecked(),
-            mirror_lines=self.mirror_lines_check.isChecked(),
+            mirror_don_lines=self.mirror_don_check.isChecked(),
+            mirror_kat_lines=self.mirror_kat_check.isChecked(),
             sv_offset_ms=self.sv_offset_spin.value(),
             red_line_bpm=(
                 self.red_bpm_spin.value() if self.red_bpm_check.isChecked() else None
@@ -6114,15 +6920,17 @@ class MainWindow(QMainWindow):
             "kat": {},
         }
 
-        self.player = QMediaPlayer(self)
-        self.audio_output = QAudioOutput(self)
-        self.player.setAudioOutput(self.audio_output)
+        # Not QMediaPlayer: see audio_engine's module docstring. The short of
+        # it is that a sample-accurate clock, a pitch-preserving slow speed and
+        # a rate change that does not stall all live below the level Qt's
+        # player exposes.
+        self.player = TrackPlayer(self)
         self.hitsounds = HitsoundPlayer(self)
         # Music volume was hardcoded here until it had a settings page; both it
         # and the hitsound values are read in one place so the Settings dialog
         # can re-apply them without a restart.
         self._apply_audio_settings()
-        self.player.errorOccurred.connect(self._audio_backend_failed)
+        self.player.errorOccurred.connect(self._audio_failed)
         self.player.positionChanged.connect(
             self._player_position_changed
         )
@@ -6152,6 +6960,9 @@ class MainWindow(QMainWindow):
         # extrapolation -- reset alongside the clocks above so a legitimate
         # backwards seek is never clamped away.
         self._last_predicted_position = 0.0
+        # Set while a setPlaybackRate is still working its way through the
+        # backend; see _advance_interpolated_clock for what it suppresses.
+        self._awaiting_rate_report = False
 
         # Never restarted after this; _render_gameplay_frame schedules off a
         # fixed cadence (self._next_frame_due_ns) measured against it instead
@@ -6293,23 +7104,38 @@ class MainWindow(QMainWindow):
     def _gimmick_wheel_target(self, watched):
         """Which gimmick layer a wheel event on that page belongs to, or None.
 
-        Every wheel on the gimmick page goes to a layer. Seeking, Ctrl+zoom and
-        Alt+snap all mean the same thing wherever the pointer is on the page,
-        and none of them are the scroll area's business -- so the pointer no
-        longer has to be inside a band for the wheel to do anything.
+        **Every wheel on this page seeks, except on the scrollbar.** Seeking is
+        what the wheel means here wherever the pointer is, so the pointer does
+        not have to be inside a band for it to work.
+
+        The scrollbar is the one exception, and the reason it is the *only* one
+        is that it is the only surface on the page that does not move. Letting
+        the gaps between bands scroll as well looked reasonable and was not:
+        scrolling slides the bands under a stationary cursor, so one continuous
+        gesture lands alternately on a gap and on a band and does half a scroll
+        and half a seek -- reported as "scrolling horizontal and vertical
+        simultaneously", and at a high BPM (where a seek barely moves) as the
+        view sliding somewhere else entirely. Measured: ten notches on a band
+        seek 971 -> 2250; ten alternating seek half as far and scroll the rest.
+
+        A combo box or spin box under the pointer keeps its own wheel too:
+        those read a wheel as a value.
 
         This also has to run *before* the Alt+wheel branch below, which was
         catching every Alt+wheel in the program and handing it to the Fancy
         Arranger timeline: on the gimmick page that consumed the event and the
         layer under the pointer never saw it at all.
 
-        A combo box or spin box under the pointer keeps its own wheel; those are
-        the one kind of control on the page that reads a wheel as a value.
+        A combo box, spin box or scrollbar under the pointer keeps its own
+        wheel whatever the modifiers: those read a wheel as a value, or as the
+        scroll they exist for.
         """
         stack = getattr(self, "page_stack", None)
         if stack is None or stack.currentIndex() != PAGE_GIMMICK:
             return None
-        if not self._gimmick_views or isinstance(watched, (QComboBox, QAbstractSpinBox)):
+        if not self._gimmick_views or isinstance(
+            watched, (QComboBox, QAbstractSpinBox, QAbstractSlider)
+        ):
             return None
         views = [
             getattr(frame, "chart_view", None) or getattr(frame, "sv_view", None)
@@ -6318,9 +7144,15 @@ class MainWindow(QMainWindow):
         views = [view for view in views if view is not None]
         if not views:
             return None
-        # The band under the pointer when there is one, so Ctrl+zoom and the
-        # snap grid still read as belonging to what is being looked at.
-        return watched if watched in views else views[0]
+        # The band under the pointer -- so Ctrl+zoom and the snap grid read as
+        # belonging to what is being looked at -- or its chrome, which is part
+        # of the same band as far as the pointer is concerned. Anywhere else on
+        # the page, the first band: the gesture means the same thing wherever
+        # it happens.
+        for view in views:
+            if watched is view or self._is_descendant(watched, view):
+                return view
+        return views[0]
 
     # The only event types the application filter below acts on. Everything
     # else -- paints, timers, layout requests, every mouse move -- is handed
@@ -6336,6 +7168,17 @@ class MainWindow(QMainWindow):
     def eventFilter(self,watched,event)->bool:
         kind=event.type()
         if kind not in self._FILTERED_EVENT_TYPES:
+            return super().eventFilter(watched,event)
+        # Nothing outside this window is ours. The filter is installed on the
+        # *application*, so every event in the process runs through it --
+        # including the ones inside a dialog, whose own top-level window this
+        # is not. Without this, scrolling the Settings dialog seeked the
+        # gimmick layer behind it (measured: 1000ms -> 1125ms on one notch),
+        # and its combo boxes and sliders were fighting the editor for the
+        # wheel. A combo box popup is its own top-level too, so this hands the
+        # popup its own scrolling back at the same time.
+        window = watched.window() if isinstance(watched, QWidget) else None
+        if window is not None and window is not self:
             return super().eventFilter(watched,event)
         # Shift toggles the placement preview between its normal and finisher
         # size (_draw_placement_ghost reads it fresh on every paint), but a
@@ -6432,10 +7275,61 @@ class MainWindow(QMainWindow):
         than reacting to accept/reject and costs nothing: a rejected dialog
         wrote nothing, so this reads back exactly what was already in force.
         """
-        self.audio_output.setVolume(self.settings.int_value("audio/music_volume", 65) / 100.0)
+        self.player.setVolume(self.settings.int_value("audio/music_volume", 65) / 100.0)
         self.hitsounds.enabled = self.settings.bool_value("audio/hitsounds_enabled", True)
         self.hitsounds.offset_ms = self.settings.int_value("audio/hitsound_offset_ms", 0)
         self.hitsounds.set_volume(self.settings.int_value("audio/hitsound_volume", 70) / 100.0)
+        # Deliberately not defaulted to anything but zero. The lag between the
+        # position the backend reports and the sound reaching the speakers is a
+        # property of this machine's device and drivers, so the only honest
+        # shipped value is "none", with the user free to dial in their own.
+        self.audio_output_offset_ms = self.settings.int_value("audio/output_offset_ms", 0)
+        self._apply_appearance_settings()
+
+    def _register_chart_view(self, view) -> None:
+        """Take a chart view into the playhead broadcast, skin and all.
+
+        Three places build chart views -- the player deck, the Editor page's
+        bands and the gimmick page's layers -- and each used to append to
+        `_chart_views` itself. Adding the skin to the Editor path therefore
+        reached two of the three, and the gimmick layers stayed unskinned until
+        Settings was applied again *after* they existed, which is why the same
+        chart looked different on the two pages. Going through one place is
+        what stops the next per-view property doing the same thing.
+        """
+        view.skin = getattr(self, "skin", None)
+        view.set_note_opacity(
+            getattr(self, "note_opacity_percent", NOTE_OPACITY_DEFAULT_PERCENT))
+        self._chart_views.append(view)
+
+    def _apply_appearance_settings(self) -> None:
+        """Load the chosen skin once and hand it, and the note opacity, to
+        every view that draws a note.
+
+        Loaded here rather than per view: the pixmaps and their scaled cache
+        are the same for all of them, and a gimmick page can hold six.
+        """
+        self.note_opacity_percent = self.settings.int_value(
+            "appearance/note_opacity", NOTE_OPACITY_DEFAULT_PERCENT)
+        name = self.settings.string_value("appearance/skin", "")
+        folder = None
+        if name:
+            root = skins_root(self.settings.string_value("library/songs_folder", ""))
+            if root is not None and (root / name).is_dir():
+                folder = root / name
+        self.skin = TaikoSkin(folder)
+        # Every view that draws a note, not just the gameplay preview: the
+        # chart layers draw the same don and kat, and a skin that changed one
+        # and not the other would read as a bug.
+        for view in getattr(self, "_gameplay_views", ()):
+            view.set_skin(self.skin)
+        for view in getattr(self, "_chart_views", ()):
+            view.skin = self.skin
+            view.set_note_opacity(self.note_opacity_percent)
+        if hasattr(self, "timeline"):
+            self.timeline.skin = self.skin
+            self.timeline.set_note_opacity(self.note_opacity_percent)
+        self.hitsounds.set_skin_sounds(self.skin.sounds)
 
     def maybe_check_for_updates(self) -> None:
         """Startup update check, on a worker thread so the window never waits.
@@ -6585,6 +7479,10 @@ class MainWindow(QMainWindow):
 
         # Both pages' playback-speed button sets exist now; sync them once.
         self._change_playback_speed(1.0)
+        # And again now that the views exist: the first call happens with the
+        # audio settings, long before any view is built, so on startup nothing
+        # was there to hand the skin to.
+        self._apply_appearance_settings()
 
         self.setStyleSheet(
             """
@@ -6612,8 +7510,10 @@ class MainWindow(QMainWindow):
             }
             QTabWidget::pane { border: 1px solid #303947; }
             QTabBar::tab {
+                /* 8px/18px made the tab strip taller than the controls under
+                   it and each tab wider than its own label needed. */
                 background: #222a36;
-                padding: 8px 18px;
+                padding: 4px 11px;
             }
             QTabBar::tab:selected { background: #f3a6bd; color: #17191f; }
             """
@@ -6834,7 +7734,7 @@ class MainWindow(QMainWindow):
         self.timeline.selection_finalized.connect(self._selection_finalized)
         self.timeline.seek_requested.connect(self.seek_audio)
         self.timeline.snap_changed_by_wheel.connect(self._snap_changed_by_wheel)
-        self._chart_views.append(self.timeline)
+        self._register_chart_view(self.timeline)
         self._share_kiai_bands(self.timeline, sv=False)
         layout.addWidget(self.timeline, 0)
         # Time+percentage, the kiai/bookmark bar, and playback controls all
@@ -7055,35 +7955,15 @@ class MainWindow(QMainWindow):
             # Already disconnected, or the C++ side is gone.
             pass
 
-    def _audio_backend_failed(self, error, message: str) -> None:
-        """Remember to use the compatible decoder after the accurate one refuses a file.
+    def _audio_failed(self, _error, message: str) -> None:
+        """Say so when a song will not decode.
 
-        The accurate backend (Windows Media Foundation) has no Ogg Vorbis
-        decoder of its own, and osu! song folders are full of .ogg -- so the
-        first song it cannot open is the signal to stop preferring it. The
-        switch only takes effect next launch, because Qt reads
-        QT_MEDIA_BACKEND once when the multimedia plugin loads; see
-        `select_media_backend`.
-
-        Deliberately narrow. Only a decoding failure counts, and only for a
-        file that is really there: a missing or renamed audio file raises the
-        same kind of error and has nothing to do with the backend, and
-        flipping the preference on it would cost accuracy for no reason.
+        There is no longer a second decoder to fall back to, and that is the
+        point: the engine decodes through Qt's FFmpeg decoder whichever
+        platform backend is installed, so the Ogg files that used to need a
+        fallback simply open.
         """
-        if error not in (QMediaPlayer.FormatError, QMediaPlayer.ResourceError):
-            return
-        if os.environ.get("QT_MEDIA_BACKEND", "") != ACCURATE_MEDIA_BACKEND:
-            return
-        state = self.state
-        if state is None or state.audio_path is None or not state.audio_path.is_file():
-            return
-        if self.settings.string_value(MEDIA_BACKEND_SETTING, "") == COMPATIBLE_MEDIA_BACKEND:
-            return
-        self.settings.set_value(MEDIA_BACKEND_SETTING, COMPATIBLE_MEDIA_BACKEND)
-        self.settings.sync()
-        self.show_toast(
-            tr("MainWindow", "This song's audio needs the compatible decoder. Restart to play it.")
-        )
+        self.show_toast(tr("MainWindow", "This song's audio could not be decoded."))
 
     def _release_audio_file(self) -> None:
         """Let go of the song file on close.
@@ -7097,6 +7977,7 @@ class MainWindow(QMainWindow):
         """
         self.player.stop()
         self.player.setSource(QUrl())
+        self.player.shutdown()
 
     # -- Song library page --------------------------------------------------
 
@@ -7706,12 +8587,9 @@ class MainWindow(QMainWindow):
         # button, which -- like those two -- leaves the inherited pink
         # background/hover/checked look alone, since a leaf widget's own
         # QPushButton{} rule only overrides the properties it names.
-        # Smaller than the app-wide 10px/18px so ten tools plus Config fit on
-        # one row, but not so small the row stops being clickable -- 10px was
-        # legible and unpleasant to aim at. Widths are no longer equalized
-        # across layers (see equalize_button_widths), which is what actually
-        # bought the room.
-        gimmick_button_style = "QPushButton { padding: 4px 10px; font-size: 12px; }"
+        # Widths are no longer equalized across layers (see
+        # equalize_button_widths), which is what actually bought the room.
+        gimmick_button_style = GIMMICK_TOOL_BUTTON_STYLE
 
         buttons: dict[str, QPushButton] = {}
         group = QButtonGroup(row)
@@ -8801,6 +9679,13 @@ class MainWindow(QMainWindow):
                 view.point_sv_edit_requested.connect(
                     lambda uid, sv, dp=pairing.target: self._edit_sv_point(dp, uid, sv)
                 )
+                view.point_volume_edit_requested.connect(
+                    lambda uid, volume, dp=pairing.target:
+                        self._edit_volume_point(dp, uid, volume)
+                )
+                view.point_volume_dialog_requested.connect(
+                    lambda uid, dp=pairing.target: self._type_volume_point(dp, uid)
+                )
                 view.point_delete_requested.connect(
                     lambda uid, dp=pairing.target: self._delete_sv_point(dp, uid)
                 )
@@ -8901,11 +9786,15 @@ class MainWindow(QMainWindow):
 
             # Registered for the playhead broadcast, which is what makes the
             # layers scroll with the song during playback.
-            (self._chart_views if view_type == "chart" else self._sv_views).append(view)
+            if view_type == "chart":
+                self._register_chart_view(view)
+            else:
+                self._sv_views.append(view)
             self._share_kiai_bands(view, sv=view_type != "chart")
             self._editor_snap_views.append(view)
 
             frame.closed.connect(self._close_gimmick_view)
+            frame.move_requested.connect(self._move_view)
             self.gimmick_views_layout.insertWidget(
                 self.gimmick_views_layout.count() - 1, frame
             )
@@ -9441,19 +10330,44 @@ class MainWindow(QMainWindow):
         return [note for note in notes if self.is_fake_slider(note) or round(note.time) != time_ms]
 
     def _gimmick_zoom_changed(self, window_ms: float) -> None:
-        """Ctrl+wheel on any layer zooms all six.
+        """Ctrl+wheel on any layer zooms all of them, within one shared range.
 
         The layers describe the same moment from different angles, so reading
         them against each other only works while they share a scale. The
         gameplay viewer is excluded on purpose: its x axis is pixels-per-beat,
         not a time window, and it renders at its own size.
+
+        The range is the *narrowest* the participating layers agree on, because
+        they do not all have the same one: `SVEditorView` allows a 120s window
+        and the chart views 60s, deliberately -- an SV sweep is read across a
+        whole section and a note pattern is not. Broadcasting unclamped let the
+        Kiai/Volume layer (an SV view) push every chart view to 120s, past a
+        limit those views enforce for themselves; the next notch of the wheel
+        on one of them clamped straight back to 60s, so zooming stepped by a
+        factor of two in one direction and not the other.
+
+        ponytail: the shared range is the intersection, so on this page the SV
+        and Kiai/Volume layers reach 60s rather than their own 120s. Widening
+        the chart views instead would be the other way to make the page
+        consistent, and wants a look at whether a 120s window of notes is
+        legible at the layer height before it is worth doing.
         """
-        for frame in self._gimmick_views:
-            view = getattr(frame, "chart_view", None) or getattr(frame, "sv_view", None)
-            if view is None or isinstance(view, GameplayViewerView):
-                continue
-            if view.window_ms != window_ms:
-                view.window_ms = window_ms
+        views = [
+            view for view in (
+                getattr(frame, "chart_view", None) or getattr(frame, "sv_view", None)
+                for frame in self._gimmick_views
+            )
+            if view is not None and not isinstance(view, GameplayViewerView)
+        ]
+        if not views:
+            return
+        shared = max(
+            max(view.MIN_WINDOW_MS for view in views),
+            min(window_ms, min(view.MAX_WINDOW_MS for view in views)),
+        )
+        for view in views:
+            if view.window_ms != shared:
+                view.window_ms = shared
                 view.update()
 
     def _gimmick_snap_divisor(self) -> int:
@@ -9765,7 +10679,7 @@ class MainWindow(QMainWindow):
                 )
             frame.set_content(view)
             frame.chart_view = view
-            self._chart_views.append(view)
+            self._register_chart_view(view)
             self._share_kiai_bands(view, sv=False)
             self._editor_snap_views.append(view)
             # Locking/unlocking the currently-active view must re-enable or
@@ -9818,6 +10732,13 @@ class MainWindow(QMainWindow):
             view.point_sv_edit_requested.connect(
                 lambda uid, sv, dp=difficulty_path: self._edit_sv_point(dp, uid, sv)
             )
+            view.point_volume_edit_requested.connect(
+                lambda uid, volume, dp=difficulty_path:
+                    self._edit_volume_point(dp, uid, volume)
+            )
+            view.point_volume_dialog_requested.connect(
+                lambda uid, dp=difficulty_path: self._type_volume_point(dp, uid)
+            )
             view.point_delete_requested.connect(
                 lambda uid, dp=difficulty_path: self._delete_sv_point(dp, uid)
             )
@@ -9852,6 +10773,9 @@ class MainWindow(QMainWindow):
             view.seek_requested.connect(self.seek_audio)
             frame.set_content(view)
             frame.gameplay_view = view
+            skin = getattr(self, "skin", None)
+            if skin is not None:
+                view.set_skin(skin)
             self._gameplay_views.append(view)
             self._editor_snap_views.append(view)
         elif view_type == "density":
@@ -9862,6 +10786,7 @@ class MainWindow(QMainWindow):
             frame.density_view = view
             self._density_views.append(view)
 
+        frame.move_requested.connect(self._move_view)
         self._editor_views.append(frame)
         if container is not None:
             content = frame.content
@@ -9878,6 +10803,72 @@ class MainWindow(QMainWindow):
             return
         group_layout = self._difficulty_group_layout(difficulty_path, label)
         self._insert_into_group(group_layout, frame)
+
+    def _frame_layout(self, frame: EditorViewFrame):
+        """The box layout that directly holds `frame`, or None.
+
+        Found rather than remembered: the Editor page puts frames in a layout
+        per difficulty group and the gimmick page in one shared column, and
+        `indexOf` is the only thing that knows which. Holding a reference per
+        frame would be a second copy of what the layout already says, and one
+        that a rebuild could leave pointing at a deleted layout.
+        """
+        parent = frame.parentWidget()
+        if parent is None:
+            return None
+        candidates = list(parent.findChildren(QBoxLayout))
+        if parent.layout() is not None:
+            candidates.append(parent.layout())
+        for layout in candidates:
+            if layout.indexOf(frame) >= 0:
+                return layout
+        return None
+
+    def _move_view(self, frame: EditorViewFrame, delta: int) -> None:
+        """Swap `frame` with the next view above (-1) or below (+1) it.
+
+        Swapped with the next *frame* rather than the next layout item, because
+        both columns carry things that are not views -- a trailing stretch, a
+        group header -- and stepping onto one would file the view under the
+        wrong difficulty or below the stretch that holds the column up.
+
+        At either end this does nothing rather than wrapping around: a view at
+        the top asked to go up is already where it was asked to go.
+        """
+        layout = self._frame_layout(frame)
+        if layout is None:
+            return
+        index = layout.indexOf(frame)
+        target = index + delta
+        while 0 <= target < layout.count():
+            if isinstance(layout.itemAt(target).widget(), EditorViewFrame):
+                break
+            target += delta
+        else:
+            return
+        if not 0 <= target < layout.count():
+            return
+        layout.removeWidget(frame)
+        # Removing shifts everything after `index` down one, so `target` is
+        # already the slot on the far side of the neighbour when moving down,
+        # and is untouched when moving up.
+        layout.insertWidget(target, frame)
+        # The lists decide which layer the tool row and copy/paste follow
+        # (`_gimmick_views[0]`), so leaving them in the old order would make
+        # "first" mean something the screen disagrees with. Only the slots this
+        # layout owns are rewritten -- the Editor page interleaves several
+        # difficulty groups in one list, and the others have not moved.
+        for views in (self._editor_views, self._gimmick_views):
+            if frame not in views:
+                continue
+            ordered = [
+                layout.itemAt(i).widget() for i in range(layout.count())
+                if isinstance(layout.itemAt(i).widget(), EditorViewFrame)
+            ]
+            slots = [i for i, existing in enumerate(views) if existing in ordered]
+            for slot, moved in zip(slots, ordered):
+                views[slot] = moved
+            break
 
     def _insert_into_group(self, group_layout: QVBoxLayout, frame: EditorViewFrame) -> None:
         """Place `frame` in its difficulty group, keeping density bottommost.
@@ -9901,7 +10892,12 @@ class MainWindow(QMainWindow):
     # shorter button there reads as a different, smaller control. showEvent
     # raises them all to the tallest polished hint, which is what stops a
     # descender being clipped once the window stylesheet's padding lands.
-    TOOL_BUTTON_HEIGHT = 32
+    # What TOOL_BUTTON_STYLE's labels actually measure once polished. Note
+    # that `equalize_button_widths(heights=True)` in showEvent *replaces* this
+    # with the measured hint rather than treating it as a floor, so a value
+    # above the hint is silently dropped -- it is a build-time size, not a
+    # minimum, whatever the call site's comment says.
+    TOOL_BUTTON_HEIGHT = 24
 
     def _build_global_tool_row(self) -> QWidget:
         """M3 note-editing tools: 1 select, 2 don, 3 kat, 4 slider, 5 spinner,
@@ -9932,6 +10928,7 @@ class MainWindow(QMainWindow):
         )
         for number, tool_id, label in tools:
             button = QPushButton(label)
+            button.setStyleSheet(TOOL_BUTTON_STYLE)
             button.setCheckable(True)
             button.setFixedHeight(self.TOOL_BUTTON_HEIGHT)
             button.setFocusPolicy(Qt.NoFocus)
@@ -9942,6 +10939,7 @@ class MainWindow(QMainWindow):
             layout.addWidget(button)
 
         self.new_combo_button = QPushButton(tr("MainWindow", "6. New Combo"))
+        self.new_combo_button.setStyleSheet(TOOL_BUTTON_STYLE)
         self.new_combo_button.setCheckable(True)
         self.new_combo_button.setFixedHeight(self.TOOL_BUTTON_HEIGHT)
         self.new_combo_button.setFocusPolicy(Qt.NoFocus)
@@ -9983,6 +10981,7 @@ class MainWindow(QMainWindow):
         )
         for number, tool_id, label in tools:
             button = QPushButton(label)
+            button.setStyleSheet(TOOL_BUTTON_STYLE)
             button.setCheckable(True)
             button.setFixedHeight(self.TOOL_BUTTON_HEIGHT)
             button.setFocusPolicy(Qt.NoFocus)
@@ -10715,7 +11714,8 @@ class MainWindow(QMainWindow):
             # map, but only the difficulty actually being played is scheduled --
             # editing a sibling in another view changes nothing you can hear.
             if self.state is state:
-                self.hitsounds.set_schedule(state.document.hit_objects)
+                self.hitsounds.set_schedule(
+                    state.document.hit_objects, state.document.timing_points)
             for frame in self._editor_views:
                 if getattr(frame, "difficulty_path", None) != difficulty_path:
                     continue
@@ -10793,6 +11793,43 @@ class MainWindow(QMainWindow):
             state, allow_merge=True,
         )
         self._refresh_difficulty_sv_views(difficulty_path)
+
+    def _edit_volume_point(self, difficulty_path: Path, uid: int, new_volume: int) -> None:
+        """Vertical drag in the Kiai and Sound Volume layer: hitsound volume.
+
+        Any line, red or green: osu! reads the sample volume off whichever
+        timing point is in force, and a red line is a timing point. Restricting
+        this to green ones would have left the volume at a BPM change
+        unreachable in the layer whose whole job is volume.
+        """
+        state = self._states.get(difficulty_path)
+        if state is None:
+            return
+        point = next((p for p in state.document.timing_points if p.uid == uid), None)
+        if point is None:
+            return
+        volume = max(0, min(100, int(new_volume)))
+        if volume == point.volume:
+            return
+        state.history.push(
+            EditTimingPoint(uid, {"volume": (point.volume, volume)}),
+            state, allow_merge=True,
+        )
+        self._refresh_difficulty_sv_views(difficulty_path)
+
+    def _type_volume_point(self, difficulty_path: Path, uid: int) -> None:
+        """Double click in that layer: type the volume instead of dragging it."""
+        state = self._states.get(difficulty_path)
+        if state is None:
+            return
+        point = next((p for p in state.document.timing_points if p.uid == uid), None)
+        if point is None:
+            return
+        volume, accepted = QInputDialog.getInt(
+            self, tr("MainWindow", "Sound volume"),
+            tr("MainWindow", "Hitsound volume (%)"), int(point.volume), 0, 100)
+        if accepted:
+            self._edit_volume_point(difficulty_path, uid, volume)
 
     def _delete_sv_point(self, difficulty_path: Path, uid: int) -> None:
         state = self._states.get(difficulty_path)
@@ -11142,6 +12179,12 @@ class MainWindow(QMainWindow):
             if pairing is not None and pairing.target == difficulty_path:
                 self._refresh_gimmick_views()
             if self.state is state:
+                # A volume edit changes no note, so the note-refresh path never
+                # runs -- but it is exactly the edit that has to become audible
+                # at once, since hearing it is how you tell you have set it
+                # right.
+                self.hitsounds.set_schedule(
+                    state.document.hit_objects, state.document.timing_points)
                 self._reload_timing_bars(state)
 
     def _close_editor_view(self, frame: EditorViewFrame) -> None:
@@ -11601,7 +12644,8 @@ class MainWindow(QMainWindow):
             self.player.setSource(QUrl.fromLocalFile(str(state.audio_path)))
 
         self.timeline.load_document(state.document)
-        self.hitsounds.set_schedule(state.document.hit_objects)
+        self.hitsounds.set_schedule(
+            state.document.hit_objects, state.document.timing_points)
         self.timeline.set_snap_divisor(int(self.snap_combo.currentData()))
         self._reload_timing_bars(state)
         # Fancy Arranger's own density chart always reflects the active
@@ -12023,6 +13067,10 @@ class MainWindow(QMainWindow):
         self.audio_anchor_position=self._predicted_audio_position();self.audio_anchor_clock.restart()
         self._last_predicted_position=self.audio_anchor_position
         self.player.setPlaybackRate(rate)
+        # See _advance_interpolated_clock: the backend goes quiet for around a
+        # tenth of a second here, and the playhead waits it out rather than
+        # running on into the silence.
+        self._awaiting_rate_report = self.player.playbackState() == QMediaPlayer.PlayingState
         for button in (
             getattr(self,"playback_speed_buttons",[])
             + getattr(self,"editor_playback_speed_buttons",[])
@@ -12056,6 +13104,7 @@ class MainWindow(QMainWindow):
             self.audio_anchor_clock.restart()
             self._source_report_clock.restart()
             self._last_predicted_position=self.audio_anchor_position
+            self._awaiting_rate_report=False
             self.play_button.setText(tr("MainWindow", "Pause"))
             if hasattr(self,"timeline_play_button"):self.timeline_play_button.setText("❚❚")
             if hasattr(self,"editor_play_button"):self.editor_play_button.setText("❚❚")
@@ -12072,6 +13121,7 @@ class MainWindow(QMainWindow):
         """
         position=max(0.0,float(position)); self.audio_anchor_position=position; self.latest_audio_position=position
         self.audio_anchor_clock.restart(); self._source_report_clock.restart(); self._last_predicted_position=position
+        self._awaiting_rate_report=False
         # Before anything else: a jump forward would otherwise fire every note
         # it skipped in one frame, and a jump backwards would replay them.
         self.hitsounds.reset_to(position)
@@ -12091,6 +13141,9 @@ class MainWindow(QMainWindow):
         for view in self._density_views:
             view.set_time(position)
 
+    _info_prefix = ""
+    _info_suffix = ""
+
     def _timeline_info_text(self, duration_text: str, position_text: str, snap_text: str) -> str:
         """Build the timeline help line from individually translated pieces.
 
@@ -12107,22 +13160,52 @@ class MainWindow(QMainWindow):
         )
 
     def _update_timeline_info(self) -> None:
+        """Re-derive everything around the playhead readout.
+
+        The duration, the snap and the six translated labels only change on a
+        load or a click, so this stays on its own slow timer; the two numbers
+        that move are in _refresh_position_readouts, which the frame loop
+        drives. Splitting them is not a micro-optimisation: this one also
+        re-asserts the duration on every timing bar, and doing that per frame
+        dirtied their cached static layers.
+        """
         if not hasattr(self, "timeline_info"):
             return
         duration = max(0, self.player.duration())
-        position = max(0, round(self.timeline.current_time) if hasattr(self,"timeline") else self.player.position())
         for bar in getattr(self,"_timing_bars",()): bar.set_duration(duration)
+        self._info_duration_ms = duration
+        # Built once here and reused per frame: the labels either side of the
+        # position never move, so looking them up again at 120Hz would rebuild
+        # a string that is identical apart from the middle.
+        prefix, suffix = self._timeline_info_text(
+            format_time(duration),
+            _INFO_POSITION_SLOT,
+            f"1/{int(self.snap_combo.currentData())}",
+        ).split(_INFO_POSITION_SLOT)
+        self._info_prefix, self._info_suffix = prefix, suffix
+        self._refresh_position_readouts(
+            round(self.timeline.current_time) if hasattr(self,"timeline")
+            else self.player.position())
+
+    def _refresh_position_readouts(self, position: float) -> None:
+        """The two numbers that follow the playhead, once per rendered frame.
+
+        They used to sit on a 16ms timer of their own while the views scrolled
+        on the 8.33ms one, so the text lagged the timeline it was describing and
+        beat against it at the difference between the two rates. Reading them
+        off the same frame that moves everything else is what keeps them in
+        step. QLabel.setText returns early when the text has not changed, so
+        the idle timer calling this as well costs nothing.
+        """
+        if not hasattr(self, "timeline_info"):
+            return
+        value = max(0, int(position))
+        duration = getattr(self, "_info_duration_ms", 0)
         if hasattr(self,"timeline_time"):
-            value=max(0,int(position))
             percent=value/duration*100.0 if duration>0 else 0.0
             self.timeline_time.setText(f"{value//60000:02d}:{(value%60000)//1000:02d}:{value%1000:03d}   {percent:.1f}%")
         self.timeline_info.setText(
-            self._timeline_info_text(
-                format_time(duration),
-                format_time(position),
-                f"1/{int(self.snap_combo.currentData())}",
-            )
-        )
+            f"{self._info_prefix}{format_time(value)}{self._info_suffix}")
 
     def _source_clock_position(self) -> float:
         """osu!'s framedSourceClock: the last backend report, extrapolated
@@ -12143,9 +13226,9 @@ class MainWindow(QMainWindow):
 
         Extrapolate the displayed clock by real elapsed time, then either
         snap it to the source clock (drifted more than
-        POSITION_ALLOWABLE_ERROR_MS, or not currently playing) or blend
-        1/POSITION_INTERPOLATION_DIVISOR of the remaining gap in -- every
-        frame, not just at the report. The monotonic clamp is mandatory: a
+        POSITION_ALLOWABLE_ERROR_MS *of real time*, or not currently playing)
+        or decay toward it, halving the remaining gap every
+        DRIFT_RECOVERY_HALF_LIFE_MS -- every frame, not just at the report. The monotonic clamp is mandatory: a
         blended *negative* error would otherwise step the displayed playhead
         backwards, which is the visible bug this whole scheme replaces. An
         explicit reset (seek_audio, toggle_playback) is the only legitimate
@@ -12155,13 +13238,26 @@ class MainWindow(QMainWindow):
         last_interpolated = self.audio_anchor_position
         running = self.player.playbackState() == QMediaPlayer.PlayingState
         rate = self.player.playbackRate()
+        if running and self._awaiting_rate_report:
+            # Measured on WMF: setPlaybackRate stops the backend producing song
+            # time for ~120ms (114ms of it lost across a 0.25x -> 1.0x switch,
+            # 67ms at 1.0x -> 0.75x). Both clocks here extrapolate blind, so
+            # free-running through that stall puts the playhead a tenth of a
+            # second ahead of the music -- which then either snaps back
+            # visibly or, at the slow rates where the drift stays under the
+            # tolerance, simply stays wrong. The audio genuinely is not moving,
+            # so neither is the playhead: hold it until the backend reports
+            # again, and _player_position_changed re-anchors on that report.
+            self.audio_anchor_clock.restart()
+            return
         source = self._source_clock_position()
 
         interpolated = last_interpolated + (frame_elapsed_ms * rate if running else 0.0)
-        if not running or abs(interpolated - source) > POSITION_ALLOWABLE_ERROR_MS:
+        if not running or abs(interpolated - source) > POSITION_ALLOWABLE_ERROR_MS * abs(rate):
             interpolated = source
         else:
-            interpolated += (source - interpolated) / POSITION_INTERPOLATION_DIVISOR
+            interpolated += (source - interpolated) * (
+                1.0 - 2.0 ** (-frame_elapsed_ms / DRIFT_RECOVERY_HALF_LIFE_MS))
             if rate >= 0:
                 interpolated = max(last_interpolated, interpolated)
             else:
@@ -12212,6 +13308,15 @@ class MainWindow(QMainWindow):
             return
         self.latest_audio_position = float(position)
         self._source_report_clock.restart()
+        if self._awaiting_rate_report:
+            # First word from the backend since the rate changed, so it is the
+            # only trustworthy thing in the room: re-anchor on it outright
+            # rather than blending toward it from a clock that spent the stall
+            # frozen at the old position.
+            self._awaiting_rate_report = False
+            self.audio_anchor_position = float(position)
+            self.audio_anchor_clock.restart()
+            self._last_predicted_position = float(position)
 
     def _render_gameplay_frame(self) -> None:
         now_ns = self.gameplay_frame_clock.nsecsElapsed()
@@ -12252,25 +13357,51 @@ class MainWindow(QMainWindow):
             self.hitsounds.advance(position)
         else:
             self.hitsounds.reset_to(position)
+        # What the backend reports is the sample it handed to the device, not
+        # the one reaching the ears -- the difference is the output latency,
+        # which is a constant number of *real* milliseconds. Song time is what
+        # the views are drawn against, so it converts by the playback rate,
+        # exactly as HitsoundPlayer.offset_ms does for the sample path. Left in
+        # real time it would be four times too large at 0.25x.
+        #
+        # The hitsounds above deliberately do not get this: they leave through
+        # QSoundEffect rather than through the music player, and that path has
+        # its own latency and its own offset setting.
+        #
+        # **Only while actually playing.** What the offset compensates is the
+        # lag between the backend handing a sample to the device and that sample
+        # reaching the ears -- a thing that exists only while sound is coming
+        # out. Applied at rest it was subtracted again from every seek: a wheel
+        # notch moved the view forward, the seek came back through here, and the
+        # view landed `offset` short of where it had just been put. At an
+        # ordinary BPM that turned a 125ms notch into 96ms and looked like
+        # nothing; on a high-BPM section, where a notch is a few milliseconds,
+        # it was larger than the step and the view walked *backwards*.
+        display = position
+        if self.player.playbackState() == QMediaPlayer.PlayingState:
+            display -= self.audio_output_offset_ms * self.player.playbackRate()
         # Broadcast to every chart view on screen, not just the shared
         # player-deck timeline: Editor-page chart views scroll in lockstep.
         for view in self._chart_views:
-            view.set_time(position,force=True)
+            view.set_time(display,force=True)
         # SV editors ride the same clock, so the green lines scroll past at
         # exactly the rate the notes above them do.
         for view in self._sv_views:
-            view.set_time(position,force=True)
+            view.set_time(display,force=True)
         for view in self._gameplay_views:
-            view.set_time(position,force=True)
+            view.set_time(display,force=True)
         for view in self._density_views:
-            view.set_time(position)
-            view.set_viewport(position,self.timeline.window_ms)
+            view.set_time(display)
+            view.set_viewport(display,self.timeline.window_ms)
         for bar in self._timing_bars:
-            bar.set_time(position)
-            bar.set_viewport(position,self.timeline.window_ms)
+            bar.set_time(display)
+            bar.set_viewport(display,self.timeline.window_ms)
+        # Same frame as the views above, so the number and the bar it labels
+        # never disagree about where the playhead is.
+        self._refresh_position_readouts(display)
         if hasattr(self,"editor_timeline_strip"):
-            percent=position/duration*100.0 if duration>0 else 0.0
-            text=f"{format_time(position)}   {percent:.1f}%"
+            percent=display/duration*100.0 if duration>0 else 0.0
+            text=f"{format_time(display)}   {percent:.1f}%"
             self.editor_timeline_strip.setText(text)
             self.gimmick_timeline_strip.setText(text)
 
@@ -12449,50 +13580,8 @@ register_shortcut_definitions(
 )
 
 
-# Qt reads QT_MEDIA_BACKEND once, when the multimedia plugin loads, so the
-# choice has to be made before any QMediaPlayer exists -- which is why this
-# runs in main() ahead of QApplication rather than in MainWindow.
-MEDIA_BACKEND_SETTING = "audio/backend"
-ACCURATE_MEDIA_BACKEND = "windows"
-COMPATIBLE_MEDIA_BACKEND = "ffmpeg"
-
-
-def select_media_backend(settings: SettingsManager) -> str:
-    """Choose Qt's multimedia backend for this run, and return it.
-
-    Qt's FFmpeg backend -- the default -- reports playback position in fixed
-    ~93ms steps of *song* time. At 0.25x that is one true reading every 351ms
-    of wall clock, and no amount of interpolation fixes a source that coarse:
-    the editor clock has nothing to interpolate between, so the playhead and
-    the hitsounds drift against the music at every speed below 1.0x. Windows
-    Media Foundation reports at 1ms granularity with ~4ms gaps and a measured
-    rate error of 0.00%.
-
-    WMF cannot decode Ogg Vorbis unless Microsoft's Web Media Extensions are
-    installed, and osu! song folders are full of .ogg -- so this is a
-    preference, not a decision. `MainWindow._audio_backend_failed` writes
-    "ffmpeg" here the first time a song refuses to open, and the next launch
-    uses it. An explicit QT_MEDIA_BACKEND in the environment always wins, and
-    is the way back if that fallback ever fires wrongly.
-    """
-    forced = os.environ.get("QT_MEDIA_BACKEND", "").strip()
-    if forced:
-        return forced
-
-    chosen = settings.string_value(MEDIA_BACKEND_SETTING, "").strip()
-    if not chosen:
-        chosen = ACCURATE_MEDIA_BACKEND if sys.platform == "win32" else ""
-    if chosen:
-        os.environ["QT_MEDIA_BACKEND"] = chosen
-    return chosen
-
-
 def main() -> None:
-    # Before QApplication: the multimedia plugin reads QT_MEDIA_BACKEND when
-    # it loads, and nothing can change it afterwards.
     settings = SettingsManager()
-    select_media_backend(settings)
-
     app=QApplication(sys.argv)
     # Without these, QStandardPaths.AppDataLocation resolves to
     # AppData/Roaming/python -- shared with every other PySide app run by the

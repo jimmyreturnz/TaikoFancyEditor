@@ -260,5 +260,50 @@ class BigVariantTests(_Layer2, unittest.TestCase):
         return seen[0]
 
 
+class ShinyMarkTests(unittest.TestCase):
+    """A shiny is marked white in the editor, for separation.
+
+    The colour here is a *label*, not a simulation: white is the one thing that
+    cannot be mistaken for the drumroll yellow beside it, so a stack reads as
+    different from a lone fake slider at a glance.
+
+    Pinned because it has already been undone once. It was changed to a light
+    yellow on the grounds that a stack does not wash out to white in play --
+    which is true of the *game*, and irrelevant here, because this view is for
+    editing and needs the two to be tellable apart.
+    """
+
+    def test_a_shiny_is_white_and_a_fake_slider_is_not(self):
+        view = gui.TimelineGameplay()
+        shiny, plain = view.shiny_brush, view.slider_brush
+        self.assertGreater(min(shiny.red(), shiny.green(), shiny.blue()), 230)
+        self.assertLess(plain.blue(), 60, "the drumroll stays yellow")
+
+    def test_the_ghost_follows_the_same_split(self):
+        """Placement previews have to read the same way the placed thing does,
+        or the preview says one object and the click makes another."""
+        view = gui.TimelineGameplay()
+        for solid, ghost in (
+            (view.shiny_brush, view.ghost_shiny_brush),
+            (view.slider_brush, view.ghost_slider_brush),
+        ):
+            with self.subTest(colour=solid.name()):
+                self.assertEqual(
+                    (solid.red(), solid.green(), solid.blue()),
+                    (ghost.red(), ghost.green(), ghost.blue()),
+                )
+                self.assertLess(ghost.alpha(), solid.alpha())
+
+    def test_the_opacity_setting_keeps_them_apart(self):
+        """`set_note_opacity` rescales every fill from its own base, so the two
+        cannot converge at some setting."""
+        view = gui.TimelineGameplay()
+        for percent in (gui.NOTE_OPACITY_MIN_PERCENT, 60, 100):
+            with self.subTest(percent=percent):
+                view.set_note_opacity(percent)
+                self.assertGreater(
+                    view.shiny_brush.blue(), view.slider_brush.blue() + 100)
+
+
 if __name__ == "__main__":
     unittest.main()
