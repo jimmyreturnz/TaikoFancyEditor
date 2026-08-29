@@ -279,6 +279,114 @@ class RangeToolTests(unittest.TestCase):
         self.assertEqual(len(self.state.history.undo_stack), 0)
 
 
+class VerticalOnlyTests(unittest.TestCase):
+    """The layer's lines belong to the milliseconds they sit on -- a barline, a
+    note, a kiai edge -- so there is no horizontal drag in it at all. Dragging
+    one sideways would have moved a section boundary out from under whatever
+    put it there, and the vertical axis is volume, so up and down is the only
+    gesture that means anything here.
+    """
+
+    def _view(self, volume_mode: bool) -> gui.SVEditorView:
+        view = gui.SVEditorView()
+        view.volume_mode = volume_mode
+        view.resize(800, 200)
+        view.set_timing_points([
+            TimingPoint.uninherited_at(0, 120),
+            TimingPoint.inherited_at(1000, 1.5),
+        ])
+        return view
+
+    def test_every_drag_in_the_volume_layer_is_a_value_drag(self):
+        view = self._view(True)
+        for point in view.timing_points:
+            for y in (5.0, 100.0, 195.0):
+                axis = view._drag_axis_for_click(point, QPointF(400.0, y))
+                self.assertEqual(axis, "value", (point.uninherited, y))
+
+    def test_an_sv_layer_still_retimes_away_from_the_dot(self):
+        """The change is scoped to volume_mode: everywhere else, a drag along
+        the line is still how a green line is moved."""
+        view = self._view(False)
+        green = next(p for p in view.timing_points if not p.uninherited)
+        far = QPointF(view.x_for_time(green.time) + 200.0, 5.0)
+        self.assertEqual(view._drag_axis_for_click(green, far), "time")
+
+    def test_a_vertical_drag_writes_a_volume_and_never_an_sv(self):
+        view = self._view(True)
+        green = next(p for p in view.timing_points if not p.uninherited)
+        volumes, svs = [], []
+        view.point_volume_edit_requested.connect(
+            lambda uid, volume: volumes.append((uid, volume)))
+        view.point_sv_edit_requested.connect(lambda uid, sv: svs.append((uid, sv)))
+        view._begin_point_drag(green, "value")
+        try:
+            view.mouseMoveEvent(QMouseEvent(
+                QEvent.MouseMove, QPointF(view.x_for_time(green.time), view._graph_top()),
+                Qt.LeftButton, Qt.LeftButton, Qt.NoModifier,
+            ))
+        finally:
+            view.releaseMouse()
+        self.assertEqual(svs, [])
+        self.assertEqual(volumes, [(green.uid, 100)])
+
+    def test_the_axis_top_is_100_and_the_bottom_is_0(self):
+        view = self._view(True)
+        self.assertEqual(round(view._y_to_sv(
+            view._graph_top(), view._graph_top(), view._graph_bottom())), 100)
+        self.assertEqual(round(view._y_to_sv(
+            view._graph_bottom(), view._graph_top(), view._graph_bottom())), 0)
+
+    def test_a_double_click_asks_for_a_volume_not_the_line_dialog(self):
+        """The generic line dialog carries a Time field, which is the one thing
+        this layer must not offer."""
+        view = self._view(True)
+        typed, generic = [], []
+        view.point_volume_dialog_requested.connect(typed.append)
+        view.timing_line_edit_requested.connect(generic.append)
+        view.mouseDoubleClickEvent(QMouseEvent(
+            QEvent.MouseButtonDblClick, QPointF(view.x_for_time(1000.0), 100.0),
+            Qt.LeftButton, Qt.LeftButton, Qt.NoModifier,
+        ))
+        self.assertEqual(generic, [])
+        self.assertEqual(len(typed), 1)
+
+
+class VolumeReachesTheHitsoundsTests(RangeToolTests):
+    """What the layer is for: the number it writes has to be what the don and
+    kat actually play at. A graph of a value nothing reads is decoration."""
+
+    def test_the_layer_writes_the_volume_the_samples_play_at(self):
+        point = self._point_at(0, uninherited=True)
+        note = min(self.state.document.hit_objects, key=lambda n: n.time)
+        self.window._edit_volume_point(self.state.source_path, point.uid, 30)
+        self.assertEqual(point.volume, 30)
+        index = self.window.hitsounds._times.index(float(note.time))
+        self.assertAlmostEqual(self.window.hitsounds._volumes[index], 0.3)
+
+    def test_zero_is_obeyed_rather_than_treated_as_a_floor(self):
+        """Mappers silence a section deliberately -- a swell under a fade, a
+        section the audio already covers."""
+        point = self._point_at(0, uninherited=True)
+        self.window._edit_volume_point(self.state.source_path, point.uid, 0)
+        self.assertEqual(self.window.hitsounds._volumes[0], 0.0)
+
+    def test_out_of_range_is_clamped_rather_than_written(self):
+        point = self._point_at(0, uninherited=True)
+        self.window._edit_volume_point(self.state.source_path, point.uid, 400)
+        self.assertEqual(point.volume, 100)
+        self.window._edit_volume_point(self.state.source_path, point.uid, -50)
+        self.assertEqual(point.volume, 0)
+
+    def test_an_unchanged_volume_pushes_no_undo_step(self):
+        """A drag emits on every mouse move, so most of them land on the value
+        already in force."""
+        point = self._point_at(0, uninherited=True)
+        before = len(self.state.history.undo_stack)
+        self.window._edit_volume_point(self.state.source_path, point.uid, point.volume)
+        self.assertEqual(len(self.state.history.undo_stack), before)
+
+
 class VolumeDialogTests(unittest.TestCase):
     """Same generator, same options -- only the quantity changes."""
 

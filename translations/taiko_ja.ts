@@ -104,10 +104,45 @@
         </message>
     </context>
     <context>
+        <name>OffsetCalibrationDialog</name>
+        <message>
+            <source>Calibrate music offset</source>
+            <translation>音楽オフセットの調整</translation>
+        </message>
+        <message>
+            <source>Press Play, then tap any key in time with the clicks. This measures your audio device only — it changes the app's music offset and never touches any beatmap's own offset.</source>
+            <translation>再生を押して、クリック音に合わせて好きなキーを叩いてください。測定するのはお使いのオーディオデバイスだけです。アプリの音楽オフセットのみを変更し、譜面自体のオフセットには一切触れません。</translation>
+        </message>
+        <message>
+            <source>Offset: %1 ms (spread %2 ms)</source>
+            <translation>オフセット: %1 ms (ばらつき %2 ms)</translation>
+        </message>
+        <message>
+            <source>Too inconsistent to trust — keep tapping</source>
+            <translation>ばらつきが大きすぎます。もう少し叩いてください</translation>
+        </message>
+        <message>
+            <source>Taps: %1 of %2</source>
+            <translation>タップ: %1 / %2</translation>
+        </message>
+        <message>
+            <source>Play</source>
+            <translation>再生</translation>
+        </message>
+        <message>
+            <source>Pause</source>
+            <translation>一時停止</translation>
+        </message>
+        <message>
+            <source>Start over</source>
+            <translation>やり直す</translation>
+        </message>
+    </context>
+    <context>
         <name>MainWindow</name>
         <message>
-            <source>This song's audio needs the compatible decoder. Restart to play it.</source>
-            <translation>この曲のオーディオには互換デコーダーが必要です。再起動して再生してください。</translation>
+            <source>This song's audio could not be decoded.</source>
+            <translation>この曲の音声をデコードできませんでした。</translation>
         </message>
         <message>
             <source>4. Red Line</source>
@@ -246,8 +281,12 @@
             <translation>フェイクスライダー</translation>
         </message>
         <message>
-            <source>Mirror bars on both sides</source>
-            <translation>バーを両側に対称に配置</translation>
+            <source>Mirror Don bars on both sides</source>
+            <translation>ドンの小節線を左右対称にする</translation>
+        </message>
+        <message>
+            <source>Mirror Kat bars on both sides</source>
+            <translation>カツの小節線を左右対称にする</translation>
         </message>
         <message>
             <source>Current speed</source>
@@ -950,6 +989,14 @@ Every beatmap in it is checked once for taiko difficulties, and the result is re
             <translation>緑線</translation>
         </message>
         <message>
+            <source>Sound volume</source>
+            <translation>サウンド音量</translation>
+        </message>
+        <message>
+            <source>Hitsound volume (%)</source>
+            <translation>ヒットサウンド音量 (%)</translation>
+        </message>
+        <message>
             <source>Red line</source>
             <translation>赤線</translation>
         </message>
@@ -1004,6 +1051,14 @@ Every beatmap in it is checked once for taiko difficulties, and the result is re
         <message>
             <source>Close view</source>
             <translation>ビューを閉じる</translation>
+        </message>
+        <message>
+            <source>Move view up</source>
+            <translation>ビューを上へ</translation>
+        </message>
+        <message>
+            <source>Move view down</source>
+            <translation>ビューを下へ</translation>
         </message>
         <message>
             <source>Lock view (read-only)</source>
@@ -1830,6 +1885,34 @@ Taiko Fancy Arranger を閉じて、そのフォルダーの TaikoFancyArranger.
     <context>
         <name>SettingsDialog</name>
         <message>
+            <source>Skin</source>
+            <translation>スキン</translation>
+        </message>
+        <message>
+            <source>Note opacity</source>
+            <translation>ノートの不透明度</translation>
+        </message>
+        <message>
+            <source>How solid notes are drawn in the editor timeline layers. Lower leaves the snap grid and the lines behind them easier to read through a dense section; 100% draws them opaque. The gameplay preview is unaffected.</source>
+            <translation>エディターのタイムライン各レイヤーでノートをどれだけ濃く描画するかです。低くすると密集した箇所でもスナップグリッドや背後の線が透けて読みやすくなり、100% では不透明になります。ゲームプレイプレビューには影響しません。</translation>
+        </message>
+        <message>
+            <source>Gameplay skin</source>
+            <translation>ゲームプレイスキン</translation>
+        </message>
+        <message>
+            <source>Built-in</source>
+            <translation>内蔵</translation>
+        </message>
+        <message>
+            <source>Uses the note, drumroll and hit-explosion art from one of your osu! skins in the gameplay preview. Anything a skin does not provide falls back to the built-in drawing.</source>
+            <translation>ゲームプレイプレビューで、お使いのosu!スキンのノーツ・連打・叩いたときのエフェクトの画像を使用します。スキンに含まれていない要素は内蔵の描画に戻ります。</translation>
+        </message>
+        <message>
+            <source>Calibrate…</source>
+            <translation>調整…</translation>
+        </message>
+        <message>
             <source>Action</source>
             <translation>操作</translation>
         </message>
@@ -1850,28 +1933,20 @@ Taiko Fancy Arranger を閉じて、そのフォルダーの TaikoFancyArranger.
             <translation>ヒットサウンドのオフセット (ms)</translation>
         </message>
         <message>
-            <source>Audio decoder</source>
-            <translation>オーディオデコーダー</translation>
-        </message>
-        <message>
             <source>Automatic</source>
             <translation>自動</translation>
         </message>
         <message>
-            <source>Accurate (Windows)</source>
-            <translation>高精度 (Windows)</translation>
-        </message>
-        <message>
-            <source>Compatible (FFmpeg)</source>
-            <translation>互換 (FFmpeg)</translation>
-        </message>
-        <message>
-            <source>The accurate decoder keeps the playhead in step with the music at slow playback speeds, but cannot open .ogg without a system codec. Automatic prefers it and switches to the compatible one the first time a song will not open. Restart to apply.</source>
-            <translation>高精度デコーダーは低速再生でも再生位置を音楽と同期させますが、システムコーデックがないと .ogg を開けません。自動では高精度を優先し、曲を開けなかった時点で互換デコーダーに切り替えます。適用するには再起動してください。</translation>
-        </message>
-        <message>
             <source>Music volume</source>
             <translation>音楽の音量</translation>
+        </message>
+        <message>
+            <source>Music offset (ms)</source>
+            <translation>音楽オフセット (ms)</translation>
+        </message>
+        <message>
+            <source>Shift the playhead to match when the music actually reaches your ears. Raise it if the notes look early against what you hear. Measured in real time, so one value stays correct at every playback speed.</source>
+            <translation>音楽が実際に耳に届くタイミングに再生位置を合わせます。聞こえる音より譜面が早く見える場合は値を上げてください。実時間で測るため、どの再生速度でも同じ値が有効です。</translation>
         </message>
         <message>
             <source>Shift hitsounds earlier or later to compensate for your audio device's latency.</source>

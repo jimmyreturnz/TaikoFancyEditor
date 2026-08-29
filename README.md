@@ -4,17 +4,33 @@
 
 *日本語版は [README_JP.md](README_JP.md) をご覧ください。*
 
-Taiko Fancy Arranger started as a tool for turning osu!taiko notes into visual patterns — text, shapes, equations, drawings, spirals — without placing every circle by hand. Version 2.0.0 grew it into an editor: browse your osu! Songs folder, open a difficulty, edit notes, edit scroll velocity, preview the chart the way osu! renders it, and still arrange notes into patterns when you want to. Version 3.0.0 adds a dedicated gimmick editor, for the fake sliders, barline tricks and extreme-SV effects that osu!taiko mappers build out of timing points rather than notes.
+Taiko Fancy Arranger started as a tool for turning osu!taiko notes into visual patterns — text, shapes, equations, drawings, spirals — without placing every circle by hand. Version 2.0.0 grew it into an editor: browse your osu! Songs folder, open a difficulty, edit notes, edit scroll velocity, preview the chart the way osu! renders it, and still arrange notes into patterns when you want to. Version 3.0.0 adds a dedicated gimmick editor, for the fake sliders, barline tricks and extreme-SV effects that osu!taiko mappers build out of timing points rather than notes. Version 3.2.0 rebuilds song playback so slow practice holds its place, and puts your own osu! skin into every view that draws a note.
 
 Everything stays a playable osu! beatmap. Sections the editor does not model — storyboards, breaks, colours, editor bookmarks — are passed through byte-for-byte on save.
 
-> **Current release:** v3.1.0  
+> **Current release:** v3.2.0  
 > **Platform:** Windows x64  
 > **Author:** [jimmyreturnz](https://osu.ppy.sh/users/11306153)
 
 The original idea came from a random chat with maruaki101. Other inspirations include Alchyr's ranked maps *13 Stairs* and *Helios*, which use unusual note placement to create visual expression. You should go check it out [here!](https://osu.ppy.sh/beatmapsets/1093671#taiko/3819326)
 
 Many thanks to Mew’s beatmaps for studying reference that made the tool creation possible, and other player’s ideas!
+
+---
+
+## What is new in 3.2.0
+
+This release rebuilds song playback and puts your osu! skin into every view that draws a note.
+
+- **Audio playback rebuilt.** The app decodes the track and drives the sound card itself. Changing speed no longer moves the playhead (the old backend lost 114 ms of song time on a 0.25x to 1.0x switch), slowing down keeps the pitch, and the playhead follows the sample actually leaving the device.
+- **Music offset calibration.** Tap along to a click track in **Settings → Audio** and it writes the app's own output offset. It never touches a beatmap's offset.
+- **Skins.** Pick any taiko skin from your osu! Skins folder for note art, drumroll pieces and hitsounds — in the gameplay preview and the editor timeline layers alike, falling back per element to the built-in drawing.
+- **The gameplay preview is the playfield.** The skin's bar, scrolling background, barlines and hit target, at osu!'s own proportions. Notes disappear when they land, drumrolls travel through, and kiai pulses on the beat.
+- **Note opacity.** Set how solid notes are drawn in the editor layers, trading the snap grid's readability against the notes'.
+- **Volume that means something.** The Kiai and Sound Volume layer's number now drives how loud don and kat actually play, its lines only move vertically, and Don and Kat mirror independently in the barline layer.
+- **Fixes worth naming.** No more ear-splitting hitsound burst when scrolling fast, no backwards drift when seeking on a high-BPM section, Settings keeps its own scrolling, and the gimmick page's scrollbar scrolls.
+
+Full notes: [`docs/releases/v3.2.0.md`](docs/releases/v3.2.0.md).
 
 ---
 
@@ -37,7 +53,7 @@ Full detail lives in [`docs/DEVELOPMENT_PLAN.md`](docs/DEVELOPMENT_PLAN.md).
 
 ## Windows SmartScreen notice
 
-Taiko Fancy Arranger v3.0.0 is a currently unsigned Windows application. The release includes source-level security hardening, input validation, safer file handling, automated tests, and published SHA-256 checksums.
+Taiko Fancy Arranger v3.2.0 is a currently unsigned Windows application. The release includes source-level security hardening, input validation, safer file handling, automated tests, and published SHA-256 checksums.
 
 Windows Defender SmartScreen may still display an "unrecognized app" warning because the executable has not yet established download reputation.
 
@@ -57,13 +73,15 @@ Notes make sound during playback, using hitsound samples shipped in `assets/se/`
 
 The **Audio** settings page carries hitsound enable and volume, a latency offset in milliseconds, and music volume, which previously had no UI at all.
 
-### Audio decoder
+### Slow playback
 
-Slow playback speeds depend on how finely Qt reports the playback position. On a real map at 0.25x, Windows Media Foundation reports 687 positions in three seconds; the FFmpeg decoder reports 27. That difference is what makes the playhead and the hitsounds hold their place against the music at 25%, 50% and 75%, and no amount of interpolation substitutes for it — there is nothing to interpolate between.
+25%, 50% and 75% **keep the original pitch**. The song is time-stretched rather than slowed like a record, so a quarter-speed stream still sounds like the instruments it was played on — the same thing osu!'s own editor does, and the reason it is worth practising against.
 
-Windows Media Foundation cannot open `.ogg` without a system codec, though, and osu! song folders are full of it. So **Automatic** asks for the accurate decoder and switches to the compatible one the first time a song will not open, remembering the choice. That one song will not play until you restart; every song after it will.
+Changing speed does not interrupt anything. Audio already on its way to the speakers finishes at the old speed and everything after it runs at the new one, so there is no gap, no jump, and no drift introduced by the switch.
 
-**Audio decoder** on the Audio settings page overrides this — pick *Accurate (Windows)* if you later install an Ogg codec, or *Compatible (FFmpeg)* to stop it trying. Setting the `QT_MEDIA_BACKEND` environment variable to `windows` or `ffmpeg` beats both, and is the way back if the setting itself is ever wrong. A restart applies any of them.
+The playhead is positioned from the sample actually leaving the audio device, not from a progress signal, so it holds its place against the music at every speed.
+
+**Music offset (ms)** on the Audio settings page shifts the playhead to match when sound reaches your ears. It ships at zero, because the right value depends on your device and drivers rather than on anything the app can know. Raise it if the notes look early against what you hear; it is measured in real time, so one value stays correct at every speed.
 
 ---
 
@@ -476,7 +494,7 @@ Do not upload copyrighted audio or private beatmap assets unless permission has 
 
 ## Project status
 
-Version 3.0.0 is the current public release. The project focuses on creative single-player beatmap editing, arrangement and previewing. Multiplayer and automatic difficulty calculation are outside the current scope.
+Version 3.2.0 is the current public release. The project focuses on creative single-player beatmap editing, arrangement and previewing. Multiplayer and automatic difficulty calculation are outside the current scope.
 
 Not yet implemented, and next in line:
 

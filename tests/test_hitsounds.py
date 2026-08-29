@@ -16,6 +16,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication
 
 import gui
+from osu_io.timing import TimingPoint
 from model.hit_object import (
     HITSOUND_CLAP,
     HITSOUND_FINISH,
@@ -75,7 +76,7 @@ class SampleChoiceTests(unittest.TestCase):
         self.assertEqual(gui.hitsound_key(circle(10000)), "normal")
 
     def test_the_schedule_is_sorted_and_drops_the_silent_objects(self):
-        times, keys = gui.hitsound_schedule([
+        times, keys, volumes = gui.hitsound_schedule([
             fake_slider(300),
             circle(200, HITSOUND_CLAP),
             circle(100),
@@ -83,6 +84,59 @@ class SampleChoiceTests(unittest.TestCase):
         ])
         self.assertEqual(times, [100.0, 200.0])
         self.assertEqual(keys, ["normal", "clap"])
+        # No timing points given, so nothing is quieter than as authored.
+        self.assertEqual(volumes, [1.0, 1.0])
+
+
+class SectionVolumeTests(unittest.TestCase):
+    """A timing point's volume is osu!'s hitsound volume for the section it
+    opens, and the Kiai and Sound Volume layer is the thing that edits it. If
+    it does not reach the sample, that layer draws a graph of nothing."""
+
+    @staticmethod
+    def _point(time_ms, volume):
+        return TimingPoint(time=float(time_ms), beat_length=500.0, volume=volume)
+
+    def test_a_note_takes_the_volume_of_the_section_it_is_in(self):
+        _times, _keys, volumes = gui.hitsound_schedule(
+            [circle(1000), circle(2000), circle(3000)],
+            [self._point(0, 100), self._point(1500, 40), self._point(2500, 0)],
+        )
+        self.assertEqual(volumes, [1.0, 0.4, 0.0])
+
+    def test_a_point_exactly_on_a_note_applies_to_it(self):
+        """osu! reads the sample volume from the point at or before the note,
+        and mappers set the volume by stacking a line on the note itself."""
+        _times, _keys, volumes = gui.hitsound_schedule(
+            [circle(1000)], [self._point(0, 100), self._point(1000, 25)])
+        self.assertEqual(volumes, [0.25])
+
+    def test_a_note_before_the_first_point_plays_at_full(self):
+        """There is no section to read a volume from, and silence would be a
+        worse guess than the sample as authored."""
+        _times, _keys, volumes = gui.hitsound_schedule(
+            [circle(100)], [self._point(500, 20)])
+        self.assertEqual(volumes, [1.0])
+
+    def test_unsorted_points_still_resolve(self):
+        """The forward merge assumes time order; documents do not guarantee it
+        after an edit, so the schedule sorts rather than trusting."""
+        _times, _keys, volumes = gui.hitsound_schedule(
+            [circle(1000), circle(2000)],
+            [self._point(1500, 30), self._point(0, 90)],
+        )
+        self.assertEqual(volumes, [0.9, 0.3])
+
+    def test_the_volumes_line_up_with_the_sorted_times(self):
+        """Parallel lists, and the notes get sorted -- so an out-of-order input
+        must not pair a note with somebody else's volume."""
+        times, keys, volumes = gui.hitsound_schedule(
+            [circle(2000), circle(1000)],
+            [self._point(0, 100), self._point(1500, 50)],
+        )
+        self.assertEqual(times, [1000.0, 2000.0])
+        self.assertEqual(keys, ["normal", "normal"])
+        self.assertEqual(volumes, [1.0, 0.5])
 
 
 class FiringWindowTests(unittest.TestCase):
@@ -201,6 +255,58 @@ class PoolTests(unittest.TestCase):
             expected = (step + 1) % gui.HITSOUND_POOL_SIZE
             player._play("normal")
             self.assertEqual(player._next["normal"], expected)
+
+
+
+
+class BurstGuardTests(unittest.TestCase):
+    """A jump must not sound every note it skipped.
+
+    Reported from the editor: scrolling fast during playback produced a burst
+    loud enough to hurt. Simultaneous samples sum, so thirty notes starting on
+    one instant is far louder than any single hit -- and conveys nothing, since
+    nobody can hear thirty notes at once.
+    """
+
+    def setUp(self) -> None:
+        self.player = gui.HitsoundPlayer()
+        self.played: list[str] = []
+        self.player._play = lambda key, volume=1.0: self.played.append(key)
+        # A dense stream long enough to jump around inside: one note every
+        # 20ms for twenty seconds. Built by hand rather than from a thousand
+        # hit objects -- the three lists are parallel by contract, so they are
+        # set together.
+        self.player._times = [float(i * 20) for i in range(1000)]
+        self.player._keys = ["normal"] * 1000
+        self.player._volumes = [1.0] * 1000
+        self.player.reset_to(0.0)
+
+    def test_an_ordinary_frame_still_sounds_its_notes(self):
+        # (0, 50] crosses the notes at 20 and 40 -- `pending` is half-open on
+        # the left so consecutive frames tile the timeline exactly.
+        self.player.advance(50.0)
+        self.assertEqual(len(self.played), 2)
+
+    def test_a_jump_sounds_nothing_and_still_moves_the_cursor(self):
+        self.player.advance(4000.0)
+        self.assertEqual(self.played, [], "a 4-second jump is not 200 hits")
+        self.assertEqual(self.player._cursor, 4000.0)
+
+    def test_playing_resumes_normally_after_a_jump(self):
+        self.player.advance(4000.0)
+        self.player.advance(4050.0)
+        self.assertEqual(len(self.played), 2)
+
+    def test_the_window_is_wall_time_so_it_scales_with_the_rate(self):
+        """At 0.25x the same wall-clock stall spans a quarter of the song time,
+        so a fixed song-time cap would be four times too generous."""
+        self.player.playback_rate = 0.25
+        allowed = gui.HITSOUND_MAX_WINDOW_MS * 0.25
+        self.player.advance(allowed - 5.0)
+        self.assertGreater(len(self.played), 0)
+        self.played.clear()
+        self.player.advance(self.player._cursor + allowed + 50.0)
+        self.assertEqual(self.played, [])
 
 
 if __name__ == "__main__":

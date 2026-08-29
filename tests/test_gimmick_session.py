@@ -261,20 +261,38 @@ class MirroredBarlineTests(unittest.TestCase):
     def test_forward_only_writes_the_squash_and_its_restores_after_it(self):
         """The owner's map: a squash on the note and one restore a millisecond
         later, nothing before it."""
-        config = gs.GimmickConfig(mirror_lines=False)
+        config = gs.GimmickConfig(mirror_don_lines=False)
         points, _ = gs.barline_note(87124, BASE, config, kind="don")
         self.assertEqual([int(p.time) - 87124 for p in points], [0, 1])
         self.assertAlmostEqual(points[0].bpm, config.gimmick_bpm)
 
     def test_forward_only_kat_keeps_all_three_spacings(self):
         points, _ = gs.barline_note(
-            10000, BASE, gs.GimmickConfig(mirror_lines=False), kind="kat",
+            10000, BASE, gs.GimmickConfig(mirror_kat_lines=False), kind="kat",
         )
         self.assertEqual([int(p.time) - 10000 for p in points], [0, 1, 3, 5])
 
+    def test_the_two_kinds_mirror_independently(self):
+        """The complaint this comes from: one box made a centred Don force a
+        centred Kat, when the whole reason the spacings are separate is that
+        Don and Kat are separate structures layered on one region."""
+        config = gs.GimmickConfig(mirror_don_lines=True, mirror_kat_lines=False)
+        don, _ = gs.barline_note(10000, BASE, config, kind="don")
+        kat, _ = gs.barline_note(10000, BASE, config, kind="kat")
+        self.assertEqual([int(p.time) - 10000 for p in don], [-1, 0, 1])
+        self.assertEqual([int(p.time) - 10000 for p in kat], [0, 1, 3, 5])
+
+        flipped = gs.GimmickConfig(mirror_don_lines=False, mirror_kat_lines=True)
+        don, _ = gs.barline_note(10000, BASE, flipped, kind="don")
+        kat, _ = gs.barline_note(10000, BASE, flipped, kind="kat")
+        self.assertEqual([int(p.time) - 10000 for p in don], [0, 1])
+        self.assertEqual([int(p.time) - 10000 for p in kat],
+                         [-5, -3, -1, 0, 1, 3, 5])
+
     def test_custom_spacings_survive_forward_only(self):
         config = gs.GimmickConfig(
-            mirror_lines=False, kat_spacing1_ms=2, kat_spacing2_ms=6, kat_spacing3_ms=9,
+            mirror_kat_lines=False, kat_spacing1_ms=2, kat_spacing2_ms=6,
+            kat_spacing3_ms=9,
         )
         points, _ = gs.barline_note(10000, BASE, config, kind="kat")
         self.assertEqual([int(p.time) - 10000 for p in points], [0, 2, 6, 9])

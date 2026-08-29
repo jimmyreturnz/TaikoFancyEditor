@@ -139,7 +139,13 @@ class GimmickConfig:
     # Whether a barline note's bars go on both sides of it or only after it.
     # See `barline_note`: mirrored reads as one object centred on the note,
     # forward-only is the trailing style, and both are in use.
-    mirror_lines: bool = True
+    #
+    # One per kind, like the spacings above and for the same reason: Don and
+    # Kat are separate structures a mapper layers on one region, and a single
+    # flag forced a centred Don to come with a centred Kat. Nothing about the
+    # two widths being independent made sense if their shapes were not.
+    mirror_don_lines: bool = True
+    mirror_kat_lines: bool = True
     # How far from its object an SV layer's green lines sit. An SV point
     # governs what comes *after* it, so a chart that wants a note drawn at a
     # new speed needs the line slightly ahead of that note -- the same reason
@@ -551,12 +557,14 @@ def barline_note(
     """A note drawn out of barlines: one gimmick BPM line plus mirrored restores.
 
     Every uninherited point emits a barline at its own time, so the count of
-    restore lines is the count of bars drawn. Don is a single mirrored pair,
-    at +/-`spacing_ms`; kat is three mirrored pairs, at +/-`kat_spacing1_ms`,
+    restore lines is the count of bars drawn. Don is a single pair, at
+    +/-`spacing_ms`; kat is three pairs, at +/-`kat_spacing1_ms`,
     +/-`kat_spacing2_ms` and +/-`kat_spacing3_ms`, independently of each other
     and of Don's own spacing -- which is what makes kat read as the wider note,
     and what lets a mapper hand-layer several structures on one millisecond
-    region without a shared "n" forcing their widths apart in lockstep.
+    region without a shared "n" forcing their widths apart in lockstep. Whether
+    each kind is mirrored at all is `mirror_don_lines` / `mirror_kat_lines`,
+    separately for the same reason.
 
     With `place_notes` on (the default) a real, hittable note goes on the snap
     as well, so the drawn bars are something the player actually plays. Off, the
@@ -567,10 +575,12 @@ def barline_note(
     """
     if kind == "don":
         spacings = (config.spacing_ms,)
+        mirrored = config.mirror_don_lines
     elif kind == "kat":
         spacings = (
             config.kat_spacing1_ms, config.kat_spacing2_ms, config.kat_spacing3_ms,
         )
+        mirrored = config.mirror_kat_lines
     else:
         raise GimmickConfigError(f"Unknown barline note kind: {kind!r}")
 
@@ -578,9 +588,10 @@ def barline_note(
     # centred on it. Forward only is a real style, though: a note whose bars
     # all trail it, written as a squash on the note and a single restore one
     # millisecond later, is what several hand-made maps use, and there was no
-    # way to ask for it.
+    # way to ask for it. Per kind, so a centred Don can sit beside a trailing
+    # Kat.
     offsets = (
-        [-value for value in spacings] + list(spacings) if config.mirror_lines
+        [-value for value in spacings] + list(spacings) if mirrored
         else list(spacings)
     )
 

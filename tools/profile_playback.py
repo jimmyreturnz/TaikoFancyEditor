@@ -1,6 +1,7 @@
 """Measure the cost of one playback frame, the way stutter is actually caused.
 
-    python tools/profile_playback.py <a real .osu> [frames] [--profile]
+    python tools/profile_playback.py <a real .osu> [frames] [--gimmick]
+                                     [--gameplay] [--skin NAME] [--profile]
 
 The editor renders at 120fps, so every frame has an 8.33ms budget: the clock
 advance, the hitsound scan, and a synchronous repaint of every open view. A
@@ -61,6 +62,22 @@ if "--gimmick" in sys.argv:
     if entered:
         window._show_page(gui.PAGE_GIMMICK)
     print(f"     gimmick page entered: {entered}")
+    app.processEvents()
+
+if "--gameplay" in sys.argv:
+    # The gameplay preview is the only view that draws the skin's playfield --
+    # a full-width bar blit, a tiled scrolling background and a per-note kiai
+    # silhouette -- and none of that is measured by a run without one open.
+    window._add_editor_view("gameplay", path)
+    app.processEvents()
+
+if "--skin" in sys.argv:
+    # The skinned path costs more than the built-in one (blits instead of
+    # cached ellipses), so "is it fast enough" has to be asked with a skin on.
+    name = sys.argv[sys.argv.index("--skin") + 1]
+    window.settings.set_value("appearance/skin", name)
+    window._apply_appearance_settings()
+    print(f"     skin: {window.skin.name or '(built-in)'}")
     app.processEvents()
 
 state = window.state

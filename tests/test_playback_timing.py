@@ -122,6 +122,11 @@ class PlaybackTimingTests(unittest.TestCase):
         self.window._source_report_clock = clock
         return clock
 
+    def _take_frame_clock(self) -> _FakeClock:
+        clock = _FakeClock()
+        self.window.gameplay_frame_clock = clock
+        return clock
+
     # -- extrapolation --------------------------------------------------------
 
     def test_predicted_position_is_exact_anchor_when_paused(self):
@@ -151,15 +156,43 @@ class PlaybackTimingTests(unittest.TestCase):
 
     # -- _advance_interpolated_clock: the per-frame blend/snap -----------------
 
-    def test_advance_blends_small_error_by_one_eighth_per_frame(self):
+    def test_advance_halves_the_error_over_one_half_life(self):
+        """Upstream decays toward the source (Interpolation.DampContinuously)
+        rather than taking a fixed fraction per frame, so the correction is
+        measured in real time and not in frames."""
         self._make_playing(rate=1.0)
-        self._take_source_clock()
+        source = self._take_source_clock()
         self.window.audio_anchor_position = 1000.0
         self.window.latest_audio_position = 1010.0  # source is 10ms ahead
 
-        self.window._advance_interpolated_clock(0.0)
+        # The source has to run too, or the free-run advance alone puts the
+        # two further apart than the snap threshold and nothing is blended.
+        source.advance_ms(gui.DRIFT_RECOVERY_HALF_LIFE_MS)
+        self.window._advance_interpolated_clock(gui.DRIFT_RECOVERY_HALF_LIFE_MS)
 
-        self.assertAlmostEqual(self.window.audio_anchor_position, 1000.0 + 10.0 / 8.0, places=6)
+        remaining = (self.window._source_clock_position()
+                     - self.window.audio_anchor_position)
+        self.assertAlmostEqual(remaining, 5.0, places=6)
+
+    def test_the_correction_does_not_depend_on_the_frame_rate(self):
+        """The bug this replaces: at 1/8 per frame, 120fps absorbed the same
+        drift twice as fast as 60fps, so the clock behaved differently on
+        different monitors."""
+        seen = []
+        for frame_ms in (1000.0 / 60.0, 1000.0 / 120.0):
+            self._make_playing(rate=1.0)
+            source = self._take_source_clock()
+            self.window.audio_anchor_position = 1000.0
+            self.window.latest_audio_position = 1010.0
+            elapsed = 0.0
+            while elapsed < 80.0:
+                source.advance_ms(frame_ms)
+                self.window._advance_interpolated_clock(frame_ms)
+                elapsed += frame_ms
+            seen.append(self.window._source_clock_position()
+                        - self.window.audio_anchor_position)
+
+        self.assertAlmostEqual(seen[0], seen[1], places=2)
 
     def test_advance_snaps_when_error_exceeds_allowable(self):
         self._make_playing(rate=1.0)
@@ -181,6 +214,119 @@ class PlaybackTimingTests(unittest.TestCase):
 
         self.assertNotEqual(self.window.audio_anchor_position, self.window.latest_audio_position)
 
+    def test_the_snap_tolerance_is_measured_in_real_time_not_song_time(self):
+        """Upstream multiplies AllowableErrorMilliseconds by the rate, and the
+        first version of this port did not. The constant is a budget in real
+        milliseconds; the comparison happens in song milliseconds. Unscaled,
+        0.25x tolerated four times as much real drift as 1.0x -- the slowest
+        speed, which most needs a tight playhead, got the loosest one.
+        """
+        drift = gui.POSITION_ALLOWABLE_ERROR_MS - 5.0  # under the raw constant
+
+        self._make_playing(rate=1.0)
+        self._take_source_clock()
+        self.window.audio_anchor_position = 1000.0
+        self.window.latest_audio_position = 1000.0 + drift
+        self.window._advance_interpolated_clock(0.0)
+        self.assertNotEqual(
+            self.window.audio_anchor_position, 1000.0 + drift,
+            msg="at 1.0x this drift is inside the budget and must only blend",
+        )
+
+        self._make_playing(rate=0.25)
+        self._take_source_clock()
+        self.window.audio_anchor_position = 1000.0
+        self.window.latest_audio_position = 1000.0 + drift
+        self.window._advance_interpolated_clock(0.0)
+        self.assertEqual(
+            self.window.audio_anchor_position, 1000.0 + drift,
+            msg="the same song-time drift is 4x the real time at 0.25x: snap",
+        )
+
+    # -- the backend's rate-change stall --------------------------------------
+
+    def test_a_rate_change_holds_the_playhead_until_the_backend_reports(self):
+        """Measured on WMF: setPlaybackRate stops the backend producing song
+        time for around 120ms (114ms of it lost across 0.25x -> 1.0x). Both
+        clocks here extrapolate blind, so free-running through that stall
+        leaves the playhead a tenth of a second ahead of the music.
+        """
+        self._make_playing(1.0)
+        self._take_source_clock()
+        clock = self._take_the_clock()
+        self.window.player.position = lambda: 0
+        self.window.audio_anchor_position = 1000.0
+        self.window.latest_audio_position = 1000.0
+
+        self.window._change_playback_speed(0.25)
+        self.assertTrue(self.window._awaiting_rate_report)
+
+        clock.advance_ms(120.0)
+        self.window._advance_interpolated_clock(120.0)
+        self.assertEqual(
+            self.window.audio_anchor_position, 1000.0,
+            msg="the audio is not moving during the stall, so nor is the playhead",
+        )
+
+    def test_the_first_report_after_a_rate_change_re_anchors_the_playhead(self):
+        self._make_playing(1.0)
+        self._take_source_clock()
+        self._take_the_clock()
+        self.window.player.position = lambda: 0
+        self.window.audio_anchor_position = 1000.0
+        self.window.latest_audio_position = 1000.0
+        self.window._change_playback_speed(0.25)
+
+        self.window._player_position_changed(1004)
+
+        self.assertFalse(self.window._awaiting_rate_report)
+        self.assertEqual(
+            self.window.audio_anchor_position, 1004.0,
+            msg="the first word from the backend is the only trustworthy value",
+        )
+
+    def test_a_rate_change_while_paused_does_not_arm_the_hold(self):
+        """Nothing reports while paused, so arming it there would freeze the
+        playhead until the next play() rather than until the next report."""
+        self.window._change_playback_speed(0.5)
+        self.assertFalse(self.window._awaiting_rate_report)
+
+    # -- output latency compensation ------------------------------------------
+
+    def test_the_music_offset_is_real_time_so_it_scales_with_the_rate(self):
+        """The offset compensates time spent in the output device, which is
+        real time and does not care how fast the song is being read. Applied
+        unscaled it would be four times too large at 0.25x -- the same units
+        bug HitsoundPlayer.offset_ms already documents on the sample side.
+        """
+        class _RecordingView:
+            def __init__(self) -> None:
+                self.time = None
+
+            def set_time(self, time_ms, force=False):
+                self.time = time_ms
+
+        self.window.hitsounds.enabled = False
+        frames = self._take_frame_clock()
+        self.window.audio_output_offset_ms = 40
+        seen = []
+        for rate, expected in ((1.0, 1000.0 - 40.0), (0.25, 1000.0 - 10.0)):
+            self._make_playing(rate)
+            self._take_source_clock()
+            self._take_the_clock()
+            view = _RecordingView()
+            self.window._chart_views.append(view)
+            self.window.audio_anchor_position = 1000.0
+            self.window.latest_audio_position = 1000.0
+            self.window._last_broadcast_position = None
+            self.window._next_frame_due_ns = 0
+            frames.advance_ms(1000.0)
+            self.window._render_gameplay_frame()
+            self.window._chart_views.remove(view)
+            seen.append((view.time, expected))
+        for actual, expected in seen:
+            self.assertAlmostEqual(actual, expected, places=6)
+
     def test_advance_never_moves_backwards_on_a_negative_error(self):
         """The source clock reading behind the interpolated one is ordinary
         report jitter, not a seek -- blending toward it must never step the
@@ -198,14 +344,17 @@ class PlaybackTimingTests(unittest.TestCase):
         """A consistent small bias converges over a handful of frames even
         though no single frame's error ever exceeds the allowable threshold."""
         self._make_playing(rate=1.0)
-        self._take_source_clock()
+        source = self._take_source_clock()
         self.window.audio_anchor_position = 1000.0
         self.window.latest_audio_position = 1015.0
 
         for _ in range(200):
-            self.window._advance_interpolated_clock(0.0)
+            source.advance_ms(1000.0 / 120.0)
+            self.window._advance_interpolated_clock(1000.0 / 120.0)
 
-        self.assertLess(abs(self.window.audio_anchor_position - 1015.0), 0.01)
+        self.assertLess(
+            abs(self.window._source_clock_position()
+                - self.window.audio_anchor_position), 0.01)
 
     def test_advance_while_paused_snaps_to_source_without_advancing(self):
         # Not playing: _advance_interpolated_clock must not extrapolate by
@@ -379,6 +528,62 @@ class PlaybackTimingTests(unittest.TestCase):
         self.window._render_gameplay_frame()
         self.assertEqual(self.window._next_frame_due_ns, before + self.window.gameplay_frame_interval_ns)
 
+
+
+class OutputOffsetSeekTests(unittest.TestCase):
+    """The music offset must not move a seek.
+
+    What it compensates is the lag between the backend handing a sample to the
+    device and that sample reaching the ears, which exists only while sound is
+    coming out. Applied at rest it was subtracted from every seek on the way
+    back through the frame loop, so a view landed `offset` short of where it
+    had just been put -- invisible at 125ms a notch, and larger than the step
+    on a high-BPM section, where the view then walked backwards.
+    """
+
+    def setUp(self) -> None:
+        self._temp = tempfile.TemporaryDirectory()
+        directory = Path(self._temp.name)
+        (directory / "audio.mp3").write_bytes(b"\x00")
+        self.path = write_fixture(directory, "full_v14")
+        self.window = gui.MainWindow()
+        self.window.show()
+        self.window._load_map_path(self.path, refresh_difficulties=True)
+        self.window.audio_output_offset_ms = 29
+
+    def tearDown(self) -> None:
+        self.window.close()
+        self._temp.cleanup()
+
+    def _settle(self) -> None:
+        for _ in range(6):
+            QApplication.processEvents()
+
+    def test_a_seek_while_paused_lands_where_it_was_put(self):
+        self.window.seek_audio(4000.0)
+        self._settle()
+        for view in self.window._chart_views:
+            self.assertAlmostEqual(view.current_time, 4000.0, delta=1.0)
+
+    def test_repeated_small_seeks_never_go_backwards(self):
+        """The reported symptom, in the shape it was reported: on a high-BPM
+        section a notch is a few milliseconds, which the offset outweighed."""
+        self.window.seek_audio(4000.0)
+        self._settle()
+        seen = [self.window._chart_views[0].current_time]
+        for step in range(1, 6):
+            self.window.seek_audio(4000.0 + step * 5.0)
+            self._settle()
+            seen.append(self.window._chart_views[0].current_time)
+        for earlier, later in zip(seen, seen[1:]):
+            self.assertGreater(later, earlier, seen)
+
+    def test_the_offset_is_still_there_for_playback(self):
+        """It is not deleted, only scoped: the calibration has to keep doing
+        its job for the thing it was measured against."""
+        self.assertEqual(self.window.audio_output_offset_ms, 29)
+        source = Path(gui.__file__).read_text(encoding="utf-8")
+        self.assertIn("display -= self.audio_output_offset_ms", source)
 
 if __name__ == "__main__":
     unittest.main()
