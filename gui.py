@@ -7150,6 +7150,331 @@ class LibraryPageController:
         self.window._load_map_path(Path(item.data(Qt.UserRole)).resolve(), refresh_difficulties=True)
 
 
+class ToolStateController:
+    """The two global note/SV tool rows, and which view they act on.
+
+    "Global" means global to the program, not per-view (per user feedback
+    after trying the per-frame version): a row applies to whichever chart/SV
+    view last had keyboard focus, tracked through QApplication.focusChanged.
+    MainWindow keeps read/write properties for active_chart_view,
+    active_sv_view and last_focused_editor_view -- clipboard, editor-view
+    management and playback code elsewhere in MainWindow still read and
+    write them directly, and moving all of that as one unit was more change
+    than this pass wants. Gimmick-page state (GIMMICK_TOOLSETS,
+    gimmick_tool_buttons, _active_gimmick_layer, _show_gimmick_row_for) is
+    reached through self.window rather than owned here, since it belongs to
+    the gimmick page, not this cluster.
+    """
+
+    def __init__(self, window: "MainWindow") -> None:
+        self.window = window
+        self.active_chart_view: TimelineGameplay | None = None
+        self.active_sv_view: SVEditorView | None = None
+        self.last_focused_editor_view: TimelineGameplay | SVEditorView | None = None
+        self.tool_shortcuts: dict[str, QShortcut] = {}
+        self._tool_shortcuts_by_scope: dict[str, list[QShortcut]] = {}
+        # Set before any toolbox exists, so the first refresh has an answer.
+        self._tool_shortcuts_allowed = True
+
+    def build_global_tool_row(self) -> QWidget:
+        """M3 note-editing tools: 1 select, 2 don, 3 kat, 4 slider, 5 spinner,
+        6 new combo. Also driven by the number keys themselves (see
+        build_tool_shortcuts) since these are meant to be pressed, not just
+        clicked.
+        """
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(4)
+        layout.addWidget(QLabel(tr("MainWindow", "Note tools:")))
+
+        self.tool_buttons: dict[str, QPushButton] = {}
+        tool_group = QButtonGroup(row)
+        tool_group.setExclusive(True)
+        tools = (
+            ("1", "select", tr("MainWindow", "1. Select")),
+            ("2", "don", tr("MainWindow", "2. Don")),
+            ("3", "kat", tr("MainWindow", "3. Kat")),
+            # Labels only -- "slider"/"spinner" have been the stable internal
+            # tool ids since M3 and are what the .osu type bits mean.
+            ("4", "slider", tr("MainWindow", "4. Slider")),
+            ("5", "spinner", tr("MainWindow", "5. Spinner")),
+        )
+        for number, tool_id, label in tools:
+            button = QPushButton(label)
+            button.setStyleSheet(TOOL_BUTTON_STYLE)
+            button.setCheckable(True)
+            button.setFixedHeight(self.window.TOOL_BUTTON_HEIGHT)
+            button.setFocusPolicy(Qt.NoFocus)
+            button.setChecked(tool_id == "select")
+            button.toggled.connect(lambda checked, t=tool_id: self.set_active_tool(t) if checked else None)
+            tool_group.addButton(button)
+            self.tool_buttons[tool_id] = button
+            layout.addWidget(button)
+
+        self.new_combo_button = QPushButton(tr("MainWindow", "6. New Combo"))
+        self.new_combo_button.setStyleSheet(TOOL_BUTTON_STYLE)
+        self.new_combo_button.setCheckable(True)
+        self.new_combo_button.setFixedHeight(self.window.TOOL_BUTTON_HEIGHT)
+        self.new_combo_button.setFocusPolicy(Qt.NoFocus)
+        self.new_combo_button.toggled.connect(self.set_active_new_combo)
+        layout.addWidget(self.new_combo_button)
+
+        layout.addStretch(1)
+        self.global_tool_row = row
+        self.global_tool_row.setEnabled(False)
+        return row
+
+    def build_global_sv_tool_row(self) -> QWidget:
+        """M4 SV-editing tools: 1 select, 2 green line, 3 function. Same
+        pattern and rationale as the note tool row above; applies to
+        whichever SV view last had focus (active_sv_view). Only one of this
+        row and the note tool row is visible at a time, switched by
+        editor_view_focus_changed based on which view type gained focus.
+        """
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(4)
+        layout.addWidget(QLabel(tr("MainWindow", "SV tools:")))
+
+        self.sv_tool_buttons: dict[str, QPushButton] = {}
+        tool_group = QButtonGroup(row)
+        tool_group.setExclusive(True)
+        # Two sets sharing slot 1: an ordinary SV view builds green lines and
+        # sweeps, the Kiai and Sound Volume view sets kiai and note volume over
+        # the same drag. Both are built here and sync_global_sv_tool_row shows
+        # whichever the focused view wants, so the digits keep meaning the
+        # button in the same position -- the rule the gimmick rows already use.
+        tools = (
+            ("1", "select", tr("MainWindow", "1. Select")),
+            ("2", "green_line", tr("MainWindow", "2. Green Line")),
+            ("3", "function", tr("MainWindow", "3. Function")),
+            ("2", "kiai", tr("MainWindow", "2. Kiai")),
+            ("3", "volume", tr("MainWindow", "3. Volume")),
+        )
+        for number, tool_id, label in tools:
+            button = QPushButton(label)
+            button.setStyleSheet(TOOL_BUTTON_STYLE)
+            button.setCheckable(True)
+            button.setFixedHeight(self.window.TOOL_BUTTON_HEIGHT)
+            button.setFocusPolicy(Qt.NoFocus)
+            button.setChecked(tool_id == "select")
+            button.toggled.connect(lambda checked, t=tool_id: self.set_active_sv_tool(t) if checked else None)
+            tool_group.addButton(button)
+            self.sv_tool_buttons[tool_id] = button
+            layout.addWidget(button)
+
+        self.SV_TOOLS_DEFAULT = ("select", "green_line", "function")
+        self.SV_TOOLS_KIAI_SOUND = ("select", "kiai", "volume")
+        for tool_id in self.SV_TOOLS_KIAI_SOUND[1:]:
+            self.sv_tool_buttons[tool_id].setVisible(False)
+
+        layout.addStretch(1)
+        self.global_sv_tool_row = row
+        self.global_sv_tool_row.setEnabled(False)
+        self.global_sv_tool_row.setVisible(False)
+        return row
+
+    def build_tool_shortcuts(self) -> None:
+        """Number keys 1-6 as global tool shortcuts, not just clickable buttons.
+
+        ApplicationShortcut context fires regardless of which widget has
+        focus -- including window.timeline, the shared Fancy Arranger
+        timeline -- but the handler only ever calls set_tool on
+        active_chart_view / active_sv_view, both of which are exclusively
+        Editor-page views (see editor_view_focus_changed), so this can't
+        resurrect the contamination risk a per-widget keyPressEvent override
+        would have. Routes to whichever of the two tool rows is currently
+        visible, since both use keys 1-3 for different tools and only one is
+        ever relevant at a time.
+
+        The bound key comes from the shortcut registry so Settings can rebind
+        it; the digit passed to the handler stays the logical tool number
+        regardless of which key ends up on it.
+
+        One shortcut per *scoped* definition, not a fixed six: the Editor
+        page's toolbox is `tool_1`...`tool_6`, and each gimmick layer has its
+        own set derived from its own toolbox (see the registration at the foot
+        of this module), because the layers do not agree on what tool 2 is or
+        even on how many tools there are.
+        """
+        self.tool_shortcuts = {}
+        self._tool_shortcuts_by_scope = {}
+        for definition in self.window.shortcuts.definitions.values():
+            # A scope is what marks a definition as a toolbox binding; the
+            # global actions each have their own QShortcut already.
+            if not definition.scope:
+                continue
+            digit = definition.action_id.rsplit("_", 1)[-1]
+            shortcut = QShortcut(QKeySequence(self.window.shortcuts.sequence(definition.action_id)), self.window)
+            shortcut.setContext(Qt.ApplicationShortcut)
+            shortcut.activated.connect(lambda d=digit: self.activate_tool_digit(d))
+            self.tool_shortcuts[definition.action_id] = shortcut
+            self._tool_shortcuts_by_scope.setdefault(definition.scope, []).append(shortcut)
+        self.refresh_tool_shortcut_scope()
+
+    def set_tool_shortcuts_enabled(self, enabled: bool) -> None:
+        self._tool_shortcuts_allowed = enabled
+        self.refresh_tool_shortcut_scope()
+
+    def refresh_tool_shortcut_scope(self) -> None:
+        """Leave only the reachable toolbox's keys enabled.
+
+        Every toolbox numbers its tools from 1, so seven of them want the key
+        "1" -- which is correct, since only one toolbox is reachable at a
+        time. Qt does not see it that way: two enabled ApplicationShortcuts on
+        one key fire `activatedAmbiguously` and *neither* acts, so the digit
+        has to belong to exactly one toolbox at any moment. The focused
+        gimmick layer's while that page is up, the Editor page's otherwise,
+        and none of them while a text widget has focus (see
+        `editor_view_focus_changed`: an ApplicationShortcut consumes its key,
+        so the only way a digit reaches a search box is for no tool shortcut
+        to be enabled).
+
+        getattr throughout: focusChanged and _show_page both run before the
+        shortcuts and the pages exist.
+        """
+        by_scope = getattr(self, "_tool_shortcuts_by_scope", None)
+        if not by_scope:
+            return
+        stack = getattr(self.window, "page_stack", None)
+        if not self._tool_shortcuts_allowed:
+            active = ""
+        elif stack is not None and stack.currentIndex() == PAGE_GIMMICK:
+            active = getattr(self.window, "_active_gimmick_layer", None) or ""
+        else:
+            active = "editor"
+        for scope, shortcuts in by_scope.items():
+            for shortcut in shortcuts:
+                shortcut.setEnabled(scope == active)
+
+    def activate_tool_digit(self, digit: str) -> None:
+        if should_ignore_shortcut_focus(QApplication.focusWidget()):
+            return
+        note_tools = {"1": "select", "2": "don", "3": "kat", "4": "slider", "5": "spinner"}
+        sv_tools = dict(zip("123", self.sv_tools_for(self.active_sv_view)))
+        # The gimmick page has its own row and its own meanings for 1-4, and it
+        # is checked first: its row is always visible while that page is up,
+        # where the Editor page's two rows are only visible on theirs.
+        if self.window.page_stack.currentIndex() == PAGE_GIMMICK:
+            # The digit is the button's position in the focused layer's own
+            # toolbox, so 2 is a fake slider in one layer and a barline note in
+            # the next -- the same relationship the buttons themselves have.
+            layer = getattr(self.window, "_active_gimmick_layer", None)
+            tools = self.window.GIMMICK_TOOLSETS.get(layer or "", ())
+            index = int(digit) - 1
+            if 0 <= index < len(tools):
+                self.window.gimmick_tool_buttons[layer][tools[index][0]].setChecked(True)
+            return
+        if self.global_tool_row.isVisible():
+            if digit in note_tools:
+                self.tool_buttons[note_tools[digit]].setChecked(True)
+            elif digit == "6":
+                self.new_combo_button.toggle()
+        elif self.global_sv_tool_row.isVisible() and digit in sv_tools:
+            self.sv_tool_buttons[sv_tools[digit]].setChecked(True)
+
+    def set_active_tool(self, tool_id: str) -> None:
+        if self.active_chart_view is not None:
+            self.active_chart_view.set_tool(tool_id)
+
+    def set_active_new_combo(self, value: bool) -> None:
+        if self.active_chart_view is not None:
+            self.active_chart_view.set_new_combo(value)
+
+    def editor_view_focus_changed(self, _old, new) -> None:
+        # An ApplicationShortcut *consumes* its key, so the plain digits 1-6
+        # would eat characters typed into the library's search box or any spin
+        # box -- should_ignore_shortcut_focus can decline to act, but cannot
+        # hand the key back. Disabling the shortcuts outright while a text
+        # widget has focus is the only way the key reaches it.
+        self.set_tool_shortcuts_enabled(not should_ignore_shortcut_focus(new))
+
+        # Only Editor-page views (chart: symmetric; any SVEditorView) can
+        # become a tool target; window.timeline (the shared Fancy Arranger
+        # timeline) never does, so clicking it can't silently steal either
+        # global tool row. Whichever type gains focus shows its own row and
+        # hides the other, since only one is ever relevant at a time.
+        # A gimmick layer owns its own toolbox rather than the Editor page's:
+        # the same button means a different structure there.
+        # Moving to a *different* view always arrives on Select. A tool is a
+        # mode, and carrying one across a view boundary meant the first click in
+        # the view you just moved to placed something instead of selecting it --
+        # in the gimmick page, a whole barline structure. Same view again (after
+        # a modal dialog, say) is not a move, so an active tool survives that.
+        moved = new is not self.last_focused_editor_view
+
+        if getattr(new, "gimmick_layer", None) is not None:
+            if isinstance(new, SVEditorView):
+                self.active_sv_view = new
+            else:
+                self.active_chart_view = new
+            self.window._show_gimmick_row_for(new)
+            if moved:
+                self.last_focused_editor_view = new
+                self.window.gimmick_tool_buttons[new.gimmick_layer]["select"].setChecked(True)
+            return
+
+        if isinstance(new, TimelineGameplay) and new.symmetric:
+            self.active_chart_view = new
+            if moved:
+                new.set_tool("select")
+                new.set_new_combo(False)
+            self.last_focused_editor_view = new
+            self.sync_global_tool_row()
+            self.global_tool_row.setVisible(True)
+            self.global_sv_tool_row.setVisible(False)
+        elif isinstance(new, SVEditorView):
+            self.active_sv_view = new
+            if moved:
+                new.set_tool("select")
+            self.last_focused_editor_view = new
+            self.sync_global_sv_tool_row()
+            self.global_tool_row.setVisible(False)
+            self.global_sv_tool_row.setVisible(True)
+
+    def sync_global_tool_row(self) -> None:
+        view = self.active_chart_view
+        enabled = view is not None and view.isEnabled()
+        self.global_tool_row.setEnabled(enabled)
+        if view is None:
+            return
+        button = self.tool_buttons.get(view.tool)
+        if button is not None:
+            button.blockSignals(True)
+            button.setChecked(True)
+            button.blockSignals(False)
+        self.new_combo_button.blockSignals(True)
+        self.new_combo_button.setChecked(view.new_combo)
+        self.new_combo_button.blockSignals(False)
+
+    def set_active_sv_tool(self, tool_id: str) -> None:
+        if self.active_sv_view is not None:
+            self.active_sv_view.set_tool(tool_id)
+
+    def sv_tools_for(self, view) -> tuple[str, ...]:
+        """Which of the two SV tool sets `view` is driven by."""
+        if getattr(view, "kiai_sound", False):
+            return self.SV_TOOLS_KIAI_SOUND
+        return self.SV_TOOLS_DEFAULT
+
+    def sync_global_sv_tool_row(self) -> None:
+        view = self.active_sv_view
+        enabled = view is not None and view.isEnabled()
+        self.global_sv_tool_row.setEnabled(enabled)
+        if view is None:
+            return
+        wanted = self.sv_tools_for(view)
+        for tool_id, button in self.sv_tool_buttons.items():
+            button.setVisible(tool_id in wanted)
+        button = self.sv_tool_buttons.get(view.tool)
+        if button is not None:
+            button.blockSignals(True)
+            button.setChecked(True)
+            button.blockSignals(False)
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -7226,18 +7551,7 @@ class MainWindow(QMainWindow):
         # TimingOverviewBar can only live in one layout at a time -- kept in
         # sync wherever the active difficulty's timing info changes.
         self._timing_bars: list[TimingOverviewBar] = []
-        # Whichever Editor-page chart/SV view last had keyboard focus; the
-        # matching global tool row (below the view stack) acts on it, and
-        # the other row hides. Two separate trackers since a chart view and
-        # an SV view can't both be "the" active one at the same time.
-        self._active_chart_view: TimelineGameplay | None = None
-        self._active_sv_view: SVEditorView | None = None
-        # Whichever of the two was touched most recently, regardless of type.
-        # _active_chart_view is not cleared when an SV view takes focus (each
-        # tracker keeps its own last target for its own tool row), so it
-        # cannot answer "what was the user just editing?" on its own -- which
-        # is what Ctrl+Z needs when several difficulties are open at once.
-        self._last_focused_editor_view: TimelineGameplay | SVEditorView | None = None
+        self._tool_state = ToolStateController(self)
         QApplication.instance().focusChanged.connect(self._editor_view_focus_changed)
 
         self._library = LibraryPageController(self)
@@ -10971,307 +11285,79 @@ class MainWindow(QMainWindow):
     TOOL_BUTTON_HEIGHT = 24
 
     def _build_global_tool_row(self) -> QWidget:
-        """M3 note-editing tools: 1 select, 2 don, 3 kat, 4 slider, 5 spinner,
-        6 new combo. Global to the program (not per-view, per user feedback
-        after trying the per-frame version): applies to whichever chart view
-        last had keyboard focus, tracked in self._active_chart_view via
-        QApplication.focusChanged. Also driven by the number keys themselves
-        (see _build_tool_shortcuts) since these are meant to be pressed, not
-        just clicked.
-        """
-        row = QWidget()
-        layout = QHBoxLayout(row)
-        layout.setContentsMargins(4, 4, 4, 4)
-        layout.setSpacing(4)
-        layout.addWidget(QLabel(tr("MainWindow", "Note tools:")))
-
-        self.tool_buttons: dict[str, QPushButton] = {}
-        tool_group = QButtonGroup(row)
-        tool_group.setExclusive(True)
-        tools = (
-            ("1", "select", tr("MainWindow", "1. Select")),
-            ("2", "don", tr("MainWindow", "2. Don")),
-            ("3", "kat", tr("MainWindow", "3. Kat")),
-            # Labels only -- "slider"/"spinner" have been the stable internal
-            # tool ids since M3 and are what the .osu type bits mean.
-            ("4", "slider", tr("MainWindow", "4. Slider")),
-            ("5", "spinner", tr("MainWindow", "5. Spinner")),
-        )
-        for number, tool_id, label in tools:
-            button = QPushButton(label)
-            button.setStyleSheet(TOOL_BUTTON_STYLE)
-            button.setCheckable(True)
-            button.setFixedHeight(self.TOOL_BUTTON_HEIGHT)
-            button.setFocusPolicy(Qt.NoFocus)
-            button.setChecked(tool_id == "select")
-            button.toggled.connect(lambda checked, t=tool_id: self._set_active_tool(t) if checked else None)
-            tool_group.addButton(button)
-            self.tool_buttons[tool_id] = button
-            layout.addWidget(button)
-
-        self.new_combo_button = QPushButton(tr("MainWindow", "6. New Combo"))
-        self.new_combo_button.setStyleSheet(TOOL_BUTTON_STYLE)
-        self.new_combo_button.setCheckable(True)
-        self.new_combo_button.setFixedHeight(self.TOOL_BUTTON_HEIGHT)
-        self.new_combo_button.setFocusPolicy(Qt.NoFocus)
-        self.new_combo_button.toggled.connect(self._set_active_new_combo)
-        layout.addWidget(self.new_combo_button)
-
-        layout.addStretch(1)
-        self.global_tool_row = row
-        self.global_tool_row.setEnabled(False)
-        return row
+        return self._tool_state.build_global_tool_row()
 
     def _build_global_sv_tool_row(self) -> QWidget:
-        """M4 SV-editing tools: 1 select, 2 green line, 3 function. Global,
-        same pattern and rationale as the note tool row above; applies to
-        whichever SV view last had focus (self._active_sv_view). Only one of
-        this row and the note tool row is visible at a time, switched by
-        _editor_view_focus_changed based on which view type gained focus.
-        """
-        row = QWidget()
-        layout = QHBoxLayout(row)
-        layout.setContentsMargins(4, 4, 4, 4)
-        layout.setSpacing(4)
-        layout.addWidget(QLabel(tr("MainWindow", "SV tools:")))
-
-        self.sv_tool_buttons: dict[str, QPushButton] = {}
-        tool_group = QButtonGroup(row)
-        tool_group.setExclusive(True)
-        # Two sets sharing slot 1: an ordinary SV view builds green lines and
-        # sweeps, the Kiai and Sound Volume view sets kiai and note volume over
-        # the same drag. Both are built here and _sync_global_sv_tool_row shows
-        # whichever the focused view wants, so the digits keep meaning the
-        # button in the same position -- the rule the gimmick rows already use.
-        tools = (
-            ("1", "select", tr("MainWindow", "1. Select")),
-            ("2", "green_line", tr("MainWindow", "2. Green Line")),
-            ("3", "function", tr("MainWindow", "3. Function")),
-            ("2", "kiai", tr("MainWindow", "2. Kiai")),
-            ("3", "volume", tr("MainWindow", "3. Volume")),
-        )
-        for number, tool_id, label in tools:
-            button = QPushButton(label)
-            button.setStyleSheet(TOOL_BUTTON_STYLE)
-            button.setCheckable(True)
-            button.setFixedHeight(self.TOOL_BUTTON_HEIGHT)
-            button.setFocusPolicy(Qt.NoFocus)
-            button.setChecked(tool_id == "select")
-            button.toggled.connect(lambda checked, t=tool_id: self._set_active_sv_tool(t) if checked else None)
-            tool_group.addButton(button)
-            self.sv_tool_buttons[tool_id] = button
-            layout.addWidget(button)
-
-        self.SV_TOOLS_DEFAULT = ("select", "green_line", "function")
-        self.SV_TOOLS_KIAI_SOUND = ("select", "kiai", "volume")
-        for tool_id in self.SV_TOOLS_KIAI_SOUND[1:]:
-            self.sv_tool_buttons[tool_id].setVisible(False)
-
-        layout.addStretch(1)
-        self.global_sv_tool_row = row
-        self.global_sv_tool_row.setEnabled(False)
-        self.global_sv_tool_row.setVisible(False)
-        return row
+        return self._tool_state.build_global_sv_tool_row()
 
     def _build_tool_shortcuts(self) -> None:
-        """Number keys 1-6 as global tool shortcuts, not just clickable buttons.
-
-        ApplicationShortcut context fires regardless of which widget has
-        focus -- including self.timeline, the shared Fancy Arranger
-        timeline -- but the handler only ever calls set_tool on
-        self._active_chart_view / self._active_sv_view, both of which are
-        exclusively Editor-page views (see _editor_view_focus_changed), so
-        this can't resurrect the contamination risk a per-widget
-        keyPressEvent override would have. Routes to whichever of the two
-        tool rows is currently visible, since both use keys 1-3 for
-        different tools and only one is ever relevant at a time.
-
-        The bound key comes from the shortcut registry so Settings can rebind
-        it; the digit passed to the handler stays the logical tool number
-        regardless of which key ends up on it.
-
-        One shortcut per *scoped* definition, not a fixed six: the Editor
-        page's toolbox is `tool_1`...`tool_6`, and each gimmick layer has its
-        own set derived from its own toolbox (see the registration at the foot
-        of this module), because the layers do not agree on what tool 2 is or
-        even on how many tools there are.
-        """
-        self.tool_shortcuts: dict[str, QShortcut] = {}
-        self._tool_shortcuts_by_scope: dict[str, list[QShortcut]] = {}
-        # Set before any toolbox exists, so the first refresh has an answer.
-        self._tool_shortcuts_allowed = True
-        for definition in self.shortcuts.definitions.values():
-            # A scope is what marks a definition as a toolbox binding; the
-            # global actions each have their own QShortcut already.
-            if not definition.scope:
-                continue
-            digit = definition.action_id.rsplit("_", 1)[-1]
-            shortcut = QShortcut(QKeySequence(self.shortcuts.sequence(definition.action_id)), self)
-            shortcut.setContext(Qt.ApplicationShortcut)
-            shortcut.activated.connect(lambda d=digit: self._activate_tool_digit(d))
-            self.tool_shortcuts[definition.action_id] = shortcut
-            self._tool_shortcuts_by_scope.setdefault(definition.scope, []).append(shortcut)
-        self._refresh_tool_shortcut_scope()
+        self._tool_state.build_tool_shortcuts()
 
     def _set_tool_shortcuts_enabled(self, enabled: bool) -> None:
-        self._tool_shortcuts_allowed = enabled
-        self._refresh_tool_shortcut_scope()
+        self._tool_state.set_tool_shortcuts_enabled(enabled)
 
     def _refresh_tool_shortcut_scope(self) -> None:
-        """Leave only the reachable toolbox's keys enabled.
-
-        Every toolbox numbers its tools from 1, so seven of them want the key
-        "1" -- which is correct, since only one toolbox is reachable at a
-        time. Qt does not see it that way: two enabled ApplicationShortcuts on
-        one key fire `activatedAmbiguously` and *neither* acts, so the digit
-        has to belong to exactly one toolbox at any moment. The focused
-        gimmick layer's while that page is up, the Editor page's otherwise,
-        and none of them while a text widget has focus (see
-        `_editor_view_focus_changed`: an ApplicationShortcut consumes its key,
-        so the only way a digit reaches a search box is for no tool shortcut
-        to be enabled).
-
-        getattr throughout: focusChanged and _show_page both run before the
-        shortcuts and the pages exist.
-        """
-        by_scope = getattr(self, "_tool_shortcuts_by_scope", None)
-        if not by_scope:
-            return
-        stack = getattr(self, "page_stack", None)
-        if not self._tool_shortcuts_allowed:
-            active = ""
-        elif stack is not None and stack.currentIndex() == PAGE_GIMMICK:
-            active = getattr(self, "_active_gimmick_layer", None) or ""
-        else:
-            active = "editor"
-        for scope, shortcuts in by_scope.items():
-            for shortcut in shortcuts:
-                shortcut.setEnabled(scope == active)
+        self._tool_state.refresh_tool_shortcut_scope()
 
     def _activate_tool_digit(self, digit: str) -> None:
-        if should_ignore_shortcut_focus(QApplication.focusWidget()):
-            return
-        note_tools = {"1": "select", "2": "don", "3": "kat", "4": "slider", "5": "spinner"}
-        sv_tools = dict(zip("123", self._sv_tools_for(self._active_sv_view)))
-        # The gimmick page has its own row and its own meanings for 1-4, and it
-        # is checked first: its row is always visible while that page is up,
-        # where the Editor page's two rows are only visible on theirs.
-        if self.page_stack.currentIndex() == PAGE_GIMMICK:
-            # The digit is the button's position in the focused layer's own
-            # toolbox, so 2 is a fake slider in one layer and a barline note in
-            # the next -- the same relationship the buttons themselves have.
-            layer = getattr(self, "_active_gimmick_layer", None)
-            tools = self.GIMMICK_TOOLSETS.get(layer or "", ())
-            index = int(digit) - 1
-            if 0 <= index < len(tools):
-                self.gimmick_tool_buttons[layer][tools[index][0]].setChecked(True)
-            return
-        if self.global_tool_row.isVisible():
-            if digit in note_tools:
-                self.tool_buttons[note_tools[digit]].setChecked(True)
-            elif digit == "6":
-                self.new_combo_button.toggle()
-        elif self.global_sv_tool_row.isVisible() and digit in sv_tools:
-            self.sv_tool_buttons[sv_tools[digit]].setChecked(True)
+        self._tool_state.activate_tool_digit(digit)
 
     def _set_active_tool(self, tool_id: str) -> None:
-        if self._active_chart_view is not None:
-            self._active_chart_view.set_tool(tool_id)
+        self._tool_state.set_active_tool(tool_id)
 
     def _set_active_new_combo(self, value: bool) -> None:
-        if self._active_chart_view is not None:
-            self._active_chart_view.set_new_combo(value)
+        self._tool_state.set_active_new_combo(value)
 
     def _editor_view_focus_changed(self, _old, new) -> None:
-        # An ApplicationShortcut *consumes* its key, so the plain digits 1-6
-        # would eat characters typed into the library's search box or any spin
-        # box -- should_ignore_shortcut_focus can decline to act, but cannot
-        # hand the key back. Disabling the shortcuts outright while a text
-        # widget has focus is the only way the key reaches it.
-        self._set_tool_shortcuts_enabled(not should_ignore_shortcut_focus(new))
-
-        # Only Editor-page views (chart: symmetric; any SVEditorView) can
-        # become a tool target; self.timeline (the shared Fancy Arranger
-        # timeline) never does, so clicking it can't silently steal either
-        # global tool row. Whichever type gains focus shows its own row and
-        # hides the other, since only one is ever relevant at a time.
-        # A gimmick layer owns its own toolbox rather than the Editor page's:
-        # the same button means a different structure there.
-        # Moving to a *different* view always arrives on Select. A tool is a
-        # mode, and carrying one across a view boundary meant the first click in
-        # the view you just moved to placed something instead of selecting it --
-        # in the gimmick page, a whole barline structure. Same view again (after
-        # a modal dialog, say) is not a move, so an active tool survives that.
-        moved = new is not self._last_focused_editor_view
-
-        if getattr(new, "gimmick_layer", None) is not None:
-            if isinstance(new, SVEditorView):
-                self._active_sv_view = new
-            else:
-                self._active_chart_view = new
-            self._show_gimmick_row_for(new)
-            if moved:
-                self._last_focused_editor_view = new
-                self.gimmick_tool_buttons[new.gimmick_layer]["select"].setChecked(True)
-            return
-
-        if isinstance(new, TimelineGameplay) and new.symmetric:
-            self._active_chart_view = new
-            if moved:
-                new.set_tool("select")
-                new.set_new_combo(False)
-            self._last_focused_editor_view = new
-            self._sync_global_tool_row()
-            self.global_tool_row.setVisible(True)
-            self.global_sv_tool_row.setVisible(False)
-        elif isinstance(new, SVEditorView):
-            self._active_sv_view = new
-            if moved:
-                new.set_tool("select")
-            self._last_focused_editor_view = new
-            self._sync_global_sv_tool_row()
-            self.global_tool_row.setVisible(False)
-            self.global_sv_tool_row.setVisible(True)
+        self._tool_state.editor_view_focus_changed(_old, new)
 
     def _sync_global_tool_row(self) -> None:
-        view = self._active_chart_view
-        enabled = view is not None and view.isEnabled()
-        self.global_tool_row.setEnabled(enabled)
-        if view is None:
-            return
-        button = self.tool_buttons.get(view.tool)
-        if button is not None:
-            button.blockSignals(True)
-            button.setChecked(True)
-            button.blockSignals(False)
-        self.new_combo_button.blockSignals(True)
-        self.new_combo_button.setChecked(view.new_combo)
-        self.new_combo_button.blockSignals(False)
+        self._tool_state.sync_global_tool_row()
 
     def _set_active_sv_tool(self, tool_id: str) -> None:
-        if self._active_sv_view is not None:
-            self._active_sv_view.set_tool(tool_id)
+        self._tool_state.set_active_sv_tool(tool_id)
 
     def _sv_tools_for(self, view) -> tuple[str, ...]:
-        """Which of the two SV tool sets `view` is driven by."""
-        if getattr(view, "kiai_sound", False):
-            return self.SV_TOOLS_KIAI_SOUND
-        return self.SV_TOOLS_DEFAULT
+        return self._tool_state.sv_tools_for(view)
 
     def _sync_global_sv_tool_row(self) -> None:
-        view = self._active_sv_view
-        enabled = view is not None and view.isEnabled()
-        self.global_sv_tool_row.setEnabled(enabled)
-        if view is None:
-            return
-        wanted = self._sv_tools_for(view)
-        for tool_id, button in self.sv_tool_buttons.items():
-            button.setVisible(tool_id in wanted)
-        button = self.sv_tool_buttons.get(view.tool)
-        if button is not None:
-            button.blockSignals(True)
-            button.setChecked(True)
-            button.blockSignals(False)
+        self._tool_state.sync_global_sv_tool_row()
+
+    # Read/write pass-throughs: clipboard, editor-view management and
+    # playback code elsewhere in MainWindow still read and write these
+    # directly, and the test suite reaches for several of them too.
+    @property
+    def _active_chart_view(self): return self._tool_state.active_chart_view
+    @_active_chart_view.setter
+    def _active_chart_view(self, value): self._tool_state.active_chart_view = value
+    @property
+    def _active_sv_view(self): return self._tool_state.active_sv_view
+    @_active_sv_view.setter
+    def _active_sv_view(self, value): self._tool_state.active_sv_view = value
+    @property
+    def _last_focused_editor_view(self): return self._tool_state.last_focused_editor_view
+    @_last_focused_editor_view.setter
+    def _last_focused_editor_view(self, value): self._tool_state.last_focused_editor_view = value
+    @property
+    def tool_buttons(self): return self._tool_state.tool_buttons
+    @property
+    def new_combo_button(self): return self._tool_state.new_combo_button
+    @property
+    def sv_tool_buttons(self): return self._tool_state.sv_tool_buttons
+    @property
+    def global_tool_row(self): return self._tool_state.global_tool_row
+    @property
+    def global_sv_tool_row(self): return self._tool_state.global_sv_tool_row
+    @property
+    def SV_TOOLS_DEFAULT(self): return self._tool_state.SV_TOOLS_DEFAULT
+    @property
+    def SV_TOOLS_KIAI_SOUND(self): return self._tool_state.SV_TOOLS_KIAI_SOUND
+    @property
+    def tool_shortcuts(self): return self._tool_state.tool_shortcuts
+    @property
+    def _tool_shortcuts_by_scope(self): return self._tool_state._tool_shortcuts_by_scope
+    @property
+    def _tool_shortcuts_allowed(self): return self._tool_state._tool_shortcuts_allowed
 
     def _difficulty_for_view(self, view) -> Path | None:
         """Which difficulty a chart/SV view belongs to.
