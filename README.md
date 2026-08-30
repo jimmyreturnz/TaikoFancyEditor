@@ -1,5 +1,15 @@
 # Taiko Fancy Arranger
 
+I'll write a proper readme myself somedays, just read below first for brief understanding of what this tool can
+If you want to ask on how to use it or suggest some ideas, my osu name is jimmyreturnz
+my discord is also jimmyreturnz
+thanks in advance!
+
+いつかちゃんとしたREADMEファイルを書くつもりですがまずは下記を読んでこのツールがどんなものか簡単に理解してください
+使い方の質問やアイデアの提案などがあれば僕のosu!ネームはjimmyreturnzです
+Discordもjimmyreturnzです
+よろしくお願いします！
+
 **An osu!taiko editor with a visual pattern arranger built in.**
 
 *日本語版は [README_JP.md](README_JP.md) をご覧ください。*
