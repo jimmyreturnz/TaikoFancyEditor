@@ -12575,13 +12575,6 @@ class MainWindow(QMainWindow):
         if name=="drawn_path":params["points"]=list(self.drawing_points.get(group) or self.last_drawing_points)
         return name,params
 
-    def open_map(self) -> None:
-        filename, _ = QFileDialog.getOpenFileName(
-            self, tr("MainWindow", "Open osu! beatmap"), "", tr("MainWindow", "osu! beatmaps (*.osu)")
-        )
-        if filename:
-            self._load_map_path(Path(filename).resolve(), refresh_difficulties=True)
-
     def _ensure_state(self, source_path: Path) -> DifficultyState:
         """Return the DifficultyState for source_path, parsing it once.
 
