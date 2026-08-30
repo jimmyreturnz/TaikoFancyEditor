@@ -6782,6 +6782,374 @@ class LanguageDialog(QDialog):
         self.accept()
 
 
+class LibraryPageController:
+    """Library page: browse every taiko chart under the osu! Songs folder,
+    song then difficulty, and hand the chosen one back to the window.
+
+    Owns the page's widgets and the scan state behind them. `_library_cache_path`
+    stays on MainWindow itself rather than moving here -- tests monkeypatch it
+    per-instance (`window._library_cache_path = lambda: ...`) to point a scan at
+    a temp file, and a copy made here would not see that patch.
+    """
+
+    def __init__(self, window: "MainWindow") -> None:
+        self.window = window
+        # {song folder: [TaikoDifficulty, ...]} for every mode=1 chart found
+        # under the configured osu! Songs folder. Filled by the sliced scan
+        # (scan_step), persisted between runs in library_cache.
+        self.library_songs: dict[Path, list] = {}
+        self.library_cache: dict[str, list] = {}
+        self._scan_songs: dict[Path, list] = {}
+        self.listed_paths: set[Path] = set()
+        self._scan_iterator = None
+        self._scan_files = 0
+        self._scan_since_refresh = 0
+        self.scan_timer = QTimer(window)
+        self.scan_timer.setInterval(0)
+        self.scan_timer.timeout.connect(self.scan_step)
+
+    def build_page(self) -> QWidget:
+        """Browse every taiko chart under the osu! Songs folder: song, then difficulty."""
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(10, 6, 10, 6)
+        layout.setSpacing(8)
+
+        top = QHBoxLayout()
+        heading = QLabel(tr("MainWindow", "Taiko songs"))
+        heading.setStyleSheet("font-size: 17px; font-weight: 700;")
+        top.addWidget(heading)
+
+        self.library_search = QLineEdit()
+        self.library_search.setPlaceholderText(
+            tr("MainWindow", "Search artist, title, difficulty, mapper or tags")
+        )
+        self.library_search.setClearButtonEnabled(True)
+        self.library_search.setMinimumWidth(240)
+        self.library_search.textChanged.connect(lambda _text: self.rebuild_song_list())
+        top.addWidget(self.library_search, 1)
+
+        self.library_folder_label = ElidedLabel("")
+        self.library_folder_label.setMaximumWidth(360)
+        self.library_folder_label.setStyleSheet("color: #97a3b4;")
+        top.addWidget(self.library_folder_label)
+
+        change_folder_button = QPushButton(tr("MainWindow", "Change Folder"))
+        change_folder_button.setFocusPolicy(Qt.NoFocus)
+        change_folder_button.clicked.connect(self.choose_songs_folder)
+        top.addWidget(change_folder_button)
+
+        rescan_button = QPushButton(tr("MainWindow", "Rescan"))
+        rescan_button.setToolTip(tr("MainWindow", "Look for songs added or changed since the last scan"))
+        rescan_button.setFocusPolicy(Qt.NoFocus)
+        rescan_button.clicked.connect(self.rescan)
+        top.addWidget(rescan_button)
+        layout.addLayout(top)
+
+        # Second row: how the list is organised. All three re-sort in place,
+        # with no rescan -- they only change how the same index is displayed.
+        arrange = QHBoxLayout()
+        arrange.addWidget(QLabel(tr("MainWindow", "Group by")))
+        self.library_group_combo = QComboBox()
+        self.library_group_combo.addItem(tr("MainWindow", "Nothing"), "none")
+        self.library_group_combo.addItem(tr("MainWindow", "Mapper"), "mapper")
+        self.library_group_combo.addItem(tr("MainWindow", "Artist"), "artist")
+        self.library_group_combo.currentIndexChanged.connect(lambda _index: self.rebuild_song_list())
+        arrange.addWidget(self.library_group_combo)
+
+        arrange.addWidget(QLabel(tr("MainWindow", "Sort")))
+        self.library_sort_combo = QComboBox()
+        self.library_sort_combo.addItem(tr("MainWindow", "A to Z"), "az")
+        self.library_sort_combo.addItem(tr("MainWindow", "Z to A"), "za")
+        self.library_sort_combo.currentIndexChanged.connect(lambda _index: self.rebuild_song_list())
+        arrange.addWidget(self.library_sort_combo)
+
+        self.original_metadata_check = QCheckBox(tr("MainWindow", "Original language metadata"))
+        self.original_metadata_check.setToolTip(
+            tr("MainWindow", "Show titles and artists in the song's own script instead of the romanized fields")
+        )
+        self.original_metadata_check.setChecked(self.window.settings.bool_value("library/original_metadata", False))
+        self.original_metadata_check.toggled.connect(self.original_metadata_toggled)
+        arrange.addWidget(self.original_metadata_check)
+        arrange.addStretch(1)
+        layout.addLayout(arrange)
+
+        split = QSplitter(Qt.Horizontal)
+
+        self.song_list = QListWidget()
+        self.song_list.currentRowChanged.connect(self.song_selected)
+        self.song_list.itemActivated.connect(lambda _item: self.difficulty_list.setFocus())
+        split.addWidget(self.song_list)
+
+        right = QWidget()
+        right_layout = QVBoxLayout(right)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(6)
+        right_layout.addWidget(QLabel(tr("MainWindow", "Difficulties")))
+        self.difficulty_list = QListWidget()
+        self.difficulty_list.itemActivated.connect(lambda _item: self.open_selected_difficulty())
+        right_layout.addWidget(self.difficulty_list, 1)
+        self.open_difficulty_button = QPushButton(tr("MainWindow", "Edit This Difficulty"))
+        self.open_difficulty_button.clicked.connect(self.open_selected_difficulty)
+        right_layout.addWidget(self.open_difficulty_button)
+        split.addWidget(right)
+        split.setSizes([820, 420])
+        layout.addWidget(split, 1)
+
+        footer = QHBoxLayout()
+        self.library_status = QLabel(tr("MainWindow", "No songs folder selected yet."))
+        footer.addWidget(self.library_status, 1)
+        self.scan_progress = QProgressBar()
+        # Indeterminate: the walk discovers files as it goes, so there is no
+        # honest total to count towards until it has already finished.
+        self.scan_progress.setRange(0, 0)
+        self.scan_progress.setFixedWidth(160)
+        self.scan_progress.setTextVisible(False)
+        self.scan_progress.setVisible(False)
+        footer.addWidget(self.scan_progress)
+        layout.addLayout(footer)
+
+        page.setStyleSheet(
+            """
+            QListWidget { background: #222a36; border: 1px solid #303947; border-radius: 6px; padding: 4px; }
+            QListWidget::item { padding: 7px 8px; border-radius: 4px; }
+            QListWidget::item:selected { background: #f3a6bd; color: #17191f; }
+            QLineEdit { background: #252d39; border: 1px solid #3a4554; border-radius: 5px; padding: 6px; }
+            QProgressBar { background: #252d39; border: 1px solid #3a4554; border-radius: 5px; }
+            QProgressBar::chunk { background: #f3a6bd; }
+            """
+        )
+        return page
+
+    # -- folder, scan, cache --------------------------------------------------
+
+    def start(self) -> None:
+        """First thing after the window is shown: get a folder, then scan it.
+
+        Called from main() rather than __init__ so constructing a MainWindow
+        (tests, and the Fancy Arranger's own file-dialog flow) never triggers a
+        multi-thousand-file walk of someone's disk.
+        """
+        folder = self.window.settings.string_value("library/songs_folder", "")
+        if folder and Path(folder).is_dir() and self.window.settings.bool_value("setup/completed", False):
+            self.start_scan()
+            return
+        # First start: say what the folder picker about to open is for, in the
+        # language just chosen, before dropping someone into a bare dialog.
+        QMessageBox.information(
+            self.window,
+            tr("MainWindow", "Select your osu! Songs folder"),
+            tr(
+                "MainWindow",
+                "Please select your osu! Songs folder.\n\n"
+                "Every beatmap in it is checked once for taiko difficulties, and the result is "
+                "remembered, so this only takes a while the first time.",
+            ),
+        )
+        self.choose_songs_folder()
+
+    def default_songs_folder(self) -> str:
+        candidate = Path(
+            QStandardPaths.writableLocation(QStandardPaths.HomeLocation) or str(Path.home())
+        ) / "AppData" / "Local" / "osu!" / "Songs"
+        return str(candidate) if candidate.is_dir() else ""
+
+    def choose_songs_folder(self) -> None:
+        current = self.window.settings.string_value("library/songs_folder", "") or self.default_songs_folder()
+        folder = QFileDialog.getExistingDirectory(
+            self.window, tr("MainWindow", "Select your osu! Songs folder"), current
+        )
+        if not folder:
+            return
+        self.window.settings.set_value("library/songs_folder", folder)
+        # Only now is first-time setup really done; cancelling the picker
+        # leaves the flag unset so the next launch offers it again.
+        self.window.settings.set_value("setup/completed", True)
+        self.window.settings.sync()
+        self.start_scan()
+
+    def rescan(self) -> None:
+        """Rescan means rescan: throw the index away and walk the folder again.
+
+        The ordinary startup scan is incremental -- it reuses the cached entry
+        for any file whose size and mtime are unchanged, which is what makes it
+        fast. That also means a file the cache is *wrong* about (edited by
+        another program, restored from a backup, saved with the same size in the
+        same second) stays wrong however many times Rescan is pressed. Deleting
+        the file is what makes the button mean what it says.
+        """
+        try:
+            self.window._library_cache_path().unlink()
+        except OSError:
+            pass  # Never there, or not ours to delete: the walk still rebuilds it.
+        self.library_cache = {}
+        self.library_songs = {}
+        self.listed_paths = set()
+        self.start_scan()
+
+    def start_scan(self) -> None:
+        folder = self.window.settings.string_value("library/songs_folder", "")
+        self.library_folder_label.setText(folder)
+        if not folder or not Path(folder).is_dir():
+            self.library_status.setText(tr("MainWindow", "No songs folder selected yet."))
+            return
+        self.scan_timer.stop()
+        self.library_cache = load_cache(self.window._library_cache_path())
+        # Show the saved index first, then verify it: on every start after the
+        # first, the list is complete before a single file has been reopened.
+        self.library_songs = group_by_song(songs_from_cache(self.library_cache, Path(folder)))
+        self.listed_paths = {
+            difficulty.path for group in self.library_songs.values() for difficulty in group
+        }
+        self.rebuild_song_list()
+        # The walk fills a separate dict that becomes the authoritative one at
+        # the end, so difficulties deleted since the last run disappear -- while
+        # anything genuinely new is added to the visible list as it is found.
+        self._scan_songs = {}
+        self._scan_files = 0
+        self._scan_since_refresh = 0
+        self._scan_iterator = scan(Path(folder), self.library_cache)
+        self.scan_progress.setVisible(True)
+        self.update_scan_status(
+            tr("MainWindow", "{songs} taiko songs from the saved index. Checking for new maps...")
+            if self.library_songs
+            else tr("MainWindow", "Scanning {files} files, {songs} taiko songs found")
+        )
+        self.scan_timer.start()
+
+    def scan_step(self) -> None:
+        """Consume one frame's worth of the scan, then hand the UI back."""
+        deadline = perf_counter() + SCAN_SLICE_SECONDS
+        while perf_counter() < deadline:
+            try:
+                found = next(self._scan_iterator)
+            except StopIteration:
+                self.finish_scan()
+                return
+            self._scan_files += 1
+            if found is not None:
+                self._scan_songs.setdefault(found.folder, []).append(found)
+                if found.path not in self.listed_paths:
+                    self.listed_paths.add(found.path)
+                    self.library_songs.setdefault(found.folder, []).append(found)
+                    self._scan_since_refresh += 1
+        # Redrawing a list of thousands of rows costs far more than the scan
+        # slice itself, so it happens on found songs, not on every tick.
+        if self._scan_since_refresh >= 200:
+            self._scan_since_refresh = 0
+            self.rebuild_song_list()
+        self.update_scan_status(tr("MainWindow", "Scanning {files} files, {songs} taiko songs found"))
+
+    def finish_scan(self) -> None:
+        self.scan_timer.stop()
+        self._scan_iterator = None
+        self.scan_progress.setVisible(False)
+        # What the walk actually found wins: this is where songs deleted since
+        # the last run leave the list.
+        self.library_songs = self._scan_songs
+        try:
+            save_cache(self.window._library_cache_path(), self.library_cache)
+        except OSError:
+            pass  # A browsable list now matters more than a fast start next time.
+        self.rebuild_song_list()
+        self.update_scan_status(tr("MainWindow", "{songs} taiko songs, {files} files scanned"))
+
+    def update_scan_status(self, template: str) -> None:
+        self.library_status.setText(
+            template.format(files=self._scan_files, songs=len(self.library_songs))
+        )
+
+    # -- the two lists ----------------------------------------------------
+
+    def original_metadata_toggled(self, checked: bool) -> None:
+        self.window.settings.set_value("library/original_metadata", checked)
+        self.window.settings.sync()
+        self.rebuild_song_list()
+
+    def song_entries(self) -> list[tuple[str, str, str, Path]]:
+        """(group, sort label, row text, folder) for the songs the filters keep.
+
+        Sorted by group first so the list can be walked once and broken into
+        headers; Z-to-A reverses the groups too, which is what "sort by
+        artist, Z to A" has to mean once songs are grouped by artist.
+        """
+        original = self.original_metadata_check.isChecked()
+        grouping = str(self.library_group_combo.currentData())
+        needle = self.library_search.text().strip().lower()
+        entries: list[tuple[str, str, str, Path]] = []
+        for folder, difficulties in self.library_songs.items():
+            if needle and not any(needle in difficulty.search_text() for difficulty in difficulties):
+                continue
+            first = difficulties[0]
+            label = first.song_label(original)
+            parts = [label]
+            if first.creator:
+                parts.append(first.creator)
+            parts.append(str(len(difficulties)))
+            group = ""
+            if grouping == "mapper":
+                group = first.creator or tr("MainWindow", "Unknown mapper")
+            elif grouping == "artist":
+                group = first.display_artist(original) or tr("MainWindow", "Unknown artist")
+            entries.append((group, label, "   ·   ".join(parts), folder))
+        entries.sort(key=lambda entry: (entry[0].lower(), entry[1].lower()))
+        if str(self.library_sort_combo.currentData()) == "za":
+            entries.reverse()
+        return entries
+
+    def rebuild_song_list(self) -> None:
+        previous = self.song_list.currentItem()
+        previous_folder = previous.data(Qt.UserRole) if previous else None
+        self.song_list.blockSignals(True)
+        self.song_list.clear()
+        current_group = None
+        for group, _label, text, folder in self.song_entries():
+            if group and group != current_group:
+                current_group = group
+                header = QListWidgetItem(group)
+                # Enabled but not selectable: a divider you cannot land on,
+                # while still painting in the enabled palette -- NoItemFlags
+                # would grey the text out and lose the accent colour.
+                header.setFlags(Qt.ItemIsEnabled)
+                font = header.font()
+                font.setBold(True)
+                header.setFont(font)
+                header.setForeground(QColor(ACCENT_PINK))
+                self.song_list.addItem(header)
+            item = QListWidgetItem(text)
+            item.setData(Qt.UserRole, str(folder))
+            item.setToolTip(str(folder))
+            self.song_list.addItem(item)
+        self.song_list.blockSignals(False)
+        for row in range(self.song_list.count()):
+            if self.song_list.item(row).data(Qt.UserRole) == previous_folder:
+                self.song_list.setCurrentRow(row)
+                return
+        self.difficulty_list.clear()
+
+    def song_selected(self, row: int) -> None:
+        self.difficulty_list.clear()
+        item = self.song_list.item(row)
+        if item is None or item.data(Qt.UserRole) is None:
+            return  # a group header
+        difficulties = self.library_songs.get(Path(item.data(Qt.UserRole)), [])
+        for difficulty in sorted(difficulties, key=lambda entry: entry.version.lower()):
+            entry_item = QListWidgetItem(difficulty.version or difficulty.path.stem)
+            entry_item.setData(Qt.UserRole, str(difficulty.path))
+            entry_item.setToolTip(difficulty.path.name)
+            self.difficulty_list.addItem(entry_item)
+        if self.difficulty_list.count():
+            self.difficulty_list.setCurrentRow(0)
+
+    def open_selected_difficulty(self) -> None:
+        item = self.difficulty_list.currentItem()
+        if item is None:
+            return
+        # _load_map_path reports its own failure, and moves to the Editor page
+        # itself once the difficulty really loaded.
+        self.window._load_map_path(Path(item.data(Qt.UserRole)).resolve(), refresh_difficulties=True)
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -6872,10 +7240,7 @@ class MainWindow(QMainWindow):
         self._last_focused_editor_view: TimelineGameplay | SVEditorView | None = None
         QApplication.instance().focusChanged.connect(self._editor_view_focus_changed)
 
-        # Song library: {song folder: [TaikoDifficulty, ...]} for every mode=1
-        # chart found under the configured osu! Songs folder. Filled by the
-        # sliced scan (_scan_step), persisted between runs in _library_cache.
-        self._library_songs: dict[Path, list] = {}
+        self._library = LibraryPageController(self)
         # Which difficulty each gimmick session edits, and the timing snapshot
         # its snaps and scroll are anchored to. Read once, kept for the session.
         self._gimmick_pairings: dict[str, GimmickPairing] = load_index(self._gimmick_index_path())
@@ -6898,16 +7263,6 @@ class MainWindow(QMainWindow):
         # distance), reused until the tool is reselected and reconfigured --
         # see `_set_gimmick_tool` and `_multi_fake_slider_commands`.
         self._multi_fake_slider_params: tuple[int, int, int] = (0, 16, 2)
-
-        self._library_cache: dict[str, list] = {}
-        self._scan_songs: dict[Path, list] = {}
-        self._listed_paths: set[Path] = set()
-        self._scan_iterator = None
-        self._scan_files = 0
-        self._scan_since_refresh = 0
-        self.scan_timer = QTimer(self)
-        self.scan_timer.setInterval(0)
-        self.scan_timer.timeout.connect(self._scan_step)
 
         self.position_controls: dict[str, dict[str, ParameterControl]] = {}
         self.drawing_points={"all":[],"don":[],"kat":[]};self.last_drawing_points=[];self.drawing_dialog_active=False
@@ -7982,119 +8337,7 @@ class MainWindow(QMainWindow):
     # -- Song library page --------------------------------------------------
 
     def _build_library_page(self) -> QWidget:
-        """Browse every taiko chart under the osu! Songs folder: song, then difficulty."""
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(10, 6, 10, 6)
-        layout.setSpacing(8)
-
-        top = QHBoxLayout()
-        heading = QLabel(tr("MainWindow", "Taiko songs"))
-        heading.setStyleSheet("font-size: 17px; font-weight: 700;")
-        top.addWidget(heading)
-
-        self.library_search = QLineEdit()
-        self.library_search.setPlaceholderText(
-            tr("MainWindow", "Search artist, title, difficulty, mapper or tags")
-        )
-        self.library_search.setClearButtonEnabled(True)
-        self.library_search.setMinimumWidth(240)
-        self.library_search.textChanged.connect(lambda _text: self._rebuild_song_list())
-        top.addWidget(self.library_search, 1)
-
-        self.library_folder_label = ElidedLabel("")
-        self.library_folder_label.setMaximumWidth(360)
-        self.library_folder_label.setStyleSheet("color: #97a3b4;")
-        top.addWidget(self.library_folder_label)
-
-        change_folder_button = QPushButton(tr("MainWindow", "Change Folder"))
-        change_folder_button.setFocusPolicy(Qt.NoFocus)
-        change_folder_button.clicked.connect(self._choose_songs_folder)
-        top.addWidget(change_folder_button)
-
-        rescan_button = QPushButton(tr("MainWindow", "Rescan"))
-        rescan_button.setToolTip(tr("MainWindow", "Look for songs added or changed since the last scan"))
-        rescan_button.setFocusPolicy(Qt.NoFocus)
-        rescan_button.clicked.connect(self._rescan_library)
-        top.addWidget(rescan_button)
-        layout.addLayout(top)
-
-        # Second row: how the list is organised. All three re-sort in place,
-        # with no rescan -- they only change how the same index is displayed.
-        arrange = QHBoxLayout()
-        arrange.addWidget(QLabel(tr("MainWindow", "Group by")))
-        self.library_group_combo = QComboBox()
-        self.library_group_combo.addItem(tr("MainWindow", "Nothing"), "none")
-        self.library_group_combo.addItem(tr("MainWindow", "Mapper"), "mapper")
-        self.library_group_combo.addItem(tr("MainWindow", "Artist"), "artist")
-        self.library_group_combo.currentIndexChanged.connect(lambda _index: self._rebuild_song_list())
-        arrange.addWidget(self.library_group_combo)
-
-        arrange.addWidget(QLabel(tr("MainWindow", "Sort")))
-        self.library_sort_combo = QComboBox()
-        self.library_sort_combo.addItem(tr("MainWindow", "A to Z"), "az")
-        self.library_sort_combo.addItem(tr("MainWindow", "Z to A"), "za")
-        self.library_sort_combo.currentIndexChanged.connect(lambda _index: self._rebuild_song_list())
-        arrange.addWidget(self.library_sort_combo)
-
-        self.original_metadata_check = QCheckBox(tr("MainWindow", "Original language metadata"))
-        self.original_metadata_check.setToolTip(
-            tr("MainWindow", "Show titles and artists in the song's own script instead of the romanized fields")
-        )
-        self.original_metadata_check.setChecked(self.settings.bool_value("library/original_metadata", False))
-        self.original_metadata_check.toggled.connect(self._original_metadata_toggled)
-        arrange.addWidget(self.original_metadata_check)
-        arrange.addStretch(1)
-        layout.addLayout(arrange)
-
-        split = QSplitter(Qt.Horizontal)
-
-        self.song_list = QListWidget()
-        self.song_list.currentRowChanged.connect(self._song_selected)
-        self.song_list.itemActivated.connect(lambda _item: self.difficulty_list.setFocus())
-        split.addWidget(self.song_list)
-
-        right = QWidget()
-        right_layout = QVBoxLayout(right)
-        right_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.setSpacing(6)
-        right_layout.addWidget(QLabel(tr("MainWindow", "Difficulties")))
-        self.difficulty_list = QListWidget()
-        self.difficulty_list.itemActivated.connect(lambda _item: self._open_selected_difficulty())
-        right_layout.addWidget(self.difficulty_list, 1)
-        self.open_difficulty_button = QPushButton(tr("MainWindow", "Edit This Difficulty"))
-        self.open_difficulty_button.clicked.connect(self._open_selected_difficulty)
-        right_layout.addWidget(self.open_difficulty_button)
-        split.addWidget(right)
-        split.setSizes([820, 420])
-        layout.addWidget(split, 1)
-
-        footer = QHBoxLayout()
-        self.library_status = QLabel(tr("MainWindow", "No songs folder selected yet."))
-        footer.addWidget(self.library_status, 1)
-        self.scan_progress = QProgressBar()
-        # Indeterminate: the walk discovers files as it goes, so there is no
-        # honest total to count towards until it has already finished.
-        self.scan_progress.setRange(0, 0)
-        self.scan_progress.setFixedWidth(160)
-        self.scan_progress.setTextVisible(False)
-        self.scan_progress.setVisible(False)
-        footer.addWidget(self.scan_progress)
-        layout.addLayout(footer)
-
-        page.setStyleSheet(
-            """
-            QListWidget { background: #222a36; border: 1px solid #303947; border-radius: 6px; padding: 4px; }
-            QListWidget::item { padding: 7px 8px; border-radius: 4px; }
-            QListWidget::item:selected { background: #f3a6bd; color: #17191f; }
-            QLineEdit { background: #252d39; border: 1px solid #3a4554; border-radius: 5px; padding: 6px; }
-            QProgressBar { background: #252d39; border: 1px solid #3a4554; border-radius: 5px; }
-            QProgressBar::chunk { background: #f3a6bd; }
-            """
-        )
-        return page
-
-    # -- Song library: folder, scan, cache ----------------------------------
+        return self._library.build_page()
 
     def _library_cache_path(self) -> Path:
         """Where the song index lives: <AppData>/jimmyreturnz/TaikoFancyArranger.
@@ -8102,235 +8345,63 @@ class MainWindow(QMainWindow):
         main() sets the organization and application names, without which
         AppDataLocation is a folder shared with every other app run by the
         same Python.
+
+        Stays a real method (not delegated) because tests monkeypatch it
+        per-instance to point a scan at a temp file; LibraryPageController
+        calls back through self.window._library_cache_path() rather than a
+        private copy so that patch is still seen.
         """
         root = QStandardPaths.writableLocation(QStandardPaths.AppDataLocation)
         return Path(root or str(Path.home())) / "song_index.json"
 
     def start_library(self) -> None:
-        """First thing after the window is shown: get a folder, then scan it.
-
-        Called from main() rather than __init__ so constructing a MainWindow
-        (tests, and the Fancy Arranger's own file-dialog flow) never triggers a
-        multi-thousand-file walk of someone's disk.
-        """
-        folder = self.settings.string_value("library/songs_folder", "")
-        if folder and Path(folder).is_dir() and self.settings.bool_value("setup/completed", False):
-            self._start_scan()
-            return
-        # First start: say what the folder picker about to open is for, in the
-        # language just chosen, before dropping someone into a bare dialog.
-        QMessageBox.information(
-            self,
-            tr("MainWindow", "Select your osu! Songs folder"),
-            tr(
-                "MainWindow",
-                "Please select your osu! Songs folder.\n\n"
-                "Every beatmap in it is checked once for taiko difficulties, and the result is "
-                "remembered, so this only takes a while the first time.",
-            ),
-        )
-        self._choose_songs_folder()
-
-    def _default_songs_folder(self) -> str:
-        candidate = Path(
-            QStandardPaths.writableLocation(QStandardPaths.HomeLocation) or str(Path.home())
-        ) / "AppData" / "Local" / "osu!" / "Songs"
-        return str(candidate) if candidate.is_dir() else ""
-
-    def _choose_songs_folder(self) -> None:
-        current = self.settings.string_value("library/songs_folder", "") or self._default_songs_folder()
-        folder = QFileDialog.getExistingDirectory(
-            self, tr("MainWindow", "Select your osu! Songs folder"), current
-        )
-        if not folder:
-            return
-        self.settings.set_value("library/songs_folder", folder)
-        # Only now is first-time setup really done; cancelling the picker
-        # leaves the flag unset so the next launch offers it again.
-        self.settings.set_value("setup/completed", True)
-        self.settings.sync()
-        self._start_scan()
+        self._library.start()
 
     def _rescan_library(self) -> None:
-        """Rescan means rescan: throw the index away and walk the folder again.
-
-        The ordinary startup scan is incremental -- it reuses the cached entry
-        for any file whose size and mtime are unchanged, which is what makes it
-        fast. That also means a file the cache is *wrong* about (edited by
-        another program, restored from a backup, saved with the same size in the
-        same second) stays wrong however many times Rescan is pressed. Deleting
-        the file is what makes the button mean what it says.
-        """
-        try:
-            self._library_cache_path().unlink()
-        except OSError:
-            pass  # Never there, or not ours to delete: the walk still rebuilds it.
-        self._library_cache = {}
-        self._library_songs = {}
-        self._listed_paths = set()
-        self._start_scan()
+        self._library.rescan()
 
     def _start_scan(self) -> None:
-        folder = self.settings.string_value("library/songs_folder", "")
-        self.library_folder_label.setText(folder)
-        if not folder or not Path(folder).is_dir():
-            self.library_status.setText(tr("MainWindow", "No songs folder selected yet."))
-            return
-        self.scan_timer.stop()
-        self._library_cache = load_cache(self._library_cache_path())
-        # Show the saved index first, then verify it: on every start after the
-        # first, the list is complete before a single file has been reopened.
-        self._library_songs = group_by_song(songs_from_cache(self._library_cache, Path(folder)))
-        self._listed_paths = {
-            difficulty.path for group in self._library_songs.values() for difficulty in group
-        }
-        self._rebuild_song_list()
-        # The walk fills a separate dict that becomes the authoritative one at
-        # the end, so difficulties deleted since the last run disappear -- while
-        # anything genuinely new is added to the visible list as it is found.
-        self._scan_songs = {}
-        self._scan_files = 0
-        self._scan_since_refresh = 0
-        self._scan_iterator = scan(Path(folder), self._library_cache)
-        self.scan_progress.setVisible(True)
-        self._update_scan_status(
-            tr("MainWindow", "{songs} taiko songs from the saved index. Checking for new maps...")
-            if self._library_songs
-            else tr("MainWindow", "Scanning {files} files, {songs} taiko songs found")
-        )
-        self.scan_timer.start()
+        self._library.start_scan()
 
     def _scan_step(self) -> None:
-        """Consume one frame's worth of the scan, then hand the UI back."""
-        deadline = perf_counter() + SCAN_SLICE_SECONDS
-        while perf_counter() < deadline:
-            try:
-                found = next(self._scan_iterator)
-            except StopIteration:
-                self._finish_scan()
-                return
-            self._scan_files += 1
-            if found is not None:
-                self._scan_songs.setdefault(found.folder, []).append(found)
-                if found.path not in self._listed_paths:
-                    self._listed_paths.add(found.path)
-                    self._library_songs.setdefault(found.folder, []).append(found)
-                    self._scan_since_refresh += 1
-        # Redrawing a list of thousands of rows costs far more than the scan
-        # slice itself, so it happens on found songs, not on every tick.
-        if self._scan_since_refresh >= 200:
-            self._scan_since_refresh = 0
-            self._rebuild_song_list()
-        self._update_scan_status(tr("MainWindow", "Scanning {files} files, {songs} taiko songs found"))
-
-    def _finish_scan(self) -> None:
-        self.scan_timer.stop()
-        self._scan_iterator = None
-        self.scan_progress.setVisible(False)
-        # What the walk actually found wins: this is where songs deleted since
-        # the last run leave the list.
-        self._library_songs = self._scan_songs
-        try:
-            save_cache(self._library_cache_path(), self._library_cache)
-        except OSError:
-            pass  # A browsable list now matters more than a fast start next time.
-        self._rebuild_song_list()
-        self._update_scan_status(tr("MainWindow", "{songs} taiko songs, {files} files scanned"))
-
-    def _update_scan_status(self, template: str) -> None:
-        self.library_status.setText(
-            template.format(files=self._scan_files, songs=len(self._library_songs))
-        )
-
-    # -- Song library: the two lists ----------------------------------------
-
-    def _original_metadata_toggled(self, checked: bool) -> None:
-        self.settings.set_value("library/original_metadata", checked)
-        self.settings.sync()
-        self._rebuild_song_list()
-
-    def _song_entries(self) -> list[tuple[str, str, str, Path]]:
-        """(group, sort label, row text, folder) for the songs the filters keep.
-
-        Sorted by group first so the list can be walked once and broken into
-        headers; Z-to-A reverses the groups too, which is what "sort by
-        artist, Z to A" has to mean once songs are grouped by artist.
-        """
-        original = self.original_metadata_check.isChecked()
-        grouping = str(self.library_group_combo.currentData())
-        needle = self.library_search.text().strip().lower()
-        entries: list[tuple[str, str, str, Path]] = []
-        for folder, difficulties in self._library_songs.items():
-            if needle and not any(needle in difficulty.search_text() for difficulty in difficulties):
-                continue
-            first = difficulties[0]
-            label = first.song_label(original)
-            parts = [label]
-            if first.creator:
-                parts.append(first.creator)
-            parts.append(str(len(difficulties)))
-            group = ""
-            if grouping == "mapper":
-                group = first.creator or tr("MainWindow", "Unknown mapper")
-            elif grouping == "artist":
-                group = first.display_artist(original) or tr("MainWindow", "Unknown artist")
-            entries.append((group, label, "   ·   ".join(parts), folder))
-        entries.sort(key=lambda entry: (entry[0].lower(), entry[1].lower()))
-        if str(self.library_sort_combo.currentData()) == "za":
-            entries.reverse()
-        return entries
-
-    def _rebuild_song_list(self) -> None:
-        previous = self.song_list.currentItem()
-        previous_folder = previous.data(Qt.UserRole) if previous else None
-        self.song_list.blockSignals(True)
-        self.song_list.clear()
-        current_group = None
-        for group, _label, text, folder in self._song_entries():
-            if group and group != current_group:
-                current_group = group
-                header = QListWidgetItem(group)
-                # Enabled but not selectable: a divider you cannot land on,
-                # while still painting in the enabled palette -- NoItemFlags
-                # would grey the text out and lose the accent colour.
-                header.setFlags(Qt.ItemIsEnabled)
-                font = header.font()
-                font.setBold(True)
-                header.setFont(font)
-                header.setForeground(QColor(ACCENT_PINK))
-                self.song_list.addItem(header)
-            item = QListWidgetItem(text)
-            item.setData(Qt.UserRole, str(folder))
-            item.setToolTip(str(folder))
-            self.song_list.addItem(item)
-        self.song_list.blockSignals(False)
-        for row in range(self.song_list.count()):
-            if self.song_list.item(row).data(Qt.UserRole) == previous_folder:
-                self.song_list.setCurrentRow(row)
-                return
-        self.difficulty_list.clear()
-
-    def _song_selected(self, row: int) -> None:
-        self.difficulty_list.clear()
-        item = self.song_list.item(row)
-        if item is None or item.data(Qt.UserRole) is None:
-            return  # a group header
-        difficulties = self._library_songs.get(Path(item.data(Qt.UserRole)), [])
-        for difficulty in sorted(difficulties, key=lambda entry: entry.version.lower()):
-            entry_item = QListWidgetItem(difficulty.version or difficulty.path.stem)
-            entry_item.setData(Qt.UserRole, str(difficulty.path))
-            entry_item.setToolTip(difficulty.path.name)
-            self.difficulty_list.addItem(entry_item)
-        if self.difficulty_list.count():
-            self.difficulty_list.setCurrentRow(0)
+        self._library.scan_step()
 
     def _open_selected_difficulty(self) -> None:
-        item = self.difficulty_list.currentItem()
-        if item is None:
-            return
-        # _load_map_path reports its own failure, and moves to the Editor page
-        # itself once the difficulty really loaded.
-        self._load_map_path(Path(item.data(Qt.UserRole)).resolve(), refresh_difficulties=True)
+        self._library.open_selected_difficulty()
+
+    # Read/write pass-throughs for the library widgets and scan state: the
+    # test suite (and main()) reach for these directly on the window, so
+    # LibraryPageController keeps owning them while these forward the name.
+    @property
+    def song_list(self): return self._library.song_list
+    @property
+    def difficulty_list(self): return self._library.difficulty_list
+    @property
+    def library_search(self): return self._library.library_search
+    @property
+    def scan_timer(self): return self._library.scan_timer
+    @property
+    def _library_songs(self): return self._library.library_songs
+    @_library_songs.setter
+    def _library_songs(self, value): self._library.library_songs = value
+    @property
+    def _library_cache(self): return self._library.library_cache
+    @_library_cache.setter
+    def _library_cache(self, value): self._library.library_cache = value
+    @property
+    def _listed_paths(self): return self._library.listed_paths
+    @_listed_paths.setter
+    def _listed_paths(self, value): self._library.listed_paths = value
+    @property
+    def _scan_iterator(self): return self._library._scan_iterator
+    @property
+    def _scan_files(self): return self._library._scan_files
+    @property
+    def library_group_combo(self): return self._library.library_group_combo
+    @property
+    def library_sort_combo(self): return self._library.library_sort_combo
+    @property
+    def original_metadata_check(self): return self._library.original_metadata_check
 
     # -- Editor page: page switcher + multi-difficulty view stacking --------
 
