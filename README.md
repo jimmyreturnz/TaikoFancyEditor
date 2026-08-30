@@ -18,13 +18,24 @@ Taiko Fancy Arranger started as a tool for turning osu!taiko notes into visual p
 
 Everything stays a playable osu! beatmap. Sections the editor does not model — storyboards, breaks, colours, editor bookmarks — are passed through byte-for-byte on save.
 
-> **Current release:** v3.2.0  
+> **Current release:** v3.2.1  
 > **Platform:** Windows x64  
 > **Author:** [jimmyreturnz](https://osu.ppy.sh/users/11306153)
 
 The original idea came from a random chat with maruaki101. Other inspirations include Alchyr's ranked maps *13 Stairs* and *Helios*, which use unusual note placement to create visual expression. You should go check it out [here!](https://osu.ppy.sh/beatmapsets/1093671#taiko/3819326)
 
 Many thanks to Mew’s beatmaps for studying reference that made the tool creation possible, and other player’s ideas!
+
+---
+
+## What is new in 3.2.1
+
+Internal cleanup only — no user-visible changes. `MainWindow` was split into
+smaller classes, a duplicate dead method was removed, and a suspected
+playback stutter under heavy maps was investigated and found to already be
+within budget once views finish their one-time startup cost.
+
+Full notes: [`docs/releases/v3.2.1.md`](docs/releases/v3.2.1.md).
 
 ---
 
