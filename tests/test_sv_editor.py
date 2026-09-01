@@ -352,6 +352,31 @@ class SVEditorIntegrationTests(unittest.TestCase):
         generated = [p for p in self.state.document.timing_points if p.uid not in before_ids]
         self.assertTrue(all(p.time >= 10500 for p in generated))
 
+    def test_generate_keeps_time_of_a_note_that_already_has_a_green_line(self):
+        """full_v14 has a green line at 2000ms (0.75x), which is also a note
+        time. The position offset exists to land a *new* line slightly
+        before the note it governs; a line already sitting there must keep
+        its exact time and just take the newly generated speed, not get
+        shoved to 1995 beside the untouched original.
+        """
+        before_ids = {p.uid for p in self.state.document.timing_points}
+        params = {
+            "initial_rate": 1.0, "final_rate": 2.0, "placement": "notes", "position_offset": -5,
+            "omit_barline": False, "relative_to_final_bpm": False, "function": "linear",
+        }
+        self.window._generate_sv(self.path, 1000.0, 3000.0, params)
+
+        at_2000 = [
+            p for p in self.state.document.timing_points
+            if not p.uninherited and round(p.time) == 2000
+        ]
+        self.assertEqual(len(at_2000), 1, "the existing line at 2000 must be updated in place, not duplicated")
+        self.assertNotAlmostEqual(at_2000[0].sv_multiplier, 0.75, places=2, msg="speed must be the newly generated one")
+        self.assertFalse(
+            any(round(p.time) == 1995 for p in self.state.document.timing_points if p.uid not in before_ids),
+            "must not also create an offset duplicate beside it",
+        )
+
     def test_generate_omit_barline_applies_only_to_first_point(self):
         before_ids = {p.uid for p in self.state.document.timing_points}
         params = {
@@ -461,6 +486,33 @@ class SVEditorIntegrationTests(unittest.TestCase):
 
         self.assertEqual(len(created_dialogs), 1)
         self.assertGreater(len(self.state.document.timing_points), before)
+
+    def test_dialog_prefill_keeps_existing_sv_precision(self):
+        """-100/beat_length routinely lands on a repeating decimal (1.4286x
+        here), so the rate spins need more than 2 decimals or the prefilled
+        "SV already in force at this end of the selection" is a rounded
+        approximation instead of the line that is actually there.
+        """
+        point = gui.TimingPoint.inherited_at(1000.0, 1.4286)
+        self.state.history.push(gui.InsertTimingPoints([point]), self.state)
+
+        created_dialogs = []
+
+        class FakeSVFunctionDialog(gui.SVFunctionDialog):
+            def exec(self):
+                created_dialogs.append(self)
+                return gui.QDialog.DialogCode.Rejected
+
+        original_dialog_class = gui.SVFunctionDialog
+        gui.SVFunctionDialog = FakeSVFunctionDialog
+        try:
+            self.window._open_sv_function_dialog(self.path, 1000.0, 3000.0)
+        finally:
+            gui.SVFunctionDialog = original_dialog_class
+
+        self.assertEqual(len(created_dialogs), 1)
+        self.assertEqual(created_dialogs[0].initial_rate_spin.decimals(), 4)
+        self.assertAlmostEqual(created_dialogs[0].initial_rate_spin.value(), 1.4286, places=3)
 
 
 if __name__ == "__main__":

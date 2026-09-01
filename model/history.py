@@ -48,6 +48,15 @@ class History:
         self.redo_stack.clear()
         self.revision += 1
 
+    def touch(self) -> None:
+        """Mark the target dirty for a change made outside any Command.
+
+        Only for state that intentionally has no undo step of its own (the
+        Fancy Arranger's background drop is the one caller) -- anything a
+        user expects Ctrl+Z to reverse belongs in a Command instead.
+        """
+        self.revision += 1
+
     # -- mutation ----------------------------------------------------------
 
     def push(self, command: Command, target: EditTarget, *, allow_merge: bool = False) -> None:

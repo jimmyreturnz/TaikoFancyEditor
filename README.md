@@ -18,13 +18,28 @@ Taiko Fancy Arranger started as a tool for turning osu!taiko notes into visual p
 
 Everything stays a playable osu! beatmap. Sections the editor does not model — storyboards, breaks, colours, editor bookmarks — are passed through byte-for-byte on save.
 
-> **Current release:** v3.2.1  
+> **Current release:** v3.2.2  
 > **Platform:** Windows x64  
 > **Author:** [jimmyreturnz](https://osu.ppy.sh/users/11306153)
 
 The original idea came from a random chat with maruaki101. Other inspirations include Alchyr's ranked maps *13 Stairs* and *Helios*, which use unusual note placement to create visual expression. You should go check it out [here!](https://osu.ppy.sh/beatmapsets/1093671#taiko/3819326)
 
 Many thanks to Mew’s beatmaps for studying reference that made the tool creation possible, and other player’s ideas!
+
+---
+
+## What is new in 3.2.2
+
+Bug-fix release: editor navigation, note dragging, the SV generator, background saving, and library scanning.
+
+- **Editor page no longer goes blank** after leaving it and clicking straight back into the Editor tab without picking a song again.
+- **Don/kat can be dragged** to a new position in the regular editor once selected.
+- **SV generator keeps 4 decimal places** on rate/BPM fields instead of rounding a matched value to 2.
+- **SV generator updates an existing green line in place** instead of leaving it and adding a second, offset one beside it.
+- **Fancy Arranger backgrounds now actually save** with Ctrl+S.
+- **Song library gets a Quick Scan button** for a fast incremental scan; Rescan is relabeled to describe the full rebuild it actually does.
+
+Full notes: [`docs/releases/v3.2.2.md`](docs/releases/v3.2.2.md).
 
 ---
 

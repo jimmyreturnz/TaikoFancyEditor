@@ -1727,11 +1727,17 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
         self._resizing_note = None
         self._resize_new_end_time: float | None = None
         # Whether a select-tool press on an object drags it to a new time
-        # instead of starting a rubber-band selection. On for the gimmick
-        # layers, where a structure has to be movable and the material is
-        # sparse; off elsewhere, because on a normal chart every click lands
-        # near a note and selection is what that click is for.
+        # instead of starting a rubber-band selection.
         self.move_enabled = False
+        # On a normal chart every click lands near a note, so a bare press
+        # only starts a move when the note under it is already selected --
+        # rubber-band selecting is still what an unselected note's click (or
+        # drag) does, and a plain click with no drag still fully deselects
+        # (see _finish_move) rather than reselecting what it landed on. A
+        # gimmick layer has neither rule: the material is sparse, a structure
+        # is placed and then nudged before it is ever selected, and a click
+        # there always means "select this".
+        self.move_requires_selection = False
         # Select-tool drag of something rather than of empty space -- see
         # objects_move_requested and _begin_move.
         self._move_note_uids: list[int] = []
@@ -2121,6 +2127,11 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
                 self._timing_point_near_x(event.position().x())
                 if grabbed_note is None and self.timing_edit_enabled else None
             )
+            if self.move_requires_selection and not (
+                (grabbed_note is not None and grabbed_note.original_index in self.selected)
+                or (grabbed_point is not None and grabbed_point.uid in self.selected_timing_uids)
+            ):
+                grabbed_note = grabbed_point = None
             if grabbed_note is not None or grabbed_point is not None:
                 self._begin_move(grabbed_note, grabbed_point, event.position().x())
                 event.accept()
@@ -2211,16 +2222,27 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
             # means what it always meant.
             self.note_place_requested.emit(*fallback)
         elif note_uids or point_uids:
-            # A press on an object that never became a drag is a click, and a
-            # click selects it. Without this, clicking a gimmick object did
-            # nothing at all -- it could only be selected by dragging a band
-            # around it, so Delete had nothing to act on unless you knew that.
-            grabbed = set(note_uids)
-            self.selected = {
-                note.original_index for note in self.notes if note.uid in grabbed
-            }
-            self.selected_timing_uids = set(point_uids)
-            self.selection_changed.emit(set(self.selected))
+            if self.move_requires_selection:
+                # move_requires_selection only ever grabs an already-selected
+                # object, so this was a plain click on the current selection
+                # with no drag -- the regular chart's own rule is that a
+                # plain click always deselects (see mouseReleaseEvent's
+                # rubber-band path), so this is that click, not a reselect.
+                self.selected = set()
+                self.selected_timing_uids = set()
+                self.selection_changed.emit(set())
+            else:
+                # A press on an object that never became a drag is a click,
+                # and a click selects it. Without this, clicking a gimmick
+                # object did nothing at all -- it could only be selected by
+                # dragging a band around it, so Delete had nothing to act on
+                # unless you knew that.
+                grabbed = set(note_uids)
+                self.selected = {
+                    note.original_index for note in self.notes if note.uid in grabbed
+                }
+                self.selected_timing_uids = set(point_uids)
+                self.selection_changed.emit(set(self.selected))
         self.update()
 
     def _update_drag_selection(self) -> None:
@@ -5717,13 +5739,13 @@ class BarlineFunctionDialog(QDialog):
         start_bpm = base_bpm_at(self.base_timing, start_ms) if self.base_timing else 120.0
         self.start_bpm_spin = QDoubleSpinBox()
         self.start_bpm_spin.setRange(1.0, 1000000.0)
-        self.start_bpm_spin.setDecimals(2)
+        self.start_bpm_spin.setDecimals(4)
         self.start_bpm_spin.setValue(start_bpm)
         layout.addRow(tr("MainWindow", "Start BPM"), self.start_bpm_spin)
 
         self.end_bpm_spin = QDoubleSpinBox()
         self.end_bpm_spin.setRange(1.0, 1000000.0)
-        self.end_bpm_spin.setDecimals(2)
+        self.end_bpm_spin.setDecimals(4)
         self.end_bpm_spin.setValue(start_bpm * 2)
         layout.addRow(tr("MainWindow", "End BPM"), self.end_bpm_spin)
 
@@ -5743,7 +5765,7 @@ class BarlineFunctionDialog(QDialog):
 
         self.sv_spin = QDoubleSpinBox()
         self.sv_spin.setRange(0.01, 100.0)
-        self.sv_spin.setDecimals(2)
+        self.sv_spin.setDecimals(4)
         self.sv_spin.setSingleStep(0.05)
         self.sv_spin.setValue(float(current_sv))
         layout.addRow(tr("MainWindow", "SV multiplier"), self.sv_spin)
@@ -6449,7 +6471,11 @@ class SVFunctionDialog(QDialog):
         # what the writer validates), so the same two spin boxes are told to
         # carry integers rather than a second pair being built beside them.
         low, high = (0.0, 100.0) if volume else (0.01, self.MAX_RATE)
-        step, decimals = (1.0, 0) if volume else (0.05, 2)
+        # 4 decimals for a rate: -100/beat_length routinely lands on a repeating
+        # decimal (e.g. 1.4286x), and 2 was rounding the prefilled "nearest
+        # green line" value before Generate ever saw it -- so it looked like
+        # the generator wasn't reading the existing line at all.
+        step, decimals = (1.0, 0) if volume else (0.05, 4)
 
         self.initial_rate_spin = QDoubleSpinBox()
         self.initial_rate_spin.setRange(low, high)
@@ -6567,7 +6593,7 @@ class SVFunctionDialog(QDialog):
         self.bpm_filter_check.setChecked(False)
         self.bpm_filter_spin = QDoubleSpinBox()
         self.bpm_filter_spin.setRange(1.0, 1000000.0)
-        self.bpm_filter_spin.setDecimals(2)
+        self.bpm_filter_spin.setDecimals(4)
         # The BPM in force where the drag started -- the run you are looking at
         # is almost always the one you want, so the default costs no typing.
         self.bpm_filter_spin.setValue(
@@ -6579,7 +6605,7 @@ class SVFunctionDialog(QDialog):
         # separate exact-value mode to keep in sync with this one.
         self.bpm_filter_max_spin = QDoubleSpinBox()
         self.bpm_filter_max_spin.setRange(1.0, 1000000.0)
-        self.bpm_filter_max_spin.setDecimals(2)
+        self.bpm_filter_max_spin.setDecimals(4)
         self.bpm_filter_max_spin.setValue(self.bpm_filter_spin.value())
         if gimmick_layer == "sv_barline":
             layout.addRow(tr("MainWindow", "Only red lines at this BPM"), self.bpm_filter_check)
@@ -6839,8 +6865,19 @@ class LibraryPageController:
         change_folder_button.clicked.connect(self.choose_songs_folder)
         top.addWidget(change_folder_button)
 
+        # Quick Scan is start_scan() as a button: incremental, reusing the
+        # cached entry for any file whose size and mtime haven't changed, so
+        # it is fast even on a huge Songs folder. Rescan (below) is the
+        # nuclear option -- see its own docstring for why the two need to
+        # stay separate rather than one button doing both.
+        quick_scan_button = QPushButton(tr("MainWindow", "Quick Scan"))
+        quick_scan_button.setToolTip(tr("MainWindow", "Look for songs added or changed since the last scan"))
+        quick_scan_button.setFocusPolicy(Qt.NoFocus)
+        quick_scan_button.clicked.connect(self.start_scan)
+        top.addWidget(quick_scan_button)
+
         rescan_button = QPushButton(tr("MainWindow", "Rescan"))
-        rescan_button.setToolTip(tr("MainWindow", "Look for songs added or changed since the last scan"))
+        rescan_button.setToolTip(tr("MainWindow", "Rebuild the whole index from scratch (slower; use if Quick Scan missed a change)"))
         rescan_button.setFocusPolicy(Qt.NoFocus)
         rescan_button.clicked.connect(self.rescan)
         top.addWidget(rescan_button)
@@ -8461,6 +8498,11 @@ class MainWindow(QMainWindow):
         if index == PAGE_GIMMICK and not self._enter_gimmick_page():
             self._show_page(current)
             return
+        # Clicking the Editor tab directly (not "Edit This Difficulty")
+        # skips _activate_state, so a difficulty whose views were torn down
+        # by an earlier _leave_editor never gets them back on its own.
+        if index == PAGE_EDITOR and self.state is not None:
+            self._ensure_default_editor_views(self.state)
         self._show_page(index)
 
     def _reload_timing_bars(self, state, force: bool = False) -> None:
@@ -11004,6 +11046,17 @@ class MainWindow(QMainWindow):
         if view_type == "chart":
             view = TimelineGameplay()
             view.set_symmetric(True)
+            # A note is placed by hand and then nudged, same as a gimmick
+            # object (see the direct TimelineGameplay() construction below
+            # for the gimmick page's own layers) -- without this, a select
+            # drag could box notes but a press on one just started a new
+            # rubber-band instead of moving them.
+            view.move_enabled = True
+            # A layer-restricted band (chart_layer) or a gimmick-page band
+            # (band) behaves like the gimmick page's own fixed layers --
+            # grab and nudge without selecting first. A plain Editor-page
+            # chart view is the "select first, then drag it" one.
+            view.move_requires_selection = chart_layer is None and not band
             # Right-click-scrub target for a live drag-selection (see
             # TimeAxisMixin._press_is_on_timing_bar): the gimmick page's own
             # bar for a band added there, the Editor page's otherwise.
@@ -11041,6 +11094,13 @@ class MainWindow(QMainWindow):
             )
             view.note_duration_edit_requested.connect(
                 lambda uid, new_end_ms, dp=difficulty_path: self._edit_note_duration(dp, uid, new_end_ms)
+            )
+            # Same handler the gimmick page's own layers use: _move_objects'
+            # _expand_move only grows a drag into the structure around it when
+            # there actually is one (a fake slider's squash line, a barline
+            # note's restores), so a plain don/kat here just retimes itself.
+            view.objects_move_requested.connect(
+                lambda notes, points, delta, dp=difficulty_path: self._move_objects(dp, notes, points, delta)
             )
             # A layer band deletes the whole structure, the same as the gimmick
             # page's own layers -- right-clicking a fake slider in one and
@@ -12213,6 +12273,21 @@ class MainWindow(QMainWindow):
         # about getting exactly.
         span = times[-1] - times[0]
         offset = params.get("position_offset", SVFunctionDialog.DEFAULT_POSITION_OFFSET_MS)
+        # A green line already sitting on a generation time, in the regular
+        # editor, keeps that time rather than being shoved to the offset
+        # position: the offset exists to land a *new* point slightly before
+        # the note it governs, and applying it here instead left the old line
+        # untouched (its ms didn't match the shifted one _insert_sv_points
+        # replaces by) and added a second, offset line right beside it. A
+        # gimmick layer's points never sit on the object's own ms to begin
+        # with, so its offset always applies.
+        existing_times = (
+            {
+                round(point.time) for point in state.document.timing_points
+                if not point.uninherited and start_ms - 0.5 <= point.time <= end_ms + 0.5
+            }
+            if layer_id is None else set()
+        )
         # Oscillation is indexed, not timed: it alternates on every *point*, so
         # unlike a sweep its shape cannot be read off elapsed time. Built up
         # front for the whole run, then indexed alongside it.
@@ -12229,7 +12304,8 @@ class MainWindow(QMainWindow):
             # Measured from where the point *belongs*, not from where the
             # offset moves it, so a -5ms lead-in doesn't skew the curve.
             t = 0.0 if span <= 0 else (source_time - times[0]) / span
-            time_ms = round(source_time + offset)
+            unoffset_ms = round(source_time)
+            time_ms = unoffset_ms if unoffset_ms in existing_times else round(source_time + offset)
             if wobble:
                 rate = wobble[index]
             else:
@@ -12813,16 +12889,24 @@ class MainWindow(QMainWindow):
         self.refresh_canvas()
         self.seek_audio(state.playhead_ms)
 
-        # First time this difficulty is activated, give it a default chart +
-        # SV editor view on the Editor page. Once the user closes them,
-        # _editor_view_groups drops the entry and they come back the next
-        # time this difficulty is (re)activated -- treated as "not set up
-        # yet" rather than "user doesn't want any views."
+        self._ensure_default_editor_views(state)
+
+        self.status.setText(f"{state.source_path.name} | drag notes, preview, then Apply to selection")
+
+    def _ensure_default_editor_views(self, state: DifficultyState) -> None:
+        """Give `state` a chart + SV editor view if it has none.
+
+        Covers both "first time this difficulty is activated" and "views
+        were torn down by leaving the editor, then the Editor tab was
+        clicked directly" -- the latter doesn't go through _activate_state,
+        so it needs the same check on entry to PAGE_EDITOR (see
+        _switch_page). Once the user closes them, _editor_view_groups drops
+        the entry and they come back next time either path runs -- treated
+        as "not set up yet" rather than "user doesn't want any views."
+        """
         if state.source_path not in self._editor_view_groups:
             self._add_editor_view("chart", state.source_path)
             self._add_editor_view("sv", state.source_path)
-
-        self.status.setText(f"{state.source_path.name} | drag notes, preview, then Apply to selection")
 
     def open_map(self) -> None:
         filename, _ = QFileDialog.getOpenFileName(
@@ -12891,8 +12975,13 @@ class MainWindow(QMainWindow):
                 return
         set_document_background(self.document, destination.name)
         self.current_background_path = destination
+        # Neither line above goes through a Command, so history.dirty stayed
+        # False and Ctrl+S ("Nothing to save.") silently skipped writing the
+        # new reference -- this was the only way a background actually
+        # reached disk before Export or Apply to Original.
+        self.state.history.touch()
         self.canvas.set_background(str(destination))
-        self.status.setText(f"Background set to {destination.name}. Export or apply to original to save the .osu reference.")
+        self.status.setText(f"Background set to {destination.name}. Ctrl+S (or Export/Apply to Original) writes it to the .osu.")
 
     def _selection_changed(self, selected) -> None:
         new_selection = set(selected)

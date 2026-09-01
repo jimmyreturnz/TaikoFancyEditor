@@ -2272,11 +2272,14 @@ class GimmickMoveTests(_GimmickFixture, unittest.TestCase):
         self.window._move_objects(self.target, [], [], 0)
         self.assertFalse(self.state.history.can_undo())
 
-    def test_the_editor_pages_own_chart_view_does_not_move_on_click(self):
-        """Selection is what a click means on a normal chart; only the gimmick
-        layers turn a press on an object into a drag."""
+    def test_the_editor_pages_own_chart_view_also_moves_on_drag(self):
+        """A plain click (no drag) still selects/retypes -- TimelineGameplay's
+        own _finish_move falls back to that when nothing moved -- but a press
+        that turns into a drag must relocate the note, the same as a gimmick
+        layer, or a select-tool drag can only ever box a note and never nudge
+        it."""
         self.window._add_editor_view("chart", self.path)
-        self.assertFalse(self.window._editor_views[-1].chart_view.move_enabled)
+        self.assertTrue(self.window._editor_views[-1].chart_view.move_enabled)
         self.assertTrue(self.window._gimmick_views[0].chart_view.move_enabled)
 
 

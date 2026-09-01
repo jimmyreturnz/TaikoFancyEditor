@@ -457,6 +457,25 @@ class ChartDeselectTests(WindowTestCase):
         _release(view, view.x_for_time(2600.0))
         self.assertTrue(view.selected)
 
+    def test_dragging_an_already_selected_note_moves_it(self):
+        """A note in the current selection is what a select-tool drag
+        relocates -- see move_requires_selection. Grabbing an unselected one
+        instead starts a fresh rubber-band (test_a_drag_still_selects)."""
+        view = self._chart_view()
+        view.resize(800, 200)
+        view.window_ms = 4000.0
+        view.current_time = 2000.0
+        note = next(n for n in self.state.document.hit_objects if n.time == 1000)
+        view.selected = {note.original_index}
+
+        _press(view, view.x_for_time(1000.0))
+        _move(view, view.x_for_time(1600.0))
+        _release(view, view.x_for_time(1600.0))
+
+        moved = next(n for n in self.state.document.hit_objects if n.uid == note.uid)
+        self.assertNotEqual(moved.time, 1000)
+        self.assertAlmostEqual(moved.time, 1600, delta=125)
+
 
 # -- kiai preservation -------------------------------------------------------
 

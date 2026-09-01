@@ -9,6 +9,9 @@
   text, and it has its own timing bar + density chart again (a second
   instance of each widget type, since a QWidget can only live in one
   layout at a time -- see self._timing_bars / self._density_views)
+- dropping a background on the Fancy Arranger canvas marks the difficulty
+  dirty, so Ctrl+S actually writes the new reference instead of silently
+  skipping it ("Nothing to save.")
 """
 from __future__ import annotations
 
@@ -230,6 +233,39 @@ class FancyArrangerPageTests(unittest.TestCase):
                 self.assertGreaterEqual(button.width(), gui.button_text_width(button))
         for control in controls:
             control.deleteLater()
+
+
+class BackgroundDropSaveTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._temp = tempfile.TemporaryDirectory()
+        directory = Path(self._temp.name)
+        (directory / "audio.mp3").write_bytes(b"\x00")
+        self.path = write_fixture(directory, "full_v14")
+        self.image = directory / "external" / "bg.png"
+        self.image.parent.mkdir()
+        self.image.write_bytes(b"\x89PNG\r\n")
+
+        self.window = gui.MainWindow()
+        self.window.show()
+        self.window._load_map_path(self.path, refresh_difficulties=True)
+
+    def tearDown(self) -> None:
+        self.window.close()
+        self._temp.cleanup()
+
+    def test_drop_marks_the_difficulty_dirty(self):
+        self.assertFalse(self.window.state.history.dirty)
+        self.window._background_dropped(str(self.image))
+        self.assertTrue(self.window.state.history.dirty)
+
+    def test_ctrl_s_writes_the_new_background_reference(self):
+        from osu_io.parser import parse_osu
+
+        self.window._background_dropped(str(self.image))
+        self.window.save_all_states()
+
+        reparsed = parse_osu(self.path)
+        self.assertEqual(gui.extract_background_filename(reparsed), "bg.png")
 
 
 if __name__ == "__main__":

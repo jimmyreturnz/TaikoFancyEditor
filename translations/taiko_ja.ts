@@ -705,6 +705,14 @@ Every beatmap in it is checked once for taiko difficulties, and the result is re
             <translation>プレビューを元の座標に戻しました。</translation>
         </message>
         <message>
+            <source>Quick Scan</source>
+            <translation>クイックスキャン</translation>
+        </message>
+        <message>
+            <source>Rebuild the whole index from scratch (slower; use if Quick Scan missed a change)</source>
+            <translation>インデックスを最初から作り直します（低速。クイックスキャンで変更が反映されない場合に使用）</translation>
+        </message>
+        <message>
             <source>Rescan</source>
             <translation>再スキャン</translation>
         </message>
