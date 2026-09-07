@@ -15,7 +15,9 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 from tests.osu_fixtures import write_fixture
 
 import song_library
-from song_library import group_by_song, load_cache, read_header, save_cache, scan
+from song_library import (
+    group_by_song, load_cache, matches_search, read_header, save_cache, scan,
+)
 
 _APP: QApplication | None = None
 _REAL_APPLICATION_NAME = ""
@@ -50,6 +52,56 @@ def make_song(root: Path, folder_name: str, fixture: str = "full_v14") -> Path:
     folder = root / folder_name
     folder.mkdir(parents=True, exist_ok=True)
     return write_fixture(folder, fixture)
+
+
+class SearchKeywordTests(unittest.TestCase):
+    """The box holds keywords, not one phrase. Every word has to land, and on
+    the same difficulty -- the fields are pooled, so a mapper, a title and a
+    difficulty name can be typed together in any order and none of them in
+    full."""
+
+    def _difficulty(self, version, creator="jimmyreturnz", title="Deathstream",
+                    tags="taiko stream"):
+        return song_library.TaikoDifficulty(
+            path=Path("songs") / "x" / f"{version}.osu",
+            artist="Tester", artist_unicode="", title=title, title_unicode="",
+            version=version, creator=creator, tags=tags,
+        )
+
+    def setUp(self):
+        self.mapset = [self._difficulty("Violation"), self._difficulty("Futsuu")]
+
+    def test_three_partial_words_from_three_fields_match_at_once(self):
+        self.assertTrue(matches_search(self.mapset, "jimmyre dea vio"))
+
+    def test_order_does_not_matter(self):
+        self.assertTrue(matches_search(self.mapset, "vio jimmyre dea"))
+
+    def test_the_same_words_as_one_phrase_would_not_have(self):
+        """What this replaces: no field contains the three run together."""
+        self.assertFalse(
+            any("jimmyre dea vio" in d.search_text() for d in self.mapset)
+        )
+
+    def test_every_word_has_to_land(self):
+        self.assertFalse(matches_search(self.mapset, "jimmyre dea nonesuch"))
+
+    def test_the_words_have_to_land_on_one_difficulty(self):
+        """"violation futsuu" is two difficulties of the same mapset, and
+        matching it would mean the box answers about the folder rather than
+        about anything the user can open."""
+        self.assertFalse(matches_search(self.mapset, "violation futsuu"))
+
+    def test_an_empty_or_blank_query_keeps_everything(self):
+        for query in ("", "   ", "	"):
+            with self.subTest(query=repr(query)):
+                self.assertTrue(matches_search(self.mapset, query))
+
+    def test_matching_is_case_insensitive(self):
+        self.assertTrue(matches_search(self.mapset, "JimmyRe DEA ViO"))
+
+    def test_a_tag_counts_as_a_field(self):
+        self.assertTrue(matches_search(self.mapset, "stream vio"))
 
 
 class ScanTests(unittest.TestCase):

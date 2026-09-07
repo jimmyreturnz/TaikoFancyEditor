@@ -18,6 +18,7 @@ from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import QApplication
 
 import gui
+from osu_io.parser import OsuDocument
 from tests.test_gimmick_editor import _GimmickFixture, _StubTimingLineDialog
 
 _APP: QApplication | None = None
@@ -154,7 +155,14 @@ class RowAwareGrabTests(_Layer2, unittest.TestCase):
 
 
 class RedLineDialogTests(_Layer2, unittest.TestCase):
-    """Double click a red line in layer 2 to retype it, as in layer 3."""
+    """Double click in layer 2: the object's length first, its red line under
+    it second -- the same order `mousePressEvent` resolves a grab in.
+
+    A plain fake slider and the line squashing it share a millisecond, so on
+    that column the object wins and the BPM dialog is not offered. The line's
+    BPM is 60000 by construction; the length is the number that is actually
+    tuned.
+    """
 
     def test_the_line_opens_but_is_not_otherwise_editable_here(self) -> None:
         self.assertTrue(self.layer.timing_dialog_enabled)
@@ -167,24 +175,26 @@ class RedLineDialogTests(_Layer2, unittest.TestCase):
         seen = []
         self.layer.timing_line_edit_requested.connect(seen.append)
         x = self.layer.x_for_time(at_ms)
-        # The window is already connected to this signal and opens the real,
-        # modal dialog on it -- see _StubTimingLineDialog.
+        # The window is already connected to both signals and opens the real,
+        # modal dialog on either -- see _StubTimingLineDialog. QInputDialog is
+        # the length editor's, and unpatched it hangs the run.
         _StubTimingLineDialog.accepted = False
-        with patch.object(gui, "TimingLineDialog", _StubTimingLineDialog):
+        with patch.object(gui, "TimingLineDialog", _StubTimingLineDialog),                 patch.object(gui.QInputDialog, "getDouble", return_value=(0.0, False)):
             self.layer.mouseDoubleClickEvent(QMouseEvent(
                 QEvent.MouseButtonDblClick, QPointF(x, 20.0), QPointF(x, 20.0),
                 Qt.LeftButton, Qt.LeftButton, Qt.NoModifier,
             ))
         return seen
 
-    def test_double_clicking_a_fake_sliders_line_asks_for_its_bpm(self) -> None:
+    def test_the_object_outranks_the_line_sharing_its_millisecond(self) -> None:
         self.window._place_gimmick("fake_slider", "regular", self.SNAP)
         self.layer.current_time = float(self.SNAP)
-        point = next(
-            p for p in self.document.timing_points
-            if p.uninherited and round(p.time) == self.slider_at
-        )
-        self.assertEqual(self._double_click(self.slider_at), [point.uid])
+        lengths = []
+        self.layer.note_length_edit_requested.connect(lengths.append)
+        slider = self._sliders_at(self.slider_at)[0]
+
+        self.assertEqual(self._double_click(self.slider_at), [], "the line won")
+        self.assertEqual(lengths, [slider.uid])
 
     def test_a_line_this_layer_does_not_draw_is_not_offered(self) -> None:
         """The fixture's own timing at 0 belongs to no fake slider, so it is
@@ -206,6 +216,70 @@ class RedLineDialogTests(_Layer2, unittest.TestCase):
             self.window._edit_timing_line(self.state.source_path, point.uid)
         self.assertEqual(len(self.state.history.undo_stack), before + 1)
         self.assertAlmostEqual(point.bpm, 200.0)
+
+
+class LengthDialogTests(_Layer2, unittest.TestCase):
+    """Double click a fake slider to type its `length`.
+
+    The one number that decides how far it draws and the one no drag can
+    reach: its end precedes its start, so it has no right edge to pull.
+    """
+
+    def _slider(self):
+        self.window._place_gimmick("fake_slider", "regular", self.SNAP)
+        return self._sliders_at(self.slider_at)[0]
+
+    def _type(self, value, accepted=True):
+        with patch.object(gui.QInputDialog, "getDouble",
+                          return_value=(value, accepted)) as dialog:
+            self.window._type_note_length(self.state.source_path, self._uid)
+        return dialog
+
+    def test_typing_a_length_rewrites_the_object_in_one_undo_step(self) -> None:
+        slider = self._slider()
+        self._uid = slider.uid
+        before = len(self.state.history.undo_stack)
+        self._type(-500.0)
+        self.assertEqual(slider.length, -500.0)
+        self.assertEqual(len(self.state.history.undo_stack), before + 1)
+
+    def test_the_curve_and_slide_count_survive(self) -> None:
+        """Only the length changes: the rest of the object is not this
+        dialog's to rewrite."""
+        slider = self._slider()
+        self._uid = slider.uid
+        curve, slides = slider.extras[0], slider.extras[1]
+        self._type(-500.0)
+        self.assertEqual((slider.extras[0], slider.extras[1]), (curve, slides))
+
+    def test_cancelling_changes_nothing(self) -> None:
+        slider = self._slider()
+        self._uid = slider.uid
+        was = slider.extras
+        before = len(self.state.history.undo_stack)
+        self._type(-500.0, accepted=False)
+        self.assertEqual(slider.extras, was)
+        self.assertEqual(len(self.state.history.undo_stack), before)
+
+    def test_the_dialog_cannot_ask_for_a_real_drumroll(self) -> None:
+        """Past FAKE_SLIDER_MAX_LENGTH the object stops being a fake slider,
+        which is a different object rather than an edit to this one."""
+        slider = self._slider()
+        self._uid = slider.uid
+        dialog = self._type(-500.0)
+        _self, _title, _label, _value, low, high, _decimals = dialog.call_args.args
+        self.assertEqual(high, gui.FAKE_SLIDER_MAX_LENGTH)
+        self.assertLess(low, high)
+
+    def test_a_real_drumroll_is_not_offered_the_dialog(self) -> None:
+        note = next(n for n in self.document.hit_objects
+                    if not self.window.is_fake_slider(n))
+        self._uid = note.uid
+        before = len(self.state.history.undo_stack)
+        with patch.object(gui.QInputDialog, "getDouble") as dialog:
+            self.window._type_note_length(self.state.source_path, note.uid)
+        dialog.assert_not_called()
+        self.assertEqual(len(self.state.history.undo_stack), before)
 
 
 class BigVariantTests(_Layer2, unittest.TestCase):
@@ -303,6 +377,88 @@ class ShinyMarkTests(unittest.TestCase):
                 view.set_note_opacity(percent)
                 self.assertGreater(
                     view.shiny_brush.blue(), view.slider_brush.blue() + 100)
+
+
+class EditorRollCapTests(unittest.TestCase):
+    """The editor draws a fake slider as a head and nothing else.
+
+    `_draw_skinned_roll_body` stamps `taiko-roll-end` at the far end of the
+    track whether or not a track was wide enough to draw, so a fake slider --
+    whose end precedes its start, or trails it by a rounding artefact -- wore a
+    cap butted straight against its own head. The scrolling body and its cap
+    belong to the gameplay preview, which draws the extent to scale.
+    """
+
+    def _view(self, length):
+        view = gui.TimelineGameplay()
+        view.resize(800, 180)
+        document = OsuDocument(
+            source_path=None, lines=[], encoding="utf-8", version="v14",
+            audio_filename="a.mp3",
+            hit_objects=[
+                gui.HitObject(
+                    x=256, y=192, time=1000, type=2, hit_sound=0,
+                    extras=("L|624:192", "1", repr(length)),
+                )
+            ],
+            timing_points=[
+                gui.TimingPoint(time=0, beat_length=500.0, meter=4, uninherited_flag=1)
+            ],
+        )
+        view.load_document(document)
+        view.current_time = 1000.0
+        return view
+
+    def _bodies_drawn(self, length):
+        view = self._view(length)
+        calls = []
+        original = gui.TimelineGameplay._draw_skinned_roll_body
+        # `1`, not the arguments: they include the live QPainter, and keeping a
+        # reference to it past the paint event aborts the process.
+        gui.TimelineGameplay._draw_skinned_roll_body = (
+            lambda self, *a: calls.append(1) or False
+        )
+        try:
+            view.grab()
+        finally:
+            gui.TimelineGameplay._draw_skinned_roll_body = original
+        return calls
+
+    def test_a_fake_slider_gets_no_body_or_cap(self):
+        for length in (-0.0001, 0.001, -800.0):
+            with self.subTest(length=length):
+                self.assertEqual(self._bodies_drawn(length), [])
+
+    def test_a_real_drumroll_still_does(self):
+        self.assertEqual(len(self._bodies_drawn(800.0)), 1)
+
+
+class FakeSliderLengthTests(unittest.TestCase):
+    """What counts as a fake slider. The canonical form is negative, but the
+    positive side of zero is the same trick: `mekurume` writes 616 of its 640
+    sliders as `0.001`, whose derived duration is 0.0045ms -- no tick, nothing
+    hittable. Read as `< 0` they were ordinary drumrolls and never reached
+    layer 2."""
+
+    def _slider(self, length):
+        return gui.HitObject(
+            x=256, y=192, time=1000, type=2, hit_sound=0,
+            extras=("L|624:192", "1", repr(length)),
+        )
+
+    def test_a_near_zero_positive_length_is_a_fake_slider(self):
+        for length in (0.001, 0.0, -0.0001, -800.0):
+            with self.subTest(length=length):
+                self.assertTrue(gui.MainWindow.is_fake_slider(self._slider(length)))
+
+    def test_a_real_drumroll_is_not(self):
+        for length in (0.002, 1.0, 800.0):
+            with self.subTest(length=length):
+                self.assertFalse(gui.MainWindow.is_fake_slider(self._slider(length)))
+
+    def test_a_circle_is_not(self):
+        circle = gui.HitObject(x=256, y=192, time=1000, type=1, hit_sound=0)
+        self.assertFalse(gui.MainWindow.is_fake_slider(circle))
 
 
 if __name__ == "__main__":

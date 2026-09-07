@@ -40,21 +40,37 @@ from osu_io.timing import (
 
 
 def osu_round(value: float) -> int:
-    """Round the way osu! does: halves go **up**, never to even.
+    """Nearest whole millisecond, halves **up** -- never to even.
 
-    Python's built-in `round` is banker's rounding -- `round(0.5)` is 0 and
-    `round(1.5)` is 2 -- so a snap landing exactly on a half millisecond came
-    out one millisecond away from where osu! itself would put it, and which
-    way depended on whether the neighbouring integer happened to be even. Half
-    a millisecond is invisible at chart zoom and several pixels at the 20ms
-    floor, and "sometimes down, sometimes up" is the hardest possible version
-    of that to reason about while placing objects one millisecond apart.
+    For a value that is not a beat position: the millisecond under the cursor
+    (Ctrl placement), where nearest is what the pointer means. Python's
+    built-in `round` is banker's rounding -- `round(0.5)` is 0 and `round(1.5)`
+    is 2 -- so "sometimes down, sometimes up" depending on whether the
+    neighbouring integer happened to be even, which is the hardest possible
+    version of that to reason about while placing objects a millisecond apart.
 
-    Every millisecond the editor commits to -- a drawn gridline, a seek, a
-    placement -- goes through here, so the editor and the game agree on which
-    integer a fractional beat position belongs to.
+    **Not** how a snapped position becomes an integer -- see `osu_snap_ms`.
     """
     return math.floor(value + 0.5)
+
+
+def osu_snap_ms(value: float) -> int:
+    """The whole millisecond osu!'s editor commits a beat position to: **down**.
+
+    Measured, because this was rounding and the report was that notes written
+    here sat one millisecond above the ones osu! writes on the same snap.
+    Over 25 installed maps, every circle on a clean single-BPM map lands in
+    `(-1, 0]` of its exact fractional beat position and **never above it** --
+    a flat spread with nothing on the positive side, which is truncation and
+    could not be rounding. (`Hiyashi 2014`, a 315.789ms beat: 114 notes a full
+    0.9ms below their gridline, none above.) osu!stable casts the position to
+    an int; C# truncates toward zero, and an editor time is never negative.
+
+    Every millisecond this editor commits to a *beat* -- a drawn gridline, a
+    wheel seek, a placement -- goes through here, so a note placed on a
+    gridline here is the millisecond osu! would have written for the same snap.
+    """
+    return math.floor(value)
 
 # Kiai, behind everything else in a scrolling view. The same orange the
 # overview bar marks its sections with, at an alpha low enough to read the grid,
@@ -105,7 +121,7 @@ def wheel_seek_time(
     millisecond a placed object would use (see `TimeAxisMixin.snap_ms`).
     """
     timing = active_uninherited_at(timing_points, current_time)
-    return float(osu_round(max(
+    return float(osu_snap_ms(max(
         0.0,
         snap_time(timing_points, current_time, divisor) + direction * timing.beat_length / divisor,
     )))
@@ -291,11 +307,16 @@ class TimeAxisMixin:
 
         osu! stores hit objects and timing points as integer milliseconds, but
         the snap grid is drawn at exact fractional beat positions -- at 185 BPM
-        a 1/4 snap is 81.081081ms, so a note "on" that gridline was written
-        `round(...)` away from it, up to half a millisecond off. At the 20ms
-        zoom floor half a millisecond is roughly 30 pixels of visible drift
-        between the object and its own gridline. Every in-view snapping call
-        should go through this rather than `snap_time` directly.
+        a 1/4 snap is 81.081081ms, so a note "on" that gridline is written up
+        to a whole millisecond away from it. At the 20ms zoom floor that is
+        roughly 60 pixels of visible drift between the object and its own
+        gridline. Every in-view snapping call should go through this rather
+        than `snap_time` directly.
+
+        Down, via `osu_snap_ms`, and not to the nearest: that is what osu!
+        itself does, and rounding here put every note whose beat position had a
+        fraction of a half or more one millisecond above the one osu! writes
+        for the same snap.
 
         Ctrl bypasses the grid entirely and just rounds: a mapper working on a
         gimmick wants to place objects one millisecond apart regardless of what
@@ -304,8 +325,10 @@ class TimeAxisMixin:
         `wheelEvent` below.
         """
         if QApplication.keyboardModifiers() & Qt.ControlModifier:
+            # Nearest, not down: this one is not a beat position, it is the
+            # millisecond the pointer is over.
             return float(osu_round(time_ms))
-        return max(0.0, float(osu_round(snap_time(self.snap_points, time_ms, self.snap_divisor))))
+        return max(0.0, float(osu_snap_ms(snap_time(self.snap_points, time_ms, self.snap_divisor))))
 
     # -- pixels <-> time ---------------------------------------------------
 

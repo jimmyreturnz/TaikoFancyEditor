@@ -2,6 +2,10 @@
 
     python tools/profile_playback.py <a real .osu> [frames] [--gimmick]
                                      [--gameplay] [--skin NAME] [--profile]
+                                     [--at MS]
+
+--at starts the run at a millisecond rather than at the first hit object. A
+gimmick is a *section* of a map, and the first note is almost never in it.
 
 The editor renders at 120fps, so every frame has an 8.33ms budget: the clock
 advance, the hitsound scan, and a synchronous repaint of every open view. A
@@ -118,6 +122,9 @@ def render_one(position: float) -> None:
 
 
 start = float(state.document.hit_objects[0].time)
+if "--at" in sys.argv:
+    start = float(sys.argv[sys.argv.index("--at") + 1])
+print(f"     from {start:.0f} ms")
 step = 1000.0 / 120.0
 
 render_one(start)  # warm up caches, JIT-free but Qt has its own first-paint cost

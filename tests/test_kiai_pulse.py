@@ -1,10 +1,8 @@
 """Kiai flash: notes inside a kiai section brighten on every 1/1 beat.
 
-Two properties beyond "it paints": the flash is gated on the *note's* kiai
-state (not the playhead's), and stacked objects amplify it. A fake slider
-dropped on top of a note is the normal way to make one note read brighter than
-its neighbours, and it works here because each object paints its own overlay --
-nothing counts the stack.
+Two properties beyond "it paints": the flash is gated on the *playhead's* kiai
+state, and a section too short to finish the pulse it started still gets to
+finish it.
 """
 from __future__ import annotations
 
@@ -120,13 +118,95 @@ class PulseTests(unittest.TestCase):
         self.assertFalse(gui.in_kiai(gui.uninherited_points(points), 2500.0))
 
 
+class ShortKiaiTests(unittest.TestCase):
+    """A kiai section shorter than one beat still shows one whole beat of
+    light: the pulse it starts runs out instead of cutting to black mid-fade.
+
+    **Under 60 BPM only.** Above that the beat is short enough that a section
+    ending inside one simply stops, which is what a chorus ending looks like.
+    2000ms a beat is 30 BPM, well inside the rule.
+    """
+
+    BEAT = 2000.0
+
+    def _view(self, band, beat=None):
+        view = gui.GameplayViewerView()
+        view.resize(900, 200)
+        point = TimingPoint(time=0.0, beat_length=beat or self.BEAT, meter=4)
+        view.timing_points = [point]
+        view.beat_points = [point]
+        view._beat_times = [0.0]
+        view.slider_multiplier = 1.4
+        view.kiai_bands = [band]
+        view._rebuild_velocities()
+        view.notes, view.note_times = [], []
+        view._end_times, view._phantom_ends, view._max_extend_ms = {}, {}, 0.0
+        return view
+
+    def _anchor(self, band, at, beat=None):
+        view = self._view(band, beat)
+        view.current_time = at
+        try:
+            start, end = band
+            return (start if start <= at < end
+                    else view._unfinished_pulse_anchor(start, end))
+        finally:
+            view.close()
+
+    def test_a_pulse_cut_off_by_the_section_end_keeps_going(self):
+        band = (1000, 1100)          # 100ms of kiai, a twentieth of a beat
+        self.assertEqual(self._anchor(band, 1200.0), 1000)
+        self.assertEqual(self._anchor(band, 2999.0), 1000)
+
+    def test_it_stops_once_that_one_pulse_has_finished(self):
+        band = (1000, 1100)
+        self.assertIsNone(self._anchor(band, 3000.0))
+        self.assertIsNone(self._anchor(band, 5000.0))
+
+    def test_a_section_ending_on_a_beat_is_not_extended(self):
+        band = (1000, 5000)          # exactly two beats
+        self.assertIsNone(self._anchor(band, 5000.0))
+
+    def test_a_longer_section_finishes_only_the_pulse_it_was_in(self):
+        band = (1000, 3400)          # one beat and a fifth
+        self.assertEqual(self._anchor(band, 3500.0), 1000)
+        self.assertIsNone(self._anchor(band, 5000.0))
+
+    def test_at_60_bpm_and_above_the_chorus_just_stops(self):
+        """The rule is for beats long enough that the cut lands on a flash
+        still visibly fading. 1000ms a beat is exactly 60 BPM, which is out."""
+        band = (1000, 1100)
+        for beat in (gui.KIAI_PULSE_CARRY_MIN_BEAT_MS, 500.0, 250.0):
+            with self.subTest(beat=beat):
+                self.assertIsNone(self._anchor(band, 1200.0, beat=beat))
+
+    def test_just_under_60_bpm_still_carries(self):
+        band = (1000, 1100)
+        beat = gui.KIAI_PULSE_CARRY_MIN_BEAT_MS + 1.0
+        self.assertEqual(self._anchor(band, 1200.0, beat=beat), 1000)
+
+    def test_the_light_is_actually_still_drawn_after_the_section_ends(self):
+        """The anchor is the mechanism; this is the pixel it exists for."""
+        view = self._view((1000, 1100))
+        view.current_time = 1150.0
+        lit = _brightness(view)
+        view.kiai_bands = []
+        dark = _brightness(view)
+        view.close()
+        self.assertGreater(lit, dark)
+
+
 class ShinyGlowTests(unittest.TestCase):
     """A fake slider is #fbb706 outside a chorus, whatever is stacked on it.
 
     There is no separate "shiny" effect and no brightening with stack depth: a
-    pile of fake sliders is a pile of identical opaque heads and reads as one,
-    which is what it is. Inside a chorus every object on the pile takes its own
-    stamp in the flash pass, so a deep pile pulses harder than a lone one.
+    pile of fake sliders is a pile of identical opaque objects and reads as
+    one, which is what it is. They are drawn at full opacity like anything
+    else -- no fade-in -- so nothing about the drawing tells the stack apart.
+
+    Inside a chorus every object on the pile takes its own kiai stamp, so a
+    deep pile pulses harder than a lone one. That is the whole of the shiny,
+    and nothing counts the stack.
 
     Several richer models were tried against real readings and none of them
     closed; this one is true by construction, which is why it is here.
@@ -188,6 +268,11 @@ class ShinyGlowTests(unittest.TestCase):
                 self.assertEqual(
                     (shown.red(), shown.green(), shown.blue()), gui.DRUMROLL_COLOR)
 
+    def test_a_pile_outside_kiai_does_not_brighten_with_depth(self):
+        """No fade-in means nothing about the drawing compounds."""
+        readings = {self._brightness(stack) for stack in (1, 2, 3, 5, 8, 16)}
+        self.assertEqual(len(readings), 1, readings)
+
     def test_nothing_is_left_of_the_separate_shine(self):
         """It was a second effect on top of the pulse and it never matched a
         real reading; the pulse alone does the job."""
@@ -205,6 +290,8 @@ class ShinyGlowTests(unittest.TestCase):
                 )
 
     def test_in_kiai_a_deeper_pile_pulses_harder(self):
+        """Every object on the pile takes its own stamp, so the pile compounds
+        -- the one thing that does, and the whole of the shiny."""
         readings = [self._brightness(stack, kiai=True) for stack in (1, 2, 3, 5, 8)]
         for dimmer, brighter in zip(readings, readings[1:]):
             self.assertGreater(brighter, dimmer, readings)

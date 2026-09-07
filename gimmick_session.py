@@ -31,7 +31,10 @@ timestamp by file order, and `sorted_by_time` is a stable sort on time alone.
 """
 from __future__ import annotations
 
+import math
+
 import json
+from bisect import bisect_left
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -71,7 +74,96 @@ DEFAULT_SPACING_MS = 1
 DEFAULT_KAT_SPACING1_MS = 1
 DEFAULT_KAT_SPACING2_MS = 3
 DEFAULT_KAT_SPACING3_MS = 5
-DEFAULT_FAKE_SLIDER_LENGTH = -1.0
+DEFAULT_FAKE_SLIDER_LENGTH = -0.001
+
+# Longest `length` a drumroll can carry and still be a fake slider -- drawn,
+# never hittable. The canonical form is negative (`-0.0001`), but the positive
+# side of zero is the same trick: `mekurume` writes 616 of its 640 sliders as
+# `0.001`, whose derived duration is 0.0045ms -- no tick, nothing to hit, only
+# the head drawn. Read strictly as `< 0` those were ordinary drumrolls, so
+# neither the fake slider layer nor this config would admit them.
+FAKE_SLIDER_MAX_LENGTH = 0.001
+
+# -- anti-barline ----------------------------------------------------------
+# The inverse of a barline note: instead of drawing bars around a note, the
+# lane is packed with bars until it reads as one solid white sheet and each
+# note is a *slit* of missing bar travelling in it. `mekurume [eclosion]`
+# 1:52.5-2:15.7 is the reference these four numbers were measured off.
+
+# Wall ticks per beat. 36 over a 750ms beat is one red line every 20.8ms.
+# How solid that reads is a question about the chart's scroll speed as much as
+# its BPM, which is why it and the wall's own BPM below are both dials rather
+# than derived: the reference section gets there with 72 lines a beat and a
+# wall BPM of a third of the chart's, but that is one route to a white lane
+# and not the only one.
+DEFAULT_ANTI_LINES_PER_BEAT = 36
+# Wall ticks omitted per note. The slit width is the note's colour: measured
+# 100% consistent over the reference section at don = 2 ticks (3.7px) and
+# kat = 4 (7.3px). There is nothing else to read a colour off -- the note
+# itself is invisible.
+DEFAULT_ANTI_DON_TICKS = 2
+DEFAULT_ANTI_KAT_TICKS = 4
+
+# The wall is phased off the first note rather than started on it. A wall tick
+# sharing a note's millisecond would be a second uninherited point there, and
+# osu! honours only the file-order-first of those -- so either the wall line
+# or the note's own squash line would silently do nothing. 2ms clears both the
+# note and its restore.
+ANTI_WALL_ANCHOR_OFFSET_MS = 2
+# Where a note's restore line goes. The squash line at T makes the note scroll
+# 392px/ms -- invisible -- and this hands the chart's own BPM back one
+# millisecond later, before anything else can be drawn at that speed.
+ANTI_RESTORE_OFFSET_MS = 1
+# The restore line's meter. `beat_length x meter` is when it would emit its
+# next barline, and that has to outlast the slit or the restore stamps a bar
+# in the hole it just opened; 750 x 999 is a little over 12 minutes. It is the
+# meter that is absurd and not the beat length, because the beat length is the
+# chart's own and is the whole point of a restore.
+ANTI_RESTORE_METER = 999
+
+# -- Hidden anti-barline ----------------------------------------------------
+#
+# `mew`'s `LuzeriA - Nbt-Hwt [The Pharaoh's Curse]` 1:56.9-2:07.3 is the
+# reference, and it is anti-barline built the other way round. There the wall
+# is a red line per tick and the slit is ticks left out; here **one** meter-1
+# red line makes osu! emit the whole wall itself, and the slit is opened by
+# raising SV for a fraction of a beat after the note.
+#
+# The reason that works is that taiko does not integrate velocity: an object
+# sits at `(its time - now) x the velocity at its own time`. So the bars drawn
+# during the raised-SV window are pushed *ahead* of the ones at the base speed
+# by `(excess velocity) x (how far away they still are)` -- a gap that opens as
+# the section approaches from a distance and closes to nothing at the hit
+# position. That is the "hidden": the colour is only readable early.
+#
+# Measured on the reference at SliderMultiplier 1.2: base 0.01x puts the bars
+# 1.68px apart (solid under the sprite), don's +1.01% opens 3.5px per second of
+# lead time and kat's +3.09% opens 10.7px -- exactly the 1:3 ratio the classic
+# anti-barline gets from 2 ticks against 4.
+DEFAULT_HIDDEN_HIDE_BPM = 66666.0
+DEFAULT_HIDDEN_WALL_BPM = 12345.0
+# Base, Don and Kat SV. The two note values are the reference's -9900 and
+# -9700 against a -10000 wall, which is to say 1% and 3% above it. The
+# difference lives in the sixth decimal on purpose -- see the module docstring
+# in gui.py's SV_DECIMALS.
+DEFAULT_HIDDEN_BASE_SV = 0.01
+DEFAULT_HIDDEN_DON_SV = 100.0 / 9900.0
+DEFAULT_HIDDEN_KAT_SV = 100.0 / 9700.0
+# How long the raised-SV window lasts, as a division of the chart's own beat.
+# The reference uses 1/8, which at 185 BPM is 40.5ms -- about eight wall bars.
+DEFAULT_HIDDEN_WINDOW_DIVISOR = 8
+# The wall line's meter. On-screen bar spacing is
+# `100 x SliderMultiplier x 1.4 x SV x meter` and has no BPM in it at all, so
+# the meter is what decides how tight the sheet is; 1 is as tight as osu! can
+# draw it. Not configurable for that reason -- SV is the dial with range in it.
+HIDDEN_WALL_METER = 1
+# The hide line's meter. It lives for one millisecond, so this only has to
+# outlast that; it matches ANTI_RESTORE_METER because it is the same trick.
+HIDDEN_HIDE_METER = 999
+# How long the note is hidden for. One millisecond at 66666 BPM already
+# carries the note off the far end of the screen, and the wall has to come
+# back before the next bar is due.
+HIDDEN_WALL_OFFSET_MS = 1
 DEFAULT_RED_LINE_OFFSET_MS = 0
 # +2 rather than +1 so a shiny note has +1 to itself: the two structures are
 # drawn objects at the same millisecond, and sharing an offset stacks them on
@@ -106,10 +198,11 @@ class GimmickConfig:
     they describe different structures and are tuned against each other (see
     `spacing_collides`), so sharing one value made changing either wrong.
 
-    `fake_slider_length` is negative on purpose -- a negative slider length is
-    what makes osu! draw the object without it ever being hittable, which is the
-    whole trick. A positive value here would silently turn every fake slider
-    into a real drumroll, so it is rejected rather than clamped.
+    `fake_slider_length` is at or below `FAKE_SLIDER_MAX_LENGTH` on purpose --
+    a slider short enough to derive no duration is what makes osu! draw the
+    object without it ever being hittable, which is the whole trick. A real
+    length here would silently turn every fake slider into a scoreable
+    drumroll, so it is rejected rather than clamped.
 
     `place_notes` is the barline layer's: with it off, Don and Kat write their
     red lines and no hit object, for gimmicks that only want the barlines.
@@ -190,10 +283,49 @@ class GimmickConfig:
     # On by default -- a fake slider is decoration, and the bar it drew was
     # never wanted. The barline layer ignores it: bars are its whole output.
     omit_barline: bool = True
+    # The anti-barline converter's four numbers -- see the constants above for
+    # what each one does. Configurable rather than fixed because the wall's
+    # density and the two slit widths are the whole look of the gimmick, and
+    # what reads as solid depends on the chart's scroll speed as much as on
+    # its BPM. Every one of them is derived against the map's own beat length,
+    # so the defaults reproduce the reference section at any tempo.
+    anti_lines_per_beat: int = DEFAULT_ANTI_LINES_PER_BEAT
+    # BPM written on every wall line. None -- the default -- is the chart's own
+    # at that millisecond, which is the line that changes nothing but where the
+    # bars fall. A typed value is the whole scroll effect: an uninherited
+    # point's BPM *is* its scroll speed in taiko, so a wall at a third of the
+    # chart's BPM scrolls at a third of the speed and packs its bars three
+    # times tighter on screen than their millisecond spacing alone would --
+    # which is how the reference section gets from 10.4ms apart to 1.81px
+    # apart, under the 4px barline sprite. Same field shape as `red_line_bpm`
+    # and for the same reason.
+    anti_wall_bpm: float | None = None
+    anti_don_ticks: int = DEFAULT_ANTI_DON_TICKS
+    anti_kat_ticks: int = DEFAULT_ANTI_KAT_TICKS
+    # The hidden anti-barline converter's numbers -- see the constants above.
+    # Two BPMs and three SVs, because unlike the classic converter this one has
+    # no tick counts to encode a colour in: the slit is opened by SV alone, so
+    # the three SV values *are* the gimmick and the BPMs only decide what is
+    # invisible and how tight the sheet is.
+    hidden_hide_bpm: float = DEFAULT_HIDDEN_HIDE_BPM
+    hidden_wall_bpm: float = DEFAULT_HIDDEN_WALL_BPM
+    hidden_base_sv: float = DEFAULT_HIDDEN_BASE_SV
+    hidden_don_sv: float = DEFAULT_HIDDEN_DON_SV
+    hidden_kat_sv: float = DEFAULT_HIDDEN_KAT_SV
+    hidden_window_divisor: int = DEFAULT_HIDDEN_WINDOW_DIVISOR
+    # Whether a Don/Kat structure hides the note it is drawn around. On (the
+    # default, and what every one of these gimmicks does in the wild) the line
+    # on the note's own millisecond carries `gimmick_bpm`, which scrolls the
+    # note 392px/ms -- never on screen, so the bars or the fake slider beside
+    # it are the whole object. Off, that line carries the chart's own BPM with
+    # its barline detached: it changes nothing except restarting measure
+    # counting, and the structure is drawn around a note you can still see.
+    hide_note: bool = True
 
     def __post_init__(self) -> None:
-        if self.fake_slider_length >= 0:
-            raise GimmickConfigError("Fake slider length must be negative")
+        if self.fake_slider_length > FAKE_SLIDER_MAX_LENGTH:
+            raise GimmickConfigError(
+                f"Fake slider length must be at most {FAKE_SLIDER_MAX_LENGTH}")
         if self.gimmick_bpm <= 0:
             raise GimmickConfigError("Gimmick BPM must be positive")
         if self.spacing_ms < 1:
@@ -219,6 +351,21 @@ class GimmickConfig:
             raise GimmickConfigError("Shiny BPM multiplier must be positive")
         if self.fake_slider_bpm_multiplier <= 0:
             raise GimmickConfigError("Fake slider BPM multiplier must be positive")
+        if self.anti_lines_per_beat < 1:
+            raise GimmickConfigError("Anti-barline density must be at least 1 line per beat")
+        if self.anti_wall_bpm is not None and self.anti_wall_bpm <= 0:
+            raise GimmickConfigError("Anti-barline barline BPM must be positive")
+        if min(self.anti_don_ticks, self.anti_kat_ticks) < 1:
+            # A slit of no ticks is a note with nothing marking it: the note
+            # itself is squashed to invisibility, so the hole in the wall is
+            # the only thing left to see.
+            raise GimmickConfigError("Anti-barline slit width must be at least 1 tick")
+        if min(self.hidden_hide_bpm, self.hidden_wall_bpm) <= 0:
+            raise GimmickConfigError("Hidden anti-barline BPM must be positive")
+        if min(self.hidden_base_sv, self.hidden_don_sv, self.hidden_kat_sv) <= 0:
+            raise GimmickConfigError("Hidden anti-barline SV must be positive")
+        if self.hidden_window_divisor < 1:
+            raise GimmickConfigError("Hidden anti-barline window must be at least 1/1 beat")
 
 
 def spacing_collides(barline: GimmickConfig, fake_slider: GimmickConfig) -> bool:
@@ -520,9 +667,26 @@ def fake_slider(
     else:
         slider_at = time_ms + config.fake_slider_offset_ms
         restore_bpm = base_bpm_at(base_timing, slider_at) * config.fake_slider_bpm_multiplier
+        # `hide_note` off keeps the note on screen, and both halves of the
+        # squash have to go for that: the chart's own BPM in place of the
+        # gimmick one, and the chart's own SV in place of `fake_slider_sv` --
+        # that green line exists to take an already-squashed note the rest of
+        # the way off screen, so left in it would fling the visible note off
+        # the screen the red line was just told to keep it on. The green line
+        # itself stays, restating the speed in force: it is the handle this
+        # layer's SV band is made of, exactly as for a shiny.
         points = [
-            TimingPoint.uninherited_at(time_ms, config.gimmick_bpm, omit_first_barline=omit),
-            TimingPoint.inherited_at(time_ms, config.fake_slider_sv),
+            TimingPoint.uninherited_at(
+                time_ms,
+                config.gimmick_bpm if config.hide_note
+                else base_bpm_at(base_timing, time_ms),
+                omit_first_barline=omit or not config.hide_note,
+            ),
+            TimingPoint.inherited_at(
+                time_ms,
+                config.fake_slider_sv if config.hide_note
+                else sv_at(base_timing, time_ms),
+            ),
             TimingPoint.uninherited_at(slider_at, restore_bpm, omit_first_barline=omit),
         ]
 
@@ -534,7 +698,7 @@ def fake_slider(
     notes.extend(
         HitObject(
             x=x, y=y, time=slider_at, type=TYPE_SLIDER, hit_sound=slider_hitsound,
-            extras=(f"L|{x + 100}:{y}", "1", _format_length(config.fake_slider_length)),
+            extras=(f"L|{x + 100}:{y}", "1", format_length(config.fake_slider_length)),
             hit_sample="0:0:0:0:",
         )
         for _ in range(copies)
@@ -542,7 +706,7 @@ def fake_slider(
     return points, notes
 
 
-def _format_length(length: float) -> str:
+def format_length(length: float) -> str:
     """Keep -1 as "-1" rather than "-1.0"; osu! reads both, mappers read one."""
     return str(int(length)) if length == int(length) else repr(float(length))
 
@@ -596,13 +760,305 @@ def barline_note(
     )
 
     time_ms = int(time_ms)
-    points = [TimingPoint.uninherited_at(time_ms, config.gimmick_bpm)]
+    # `hide_note` off swaps the squash for a line that does nothing but restart
+    # measure counting -- the chart's own BPM, and its own barline detached so
+    # it does not stamp a bar in the middle of the note it is now showing. The
+    # restores either side still draw the bars, so the structure is the same
+    # shape with a visible note inside it.
+    points = [
+        TimingPoint.uninherited_at(time_ms, config.gimmick_bpm) if config.hide_note
+        else TimingPoint.uninherited_at(
+            time_ms, base_bpm_at(base_timing, time_ms), omit_first_barline=True,
+        )
+    ]
     for offset in offsets:
         at = time_ms + offset
         points.append(TimingPoint.uninherited_at(at, base_bpm_at(base_timing, at)))
     points.sort(key=lambda point: point.time)
     notes = [_circle(time_ms, _KIND_HITSOUND[kind])] if config.place_notes else []
     return points, notes
+
+
+def anti_barline(
+    notes: list[HitObject],
+    start_ms: float,
+    end_ms: float,
+    base_timing: list[TimingPoint],
+    config: GimmickConfig,
+) -> list[TimingPoint]:
+    """`barline_note` in negative: a solid wall of bars with the notes as gaps.
+
+    A barline note draws bars *around* a note. This packs the lane with bars
+    until it reads as one white sheet and takes bars *away* where each note is,
+    so every note is a black slit travelling in the sheet -- the exact inverse
+    of a barline. `mekurume [eclosion]` 1:52.5-2:15.7 is the reference.
+
+    Two structures, and they only work together:
+
+    * **The wall.** One uninherited point every `beat / anti_lines_per_beat`,
+      each carrying `anti_wall_bpm` -- or the chart's own where that is None.
+      A BPM below the chart's is what packs the bars tighter than their
+      millisecond spacing alone would: an uninherited point's BPM is its scroll
+      speed, so a third of it draws the same lines a third as far apart. It
+      also has to keep `beat_length x meter` longer than the tick spacing, or
+      a wall line emits a *second* barline before the next one arrives -- which
+      the chart's own BPM and anything slower does with room to spare.
+    * **The notes.** Per note, a squash line on its own millisecond and a
+      restore one after it. The squash makes the note scroll 392px/ms, which is
+      to say invisible; the restore hands the chart's BPM back with a meter
+      long enough that it never emits a bar of its own. **Both carry
+      omit-first-barline**, and that is the whole subtlety -- each is a red
+      line, and without the flag each would stamp a bar in the middle of the
+      slit it exists to open. With `hide_note` off there is no squash and so
+      nothing to restore: one line, the chart's own BPM, same flag and same
+      meter, and the note travels through its own slit in plain sight.
+
+    The slit itself is the wall ticks nearest the note, left out. Its width is
+    the note's *colour* (`anti_don_ticks` / `anti_kat_ticks`), because the note
+    is invisible and there is nothing else to read one off. Centred on the
+    note, since the note's own two lines sit in the middle of the hole.
+
+    Only plain circles are converted. A finisher, a drumroll and a spinner are
+    all left exactly as they are: a finisher is marked some other way (the
+    reference section uses a fake slider on the six downbeats), and a body that
+    lasts longer than a slit has nothing to be a slit of.
+
+    Returns timing points only. The notes are the chart's own and are not
+    rewritten -- being converted here changes nothing about what is played.
+    """
+    eligible = sorted(
+        (note for note in notes if note.is_circle and not note.is_finisher),
+        key=lambda note: note.time,
+    )
+    if not eligible:
+        return []
+
+    def step_at(time_ms: float) -> float:
+        """Tick spacing at `time_ms`. Read per tick rather than once for the
+        range: the spacing is a fraction of a beat, so a BPM change inside the
+        range has to move the wall with it or the sheet thins out over the
+        second half of the section."""
+        return 60000.0 / base_bpm_at(base_timing, time_ms) / config.anti_lines_per_beat
+
+    def slit_of(note) -> int:
+        return config.anti_kat_ticks if note.is_kat else config.anti_don_ticks
+
+    # The wall fills the dragged range, and reaches past the notes at either
+    # end of it by one slit's width more. A note is a *hole in a sheet*, so it
+    # needs sheet on both sides of it: anchored at the first note the wall
+    # began where that note is and the first note was the leading edge of the
+    # sheet rather than anything travelling in it -- and the last note lost its
+    # trailing bars the same way, since a drag naturally ends on it. Its own
+    # slit width is the bound because that is exactly what has to fit: half of
+    # it for the hole, and as much again beyond for the bars the hole is in.
+    first, last = eligible[0], eligible[-1]
+    wall_start = max(0.0, min(start_ms, first.time - slit_of(first) * step_at(first.time)))
+    wall_end = max(end_ms, last.time + slit_of(last) * step_at(last.time))
+
+    # Phased off the first note, never started on it -- see
+    # ANTI_WALL_ANCHOR_OFFSET_MS. The grid runs out from that anchor in both
+    # directions so the phase is the same either side of it.
+    anchor = float(round(first.time) + ANTI_WALL_ANCHOR_OFFSET_MS)
+    positions = []
+    at = anchor
+    while at >= wall_start:
+        positions.append(at)
+        at -= step_at(at)
+    positions.reverse()
+    at = anchor + step_at(anchor)
+    while at <= wall_end:
+        positions.append(at)
+        at += step_at(at)
+
+    ticks: list[int] = []
+    for at in positions:
+        # Whole milliseconds, off a fractional accumulator: the spacing is
+        # rarely an integer (750/36 is 20.833) and rounding the running total
+        # rather than the step keeps the wall from drifting off it. Rounded
+        # because a line is claimed by its millisecond everywhere else in the
+        # editor -- a layer owns `round(point.time)` -- and because two ticks
+        # can round together once the density is high enough to put them under
+        # a millisecond apart, where only the first would have counted anyway.
+        tick = round(at)
+        if not ticks or tick != ticks[-1]:
+            ticks.append(tick)
+    if not ticks:
+        return []
+
+    dropped: set[int] = set()
+    for note in eligible:
+        wanted = config.anti_kat_ticks if note.is_kat else config.anti_don_ticks
+        # Outward from the note, nearer side first, so the hole stays centred
+        # on it whether the count is odd or even.
+        after = bisect_left(ticks, note.time)
+        before = after - 1
+        for _ in range(wanted):
+            if before >= 0 and (
+                after >= len(ticks)
+                or note.time - ticks[before] <= ticks[after] - note.time
+            ):
+                dropped.add(before)
+                before -= 1
+            elif after < len(ticks):
+                dropped.add(after)
+                after += 1
+            else:
+                break
+
+    points: list[TimingPoint] = []
+    for index, at in enumerate(ticks):
+        if index in dropped:
+            continue
+        points.append(TimingPoint.uninherited_at(
+            at,
+            config.anti_wall_bpm if config.anti_wall_bpm is not None
+            else base_bpm_at(base_timing, at),
+        ))
+        # A green line on every wall line, straight after it -- never before,
+        # since osu! resolves a shared timestamp by file order and the red one
+        # has just reset SV to 1.0x.
+        #
+        # Written even where it restates the 1.0x the red line has already
+        # forced, because it is the handle the SV (barlines) layer is made of:
+        # that layer matches its green lines by exact millisecond, so a wall
+        # with none had nothing in it to show, drag or sweep -- a thousand
+        # barlines whose speed could not be touched. Same rule
+        # `_gimmick_commands` applies to every other structure.
+        #
+        # And it carries the chart's own SV rather than 1.0x, so a wall drawn
+        # across a section the map had sped up does not silently flatten it.
+        points.append(TimingPoint.inherited_at(at, sv_at(base_timing, at)))
+    for note in eligible:
+        time_ms = round(note.time)
+        if not config.hide_note:
+            # One line where there were two. The pair exists because the squash
+            # takes the chart's BPM away and something has to hand it back; a
+            # line that never took it away has nothing to restore, so this is
+            # the restore alone -- the chart's own BPM, its barline detached so
+            # it stamps none in the slit, and a meter long enough that it never
+            # emits one later either.
+            points.append(TimingPoint.uninherited_at(
+                time_ms, base_bpm_at(base_timing, time_ms),
+                meter=ANTI_RESTORE_METER, omit_first_barline=True,
+            ))
+            continue
+        restore_at = time_ms + ANTI_RESTORE_OFFSET_MS
+        points.append(TimingPoint.uninherited_at(
+            time_ms, config.gimmick_bpm, omit_first_barline=True,
+        ))
+        points.append(TimingPoint.uninherited_at(
+            restore_at, base_bpm_at(base_timing, restore_at),
+            meter=ANTI_RESTORE_METER, omit_first_barline=True,
+        ))
+    points.sort(key=lambda point: point.time)
+    return points
+
+
+def hidden_anti_barline(
+    notes: list[HitObject],
+    start_ms: float,
+    end_ms: float,
+    base_timing: list[TimingPoint],
+    config: GimmickConfig,
+) -> list[TimingPoint]:
+    """`anti_barline` with the wall drawn by osu! and the slit cut with SV.
+
+    The classic converter writes a red line per bar and takes bars away. This
+    writes **one** meter-1 red line and lets osu! emit every bar of the wall
+    from it, then opens each note's slit by raising SV for a fraction of a beat
+    after the note -- see the constants above for why a velocity change is a
+    gap. Four lines per note against the other one's hundreds, and the slit
+    grows with distance instead of being a fixed number of pixels.
+
+    Per plain circle at `T`:
+
+        T,   hide BPM,  meter 999, omit-first-barline   # the note, gone
+        T+1, wall BPM,  meter 1                         # the sheet, resumed
+        T+1, SV = Don's or Kat's                        # the slit opens
+        T+1/n beat, SV = the base                       # and closes again
+
+    Both the hide line and the wall line are red lines and would each stamp a
+    bar of their own; the hide line carries omit-first-barline for that reason
+    and the wall line deliberately does not -- its bar is the first bar of the
+    resumed sheet.
+
+    Only plain circles are converted, the same rule and for the same reasons as
+    `anti_barline`: a finisher is marked some other way and a body outlasting
+    its own slit has nothing to be a slit of.
+
+    Returns timing points only -- the notes are the chart's own and still play
+    exactly as they did.
+    """
+    eligible = sorted(
+        (note for note in notes if note.is_circle and not note.is_finisher),
+        key=lambda note: note.time,
+    )
+    if not eligible:
+        return []
+
+    def beat_at(time_ms: float) -> float:
+        return 60000.0 / base_bpm_at(base_timing, time_ms)
+
+    first, last = eligible[0], eligible[-1]
+    # A note is a hole in a sheet, so it needs sheet in front of it: a drag
+    # naturally starts on the first note, and anchored there that note would be
+    # the leading edge rather than anything travelling in the wall. One beat is
+    # what the reference section uses.
+    wall_start = round(min(start_ms, first.time - beat_at(first.time)))
+
+    points: list[TimingPoint] = [
+        TimingPoint.uninherited_at(
+            wall_start, config.hidden_wall_bpm, meter=HIDDEN_WALL_METER,
+        ),
+        TimingPoint.inherited_at(wall_start, config.hidden_base_sv),
+    ]
+    for note in eligible:
+        time_ms = round(note.time)
+        wall_at = time_ms + HIDDEN_WALL_OFFSET_MS
+        # Clamped past the wall line rather than allowed to land on it: at a
+        # high enough BPM 1/n of a beat is under a millisecond, and a restore
+        # sharing the wall line's timestamp would close the slit before it
+        # opened -- the later line in file order wins.
+        restore_at = max(
+            wall_at + 1, round(time_ms + beat_at(time_ms) / config.hidden_window_divisor)
+        )
+        # `hide_note` off swaps the hide BPM for the chart's own. Everything
+        # else is unchanged, slit included: the red line still resets SV to
+        # 1.0x for its millisecond, so the note travels at the chart's normal
+        # speed while the sheet around it crawls at the wall SV -- visible, and
+        # moving against the bars rather than with them.
+        points.append(TimingPoint.uninherited_at(
+            time_ms,
+            config.hidden_hide_bpm if config.hide_note
+            else base_bpm_at(base_timing, time_ms),
+            meter=HIDDEN_HIDE_METER, omit_first_barline=True,
+        ))
+        points.append(TimingPoint.uninherited_at(
+            wall_at, config.hidden_wall_bpm, meter=HIDDEN_WALL_METER,
+        ))
+        points.append(TimingPoint.inherited_at(
+            wall_at, config.hidden_kat_sv if note.is_kat else config.hidden_don_sv,
+        ))
+        points.append(TimingPoint.inherited_at(restore_at, config.hidden_base_sv))
+
+    # Closing the wall is not optional. Its last line has meter 1 and no end of
+    # its own, so without this the sheet runs on to the map's next red line --
+    # which on a chart with clean timing is the rest of the song. Placed on the
+    # chart's own next barline after the range so the bars resume in phase, and
+    # carrying that section's real BPM and meter.
+    wall_end = max(end_ms, last.time + beat_at(last.time))
+    closing = active_uninherited_at(base_timing, wall_end)
+    measure = closing.beat_length * max(1, closing.meter)
+    at = closing.time
+    if measure > 0:
+        at += math.ceil((wall_end - closing.time) / measure) * measure
+    points.append(TimingPoint.uninherited_at(
+        max(round(at), points[-1].time + 1),
+        60000.0 / closing.beat_length,
+        meter=max(1, closing.meter),
+    ))
+    points.sort(key=lambda point: point.time)
+    return points
 
 
 def sv_restore_point(

@@ -69,6 +69,58 @@ class SnapGridExtremeBpmTests(unittest.TestCase):
         self._grid(500.0, divisor=1)
 
 
+class SnapGridDensityTests(unittest.TestCase):
+    """A grid finer than its own pen is a filled rectangle drawn a line at a time.
+
+    nbt-hwt's hidden anti-barline runs a 12345 BPM wall: at 1/4 over a 2s
+    window that is a tick every 1.15px, 1422 of them, 15.3ms of a 16.3ms chart
+    paint against an 8.33ms budget. `_draw_snap_grid` coarsens to the finest
+    division of the setting that is still wide enough to see.
+    """
+
+    def _drawn(self, beat_length: float, *, divisor: int = 4, window_ms: float = 2000.0):
+        view = gui.TimelineGameplay()
+        view.resize(1882, 180)
+        view.timing_points = [
+            TimingPoint(time=0.0, beat_length=beat_length),
+            TimingPoint(time=60000.0, beat_length=beat_length),
+        ]
+        view._timing_times = [point.time for point in view.timing_points]
+        view.snap_divisor = divisor
+        view.window_ms = window_ms
+        view.current_time = 20000.0
+        recorded: list[float] = []
+        original = view.x_for_time
+
+        def spy(time_ms):
+            recorded.append(original(time_ms))
+            return recorded[-1]
+
+        pixmap = QPixmap(view.size())
+        painter = QPainter(pixmap)
+        view.x_for_time = spy
+        try:
+            view._draw_snap_grid(painter, 90)
+        finally:
+            view.x_for_time = original
+            painter.end()
+        return view, sorted(recorded)
+
+    def test_a_12345_bpm_wall_is_coarsened_to_what_can_be_seen(self):
+        view, xs = self._drawn(60000.0 / 12345.0)
+        self.assertTrue(xs, "the grid drew nothing to check")
+        gaps = [b - a for a, b in zip(xs, xs[1:]) if b > a]
+        self.assertGreaterEqual(min(gaps), view._min_tick_spacing_px)
+
+    def test_an_ordinary_section_keeps_every_division(self):
+        """The coarsening is for grids nobody can see, and must not reach a
+        1/4 grid at 185 BPM -- 38px a tick, which is the normal case."""
+        beat = 60000.0 / 185.0
+        _view, xs = self._drawn(beat)
+        gaps = [round(b - a, 3) for a, b in zip(xs, xs[1:]) if b > a]
+        self.assertAlmostEqual(min(gaps), beat / 4 * 1882 / 2000.0, delta=1.0)
+
+
 class BarlineGimmickTests(unittest.TestCase):
     """A barline gimmick is thousands of millisecond-long absurd-BPM sections.
 

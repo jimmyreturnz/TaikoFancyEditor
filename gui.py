@@ -6,6 +6,8 @@ import csv
 import shutil
 import sys
 from bisect import bisect_left, bisect_right
+from dataclasses import replace
+from functools import lru_cache
 from contextlib import contextmanager
 from itertools import count as count_from
 from pathlib import Path
@@ -13,7 +15,8 @@ from time import perf_counter
 from typing import Any
 
 from PySide6.QtCore import (
-    QElapsedTimer, QEvent, QObject, QPointF, QPropertyAnimation, QRect, QRectF, QSize, QStandardPaths, Qt, QTimer,
+    QElapsedTimer, QEvent, QLine, QObject, QPointF, QPropertyAnimation, QRect, QRectF, QSize, QStandardPaths, Qt,
+    QTimer,
     QUrl, Signal,
 )
 from PySide6.QtGui import QImageReader, QColor, QFont, QFontDatabase, QFontMetrics, QKeySequence, QPainter, QPen, QPixmap, QPolygonF, QShortcut, QIcon
@@ -58,19 +61,26 @@ from osu_io.timing import (
     uninherited_points,
 )
 from osu_io.writer import write_osu
-from song_library import group_by_song, load_cache, save_cache, scan, songs_from_cache
+from song_library import (
+    group_by_song, load_cache, matches_search, save_cache, scan, songs_from_cache,
+)
 from time_axis import (
-    KIAI_OPEN_END_MS, SNAP_DIVISORS, TimeAxisMixin, osu_round, snap_time, wheel_seek_time,
+    KIAI_OPEN_END_MS, SNAP_DIVISORS, TimeAxisMixin, osu_round, osu_snap_ms, snap_time,
+    wheel_seek_time,
 )
 from gimmick_session import (
     DEFAULT_RED_LINE_BPM,
     DEFAULT_SHINY_COUNT,
+    FAKE_SLIDER_MAX_LENGTH,
     GimmickConfig,
     GimmickConfigError,
     GimmickPairing,
+    anti_barline as gimmick_anti_barline,
     barline_note as gimmick_barline_note,
     base_bpm_at,
     fake_slider as gimmick_fake_slider,
+    format_length as gimmick_format_length,
+    hidden_anti_barline as gimmick_hidden_anti_barline,
     red_line as gimmick_red_line,
     sv_restore_point,
     gimmick_path_for,
@@ -240,6 +250,17 @@ def spinner_pixmap() -> QPixmap:
 SLIDER_MULTIPLIER_ASSUMED = 1.4
 
 
+@lru_cache(maxsize=None)
+def divisors_descending(divisor: int) -> tuple[int, ...]:
+    """`divisor`'s own divisors, coarsest last -- the grids that are subsets of it.
+
+    `_draw_snap_grid` walks this to find the finest division that is still
+    wide enough to see. Halving instead would take 1/12 to 1/6 to 1/3 and then
+    to 1.5, which is not a division of the beat at all.
+    """
+    return tuple(d for d in range(divisor, 0, -1) if divisor % d == 0)
+
+
 def slider_length_for_duration(
     duration_ms: float, beat_length: float, sv: float,
     slider_multiplier: float = SLIDER_MULTIPLIER_ASSUMED,
@@ -294,14 +315,31 @@ def button_chrome_width(button: QPushButton) -> int:
     the buttons this exists for are exactly the ones currently too narrow to
     hold their own padding, and a style clamps the contents rect at zero
     rather than reporting the overflow.
+
+    **In the checked state as well as the current one**, which is the half of
+    the clipping report that survived every previous fix. `QPushButton:checked`
+    is `border: 1px solid` against the base rule's `border: 0`, so checking a
+    button costs it two pixels of chrome that were never in the width it was
+    pinned to -- and a tool row's selected button is the one every gimmick
+    layer is looking at. `button_text_width` already measured the checked
+    *font*; this is the other thing that rule changes.
     """
     button.ensurePolished()
     option = QStyleOptionButton()
     option.initFrom(button)
     text_width = button.fontMetrics().horizontalAdvance(button.text())
-    option.rect = QRect(0, 0, option.rect.width() + text_width, max(1, option.rect.height()))
-    contents = button.style().subElementRect(QStyle.SE_PushButtonContents, option, button)
-    return max(0, option.rect.width() - contents.width())
+    height = max(1, option.rect.height())
+    width = option.rect.width() + text_width
+    states = [option.state]
+    if button.isCheckable():
+        states.append(option.state | QStyle.StateFlag.State_On)
+    widest = 0
+    for state in states:
+        option.state = state
+        option.rect = QRect(0, 0, width, height)
+        contents = button.style().subElementRect(QStyle.SE_PushButtonContents, option, button)
+        widest = max(widest, width - contents.width())
+    return max(0, widest)
 
 
 def button_text_width(button: QPushButton) -> int:
@@ -383,6 +421,15 @@ def equalize_button_widths(buttons, heights: bool = False, widths: bool = True) 
     for button in buttons:
         if widths:
             button.setFixedWidth(width)
+        else:
+            # Not "leave it to sizeHint". Qt measures that hint in the font the
+            # button reports, and under a stylesheet a *checked* button is
+            # painted at font-weight 700 while `font()` still says 600 -- so
+            # the hint is a couple of pixels short of what the selected button
+            # in every tool row is actually drawn with, and it clipped the last
+            # letter of its own label. A floor rather than a fixed width, so a
+            # ragged row still is one.
+            button.setMinimumWidth(button_text_width(button))
         if heights:
             button.setFixedHeight(height)
 
@@ -812,6 +859,12 @@ CIRCLE_KIAI_STRENGTH = 0.55
 # Under this a "beat" is a gimmick, not a pulse: an invisible-note section at
 # 0.0001ms per beat would strobe once per frame.
 KIAI_PULSE_MIN_BEAT_MS = 50.0
+# 60 BPM. Only a beat longer than this lets a kiai section that ends mid-pulse
+# carry it to the end -- see GameplayViewerView._unfinished_pulse_anchor. Above
+# 60 BPM the beat is short enough that a section ending inside one just stops,
+# which is what a chorus ending should look like; below it the beat is long
+# enough that the same cut lands on a flash still visibly fading.
+KIAI_PULSE_CARRY_MIN_BEAT_MS = 1000.0
 
 
 def beat_pulse(
@@ -837,19 +890,32 @@ def beat_pulse(
     the beat. Without an anchor, falls back to the same one-beat period phased
     from the timing point instead of from the section.
     """
-    # Binary search to the last point at or before the playhead, then walk back
-    # from there -- not a scan from the end of the list. This runs once per
-    # frame at 120Hz and a barline gimmick carries tens of thousands of points,
-    # which is the difference between a repaint and a freeze (the same reason
-    # `active_uninherited_at` is a binary search).
+    point = pulse_beat_point(timing_points, time_ms)
+    if point is None:
+        return 0.0
+    phase = point.time if anchor_ms is None else anchor_ms
+    return 1.0 - ((time_ms - phase) / point.beat_length) % 1.0
+
+
+def pulse_beat_point(
+    timing_points: list[TimingPoint], time_ms: float,
+) -> TimingPoint | None:
+    """The section the pulse beats against: the most recent point at or before
+    `time_ms` whose beat_length is a real beat rather than a gimmick.
+
+    Binary search to the last point at or before the playhead, then walk back
+    from there -- not a scan from the end of the list. This runs once per
+    frame at 120Hz and a barline gimmick carries tens of thousands of points,
+    which is the difference between a repaint and a freeze (the same reason
+    `active_uninherited_at` is a binary search).
+    """
     index = bisect_right(timing_points, time_ms, key=lambda point: point.time) - 1
     while index >= 0:
         point = timing_points[index]
         if point.beat_length >= KIAI_PULSE_MIN_BEAT_MS:
-            phase = point.time if anchor_ms is None else anchor_ms
-            return 1.0 - ((time_ms - phase) / point.beat_length) % 1.0
+            return point
         index -= 1
-    return 0.0
+    return None
 
 
 def in_kiai(timing_points: list[TimingPoint], time_ms: float) -> bool:
@@ -867,7 +933,7 @@ _NOTE_SPRITES: dict[tuple, QPixmap] = {}
 
 def draw_note_sprite(
     painter: QPainter, fill: QColor, outline: QPen, x: float, y: float, radius: float,
-    skin=None, big: bool = False,
+    skin=None, big: bool = False, selected: bool = False,
 ) -> None:
     """Draw a note circle from a cached pixmap instead of stroking an ellipse.
 
@@ -877,6 +943,12 @@ def draw_note_sprite(
     because the editor's chart views deliberately draw notes semi-transparent
     so the snap grid stays visible through them -- skin art is opaque, and
     multiplying by a translucent colour would not have reproduced that.
+
+    `selected` strokes `outline` over the artwork. Only the unskinned path bakes
+    the pen into its sprite, so with a skin loaded the selection outline was
+    silently dropped and a selected note looked exactly like an unselected one.
+    Gated rather than always drawn, because a skin's circle has its own rim and
+    ringing every note would be drawing a selection that is not there.
 
     A filled, stroked, antialiased ellipse costs the raster engine ~70us; the
     same circle blitted costs ~2us. A screenful of a dense map is 3ms a frame
@@ -897,6 +969,10 @@ def draw_note_sprite(
             if overlay is not None:
                 painter.drawPixmap(target, overlay, QRectF(overlay.rect()))
             painter.setOpacity(previous)
+            if selected:
+                painter.setPen(outline)
+                painter.setBrush(Qt.NoBrush)
+                painter.drawEllipse(QPointF(x, y), radius, radius)
             return
 
     ratio = painter.device().devicePixelRatioF()
@@ -1547,7 +1623,29 @@ class TransformCanvas(QWidget):
         self.unsetCursor()
         event.accept()
 
+
+def is_fake_slider(note) -> bool:
+    """A drumroll with no playable duration: drawn, never hittable.
+
+    The threshold is `gimmick_session.FAKE_SLIDER_MAX_LENGTH`, shared with the
+    config that writes them, so what the toolbox can produce is exactly what
+    the layer will admit. Exposed as `MainWindow.is_fake_slider` too, which is
+    the name it has been reached by; the definition lives here because the
+    editor timeline needs it and is built long before that class.
+    """
+    return (
+        note.is_slider and note.length is not None
+        and note.length <= FAKE_SLIDER_MAX_LENGTH
+    )
+
+
 class TimelineGameplay(TimeAxisMixin, QWidget):
+    # Tools whose gesture is "drag a range", not "click a spot". Listed once
+    # because mousePressEvent has to start the drag and mouseReleaseEvent has
+    # to emit the range, and a tool added to one tuple and not the other is a
+    # press that grabs the mouse and a release that never lets go.
+    RANGE_TOOLS = ("function", "convert", "kiai")
+
     selection_changed = Signal(object)
     selection_finalized = Signal(object)
     seek_requested = Signal(float)
@@ -1566,6 +1664,10 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
     note_place_with_duration_requested = Signal(str, float, float, bool, bool)
     # (uid, new_end_ms) -- dragging an existing slider/spinner's right edge.
     note_duration_edit_requested = Signal(int, float)
+    # (note uid) -- a fake slider's `length`, which is the one number that
+    # decides how far it draws and is not reachable by dragging: its tail is
+    # behind its head, so `_extendable_note_near_edge` never sees an edge.
+    note_length_edit_requested = Signal(int)
     # uid of the note nearest a right click, within a small pixel radius.
     note_delete_requested = Signal(int)
     # list[uid] -- Delete/Backspace with a selection, Editor-page views only.
@@ -1729,6 +1831,10 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
         # Whether a select-tool press on an object drags it to a new time
         # instead of starting a rubber-band selection.
         self.move_enabled = False
+        # Whether double-clicking an object here types its length. Layer 2's,
+        # because a fake slider is the only object whose length is a gimmick
+        # parameter rather than a duration you drag.
+        self.note_length_dialog_enabled = False
         # On a normal chart every click lands near a note, so a bare press
         # only starts a move when the note under it is already selected --
         # rubber-band selecting is still what an unselected note's click (or
@@ -1804,6 +1910,10 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
         # at fine snap divisors with many chart views open simultaneously,
         # that allocation churn was a real contributor to paint stutter.
         # (kind -> (QPen, tick_height))
+        # Two ticks are two ticks only with a background pixel between them,
+        # and the widest tick pen is 2px -- so a grid finer than this is a
+        # filled rectangle drawn one line at a time. Read off the pens rather
+        # than typed, so restyling a tick cannot silently invalidate it.
         self._tick_styles = {
             "beat": (QPen(QColor("#f2f2f2"), 2), 32),
             "half": (QPen(QColor("#ff5151"), 2), 24),
@@ -1816,6 +1926,9 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
             "thirteenth": (QPen(QColor("#8bd1ff"), 1), 12),
             "other": (QPen(QColor("#738098"), 1), 10),
         }
+        self._min_tick_spacing_px = max(
+            pen.width() for pen, _height in self._tick_styles.values()
+        ) + 1
 
         self.setMinimumHeight(self.DESIGN_HEIGHT)
         self.setFocusPolicy(Qt.StrongFocus)
@@ -1954,8 +2067,34 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
         self.symmetric = symmetric
         self.update()
 
-    def _note_near_x(self, x: float, radius_px: float = 20.0, y: float | None = None):
-        """Nearest note within radius_px of an x position, for right-click delete.
+    def note_radii(self) -> tuple[float, float]:
+        """(normal, finisher) drawn note radius, derived from the view height.
+
+        One place, because the painter and the hit test both need it and a
+        note you can see but not grab is the bug that comes of them drifting.
+
+        Sized from the view, not typed: the gimmick page shows six layers as
+        short bands, and a fixed 42px finisher there is taller than the band it
+        sits in -- it spills past the edges and stops reading as centred on the
+        baseline. Full-height views are unchanged, since they clamp at the
+        sizes these used to be fixed at. A split layer halves it again: it
+        draws two rows of objects instead of one, and at the full radius the
+        two overlap and the pair reads as a single smear.
+        """
+        normal = min(31.0, self.height() * (0.15 if self.split_rows else 0.22))
+        return normal, min(42.0, normal * 1.35)
+
+    def _note_near_x(self, x: float, radius_px: float | None = None, y: float | None = None):
+        """Nearest note whose drawn circle covers `x`, for grabbing and deleting.
+
+        The reach is the note's **own body**, not a fixed number: a normal note
+        is drawn at up to 31px and a finisher at up to 42, so a flat 20 meant
+        the outer two thirds of every circle looked grabbable and was not --
+        which is what "you have to click exactly on the millisecond" was. A
+        finisher is bigger on screen and is now bigger to grab, which is the
+        point of drawing it bigger.
+
+        `radius_px` overrides that for a caller that wants a fixed reach.
 
         `y` matters on a split layer and nowhere else. There the two rows hold
         two different structures a millisecond apart -- the same pixel column
@@ -1966,12 +2105,16 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
         (and the other way round).
         """
         wants_lower = None if y is None or not self.split_rows else y > self._baseline_y()
+        normal_radius, finisher_radius = self.note_radii()
         best = None; best_distance = None
         for note in self.notes:
             if wants_lower is not None and (round(note.time) in self.shiny_times) != wants_lower:
                 continue
+            reach = radius_px if radius_px is not None else (
+                finisher_radius if (note.is_finisher or note.is_spinner) else normal_radius
+            )
             distance = abs(self.x_for_time(note.time) - x)
-            if distance <= radius_px and (best_distance is None or distance < best_distance):
+            if distance <= reach and (best_distance is None or distance < best_distance):
                 best = note; best_distance = distance
         return best
 
@@ -2045,11 +2188,10 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
         if event.button()!=Qt.LeftButton:
             return
 
-        if self.tool in ("function", "convert", "kiai"):
+        if self.tool in self.RANGE_TOOLS:
             # Same gesture as the SV editor's function tool: drag a range, then
-            # answer a dialog about what to fill it with. "convert" and "kiai"
-            # share it -- they also act on a range, they just need nothing else
-            # asked.
+            # answer a dialog about what to fill it with. The others share it --
+            # they also act on a range, they just need nothing else asked.
             self.drag_start_x = event.position().x()
             self.drag_mouse_x = self.drag_start_x
             self.drag_anchor_time = self.time_for_x(self.drag_start_x)
@@ -2103,8 +2245,9 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
 
         # A tail grab takes priority over everything else select does, but
         # only within its own small radius (_extendable_note_near_edge's 16px,
-        # tighter than _note_near_x's 20) -- so a click on a slider's head or
-        # body still falls through to the move/rubber-band handling below.
+        # tighter than the note body _note_near_x reaches with) -- so a click on
+        # a slider's head or body still falls through to the move/rubber-band
+        # handling below.
         # Independent of move_enabled: a drumroll's tail is draggable on any
         # layer, not only the gimmick ones where whole-object moving is
         # enabled. This is what lets a slider be lengthened without switching
@@ -2127,7 +2270,15 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
                 self._timing_point_near_x(event.position().x())
                 if grabbed_note is None and self.timing_edit_enabled else None
             )
-            if self.move_requires_selection and not (
+            # A press that is literally on the note's circle moves it, selected
+            # or not: that is what grabbing a thing means, and it costs the
+            # rubber band only the object's own area -- everything above and
+            # below the row still selects. `move_requires_selection` remains the
+            # rule off the body, so a drag started in the space beside a note
+            # still boxes rather than nudging whatever column it began in.
+            on_body = grabbed_note is not None and self._press_is_on_note_body(
+                grabbed_note, event.position().x(), event.position().y())
+            if self.move_requires_selection and not on_body and not (
                 (grabbed_note is not None and grabbed_note.original_index in self.selected)
                 or (grabbed_point is not None and grabbed_point.uid in self.selected_timing_uids)
             ):
@@ -2222,27 +2373,28 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
             # means what it always meant.
             self.note_place_requested.emit(*fallback)
         elif note_uids or point_uids:
-            if self.move_requires_selection:
-                # move_requires_selection only ever grabs an already-selected
-                # object, so this was a plain click on the current selection
-                # with no drag -- the regular chart's own rule is that a
-                # plain click always deselects (see mouseReleaseEvent's
-                # rubber-band path), so this is that click, not a reselect.
-                self.selected = set()
-                self.selected_timing_uids = set()
-                self.selection_changed.emit(set())
-            else:
-                # A press on an object that never became a drag is a click,
-                # and a click selects it. Without this, clicking a gimmick
-                # object did nothing at all -- it could only be selected by
-                # dragging a band around it, so Delete had nothing to act on
-                # unless you knew that.
-                grabbed = set(note_uids)
-                self.selected = {
-                    note.original_index for note in self.notes if note.uid in grabbed
-                }
-                self.selected_timing_uids = set(point_uids)
-                self.selection_changed.emit(set(self.selected))
+            # A press on an object that never became a drag is a click, and a
+            # click selects it -- on every page. Without this, clicking a
+            # gimmick object did nothing at all: it could only be selected by
+            # dragging a band around it, so Delete had nothing to act on
+            # unless you knew that.
+            #
+            # The Editor page used to *clear* here instead, on the rule that a
+            # plain click deselects. That rule belongs to a click on empty
+            # space (see mouseReleaseEvent's rubber-band path, which still
+            # clears), and applying it to a click on the object itself is what
+            # made a note in the regular editor impossible to select the way
+            # one in a gimmick layer is -- same widget, same yellow
+            # `selected_note_pen`, opposite result from the same gesture.
+            # Only this branch is shared; `move_requires_selection` still
+            # governs what a press *off* the body grabs, so a drag started
+            # beside a note on a dense chart still boxes rather than nudging.
+            grabbed = set(note_uids)
+            self.selected = {
+                note.original_index for note in self.notes if note.uid in grabbed
+            }
+            self.selected_timing_uids = set(point_uids)
+            self.selection_changed.emit(set(self.selected))
         self.update()
 
     def _update_drag_selection(self) -> None:
@@ -2342,7 +2494,7 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
             self.update()
             return
         if self.drag_anchor_time is None: return
-        if self.tool in ("function", "convert", "kiai"):
+        if self.tool in self.RANGE_TOOLS:
             self.releaseMouse()
             start, end = sorted((self.drag_anchor_time, self.time_for_x(event.position().x())))
             if self.tool == "kiai":
@@ -2452,15 +2604,36 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
 
         # A gimmick map's "invisible note" points carry beat_length = 0.0001,
         # which puts millions of sub-pixel ticks in one window -- a hard freeze,
-        # not a slow frame. Nothing under a pixel is visible anyway, so those
-        # sections are skipped whole rather than drawn.
-        min_snap_length = self.window_ms / max(1.0, float(self.width()))
+        # not a slow frame. Nothing this fine is visible anyway (see
+        # `_min_tick_spacing_px`), so it is not drawn.
+        min_snap_length = (
+            self.window_ms / max(1.0, float(self.width())) * self._min_tick_spacing_px
+        )
+
+        # Collected per tick kind and stroked in one drawLines each, rather
+        # than setPen + drawLine per tick. Worth about half the raster call
+        # (1882 lines: 1.67ms one at a time, 0.89ms batched) and no more --
+        # the frame was never in the pen changes, it was in the walk below.
+        batches: dict[str, list[QLine]] = {}
+        tick_heights = {
+            name: round(height * tick_scale)
+            for name, (_pen, height) in self._tick_styles.items()
+        }
 
         # Floored with the same minimum: a million-BPM point makes snap_length
         # small enough that the division below overflows to infinity, and
         # int(inf) raises. Only the *starting* tick is affected, and the loop
         # skips those sections whole anyway.
         snap_length = max(timing.beat_length / divisor, min_snap_length)
+        # The divisor actually drawn, coarsened per section so the grid stays
+        # legible instead of turning into fill. Measured on nbt-hwt's hidden
+        # anti-barline (a 12345 BPM wall): a 1/4 grid there is 1.15px apart,
+        # 1422 ticks a frame, 15.3ms of a 16.3ms chart paint against an 8.33ms
+        # budget -- and every one of those ticks lands on a pixel its
+        # neighbour already covered. Only ever a divisor *of* the setting, so
+        # what is drawn is a subset of the real grid rather than a different
+        # one.
+        grid_divisor = divisor
 
         tick_time = (
             timing.time
@@ -2477,12 +2650,17 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
                 timing = active_timing(snap_points, at)
                 following = self._next_timing_time_after(tick_time)
                 section_expires = math.inf if following is None else following
+                grid_divisor = divisor
+                for candidate in divisors_descending(divisor):
+                    if timing.beat_length / candidate >= min_snap_length:
+                        grid_divisor = candidate
+                        break
 
-            snap_length = timing.beat_length / divisor
+            snap_length = timing.beat_length / grid_divisor
             if snap_length < min_snap_length:
                 next_section = self._next_timing_time_after(tick_time)
                 if next_section is None or next_section > end_time:
-                    return
+                    break
                 tick_time = next_section
                 continue
 
@@ -2491,62 +2669,68 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
                 / snap_length
             )
 
-            position_in_beat = snap_index % divisor
+            position_in_beat = snap_index % grid_divisor
 
             if position_in_beat == 0:
                 kind = "beat"
-            elif divisor % 2 == 0 and position_in_beat == divisor // 2:
+            elif grid_divisor % 2 == 0 and position_in_beat == grid_divisor // 2:
                 kind = "half"
-            elif divisor % 4 == 0 and position_in_beat % (divisor // 4) == 0:
+            elif grid_divisor % 4 == 0 and position_in_beat % (grid_divisor // 4) == 0:
                 kind = "quarter"
-            elif divisor % 8 == 0 and position_in_beat % (divisor // 8) == 0:
+            elif grid_divisor % 8 == 0 and position_in_beat % (grid_divisor // 8) == 0:
                 kind = "eighth"
-            elif divisor % 3 == 0:
+            elif grid_divisor % 3 == 0:
                 kind = "third"
-            elif divisor % 5 == 0:
+            elif grid_divisor % 5 == 0:
                 kind = "fifth"
-            elif divisor % 7 == 0:
+            elif grid_divisor % 7 == 0:
                 kind = "seventh"
-            elif divisor % 11 == 0:
+            elif grid_divisor % 11 == 0:
                 kind = "eleventh"
-            elif divisor % 13 == 0:
+            elif grid_divisor % 13 == 0:
                 kind = "thirteenth"
             else:
                 kind = "other"
 
-            pen, tick_height = self._tick_styles[kind]
-            tick_height = round(tick_height * tick_scale)
+            tick_height = tick_heights[kind]
             # Clamped to just off either edge before it reaches Qt: drawLine
             # takes a C int, and one 0.00001 BPM section puts the tick after
             # this one billions of pixels out. Handing that over raises
             # OverflowError *inside* paintEvent, which aborts the whole frame --
             # grid, notes and all -- and looks like the map vanishing.
             #
-            # Drawn at round(tick_time), not the exact fractional beat position:
-            # objects snap to a whole millisecond (see `TimeAxisMixin.snap_ms`),
-            # so a grid drawn at the unrounded position sits up to half a
-            # millisecond off the note it is meant to mark. The walk itself
-            # still steps by the exact `snap_length` -- rounding only the
-            # drawn position, never accumulating it into `tick_time`, keeps
-            # the grid from drifting off its own beats across a long section.
-            x = round(max(-1.0, min(float(self.width() + 1), self.x_for_time(osu_round(tick_time)))))
+            # Drawn at `osu_snap_ms(tick_time)`, not at the exact fractional
+            # beat: objects snap to a whole millisecond and osu! takes that one
+            # *down* (see `osu_snap_ms`), so a grid drawn at the unrounded
+            # position sits up to a whole millisecond off the note it is meant
+            # to mark. The walk itself still steps by the exact `snap_length` --
+            # only the drawn position is snapped, never accumulated back into
+            # `tick_time`, which keeps the grid from drifting off its own beats
+            # across a long section.
+            x = round(max(-1.0, min(float(self.width() + 1), self.x_for_time(osu_snap_ms(tick_time)))))
 
-            painter.setPen(pen)
+            lines = batches.get(kind)
+            if lines is None:
+                lines = batches[kind] = []
             if self.split_rows:
                 # Straddling the middle instead of growing in from the edges:
                 # this layer's objects are up against the top and bottom, and
                 # ticks there were drawn through them. See `_row_y`.
-                painter.drawLine(x, baseline_y - tick_height // 2, x, baseline_y + tick_height // 2)
+                lines.append(QLine(x, baseline_y - tick_height // 2, x, baseline_y + tick_height // 2))
             elif self.symmetric:
                 # Notes alone stay centered on the baseline; ticks anchor to
                 # the view's top and bottom edges and grow inward, framing
                 # the notes rather than straddling the middle with them.
-                painter.drawLine(x, 0, x, tick_height)
-                painter.drawLine(x, self.height(), x, self.height() - tick_height)
+                lines.append(QLine(x, 0, x, tick_height))
+                lines.append(QLine(x, self.height(), x, self.height() - tick_height))
             else:
-                painter.drawLine(x, baseline_y, x, baseline_y - tick_height)
+                lines.append(QLine(x, baseline_y, x, baseline_y - tick_height))
 
             tick_time += snap_length
+
+        for kind, lines in batches.items():
+            painter.setPen(self._tick_styles[kind][0])
+            painter.drawLines(lines)
 
     def _owns_timing_point(self, point: TimingPoint) -> bool:
         """Whether this view's tools act on `point`, or merely show it.
@@ -2658,7 +2842,21 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
         Reached before mousePressEvent's tool handling gets a second click, so a
         placement tool being active does not swallow it.
         """
-        if not self.timing_dialog_enabled or event.button() != Qt.LeftButton:
+        if event.button() != Qt.LeftButton:
+            super().mouseDoubleClickEvent(event)
+            return
+        # The object before the line under it, the same order mousePressEvent
+        # resolves a grab in: on layer 2 the fake slider and the red line that
+        # squashes it are a millisecond apart, which is one pixel column at any
+        # zoom the layer is readable at, and the line is the half you did not
+        # click on.
+        if self.note_length_dialog_enabled:
+            note = self._note_near_x(event.position().x(), y=event.position().y())
+            if note is not None and note.length is not None:
+                self.note_length_edit_requested.emit(note.uid)
+                event.accept()
+                return
+        if not self.timing_dialog_enabled:
             super().mouseDoubleClickEvent(event)
             return
         point = self._timing_point_near_x(event.position().x())
@@ -2674,15 +2872,7 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
         self.draw_kiai_bands(painter)
 
         baseline_y = self._baseline_y()
-        # Sized from the view, not typed: the gimmick page shows six layers as
-        # short bands, and a fixed 42px finisher there is taller than the band
-        # it sits in -- it spills past the edges and stops reading as centred on
-        # the baseline. Full-height views are unchanged, since they clamp at the
-        # sizes these used to be fixed at. A split layer halves it again: it
-        # draws two rows of objects instead of one, and at the full radius the
-        # two overlap and the pair reads as a single smear.
-        normal_note_radius = min(31.0, self.height() * (0.15 if self.split_rows else 0.22))
-        finisher_note_radius = min(42.0, normal_note_radius * 1.35)
+        normal_note_radius, finisher_note_radius = self.note_radii()
 
         self._draw_snap_grid(painter, baseline_y)
         self._draw_timing_lines(painter)
@@ -2731,11 +2921,7 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
                 else normal_note_radius
             )
             shiny = self.split_rows and round(note.time) in self.shiny_times
-            note_center_y = (
-                self._row_y(baseline_y, shiny) if self.split_rows
-                else baseline_y if self.symmetric
-                else baseline_y - radius
-            )
+            note_center_y = self.note_center_y(note, baseline_y, radius)
             note_pen = self.selected_note_pen if note.original_index in self.selected else self.normal_note_pen
 
             if note.is_spinner:
@@ -2767,7 +2953,15 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
                         painter.drawEllipse(QPointF(x, note_center_y), radius, radius)
                     continue
 
-            if note.is_slider:
+            # A fake slider is a head and nothing else here. It has no body to
+            # cap -- its end precedes its start, or trails it by a rounding
+            # artefact -- but `_draw_skinned_roll_body` stamps `taiko-roll-end`
+            # at `body_end` whether or not a track got drawn, so every fake
+            # slider in the editor wore a cap butted against its own head. The
+            # scrolling body belongs to the gameplay preview, which draws the
+            # extent to scale; this view has no room to say anything but where
+            # the object is.
+            if note.is_slider and not is_fake_slider(note):
                 end_time = self._note_end_time(note)
                 end_x = x
                 if end_time is not None and end_time > note.time:
@@ -2800,6 +2994,7 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
                 radius,
                 self.skin,
                 big=note.is_finisher,
+                selected=note.original_index in self.selected,
             )
 
         self._draw_placement_ghost(painter, baseline_y, normal_note_radius, finisher_note_radius)
@@ -2821,6 +3016,31 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
     def _baseline_y(self) -> float:
         """The y objects are centred on. Bottom-anchored views draw lower."""
         return self.height() // 2 if self.symmetric else self.height() // 2 + 34
+
+    def note_center_y(self, note, baseline_y: float, radius: float) -> float:
+        """The y `note` is drawn centred on. Shared with the painter, so what
+        the cursor can land on is what the eye can see."""
+        if self.split_rows:
+            return self._row_y(baseline_y, round(note.time) in self.shiny_times)
+        return baseline_y if self.symmetric else baseline_y - radius
+
+    def _press_is_on_note_body(self, note, x: float, y: float) -> bool:
+        """Whether (x, y) is inside the circle drawn for `note`.
+
+        `_note_near_x` deliberately ignores y off a split layer -- a right
+        click anywhere in the band should still delete what is in that column.
+        Starting a *move* is the one thing that has to be stricter: on a normal
+        chart every column has a note in it, so a press that begins a
+        rubber-band selection would grab one instead. Requiring the press to be
+        on the object itself leaves the whole height above and below the row
+        for selecting.
+        """
+        normal_radius, finisher_radius = self.note_radii()
+        radius = finisher_radius if (note.is_finisher or note.is_spinner) else normal_radius
+        centre_y = self.note_center_y(note, self._baseline_y(), radius)
+        dx = self.x_for_time(note.time) - x
+        dy = centre_y - y
+        return dx * dx + dy * dy <= radius * radius
 
     def _row_y(self, baseline_y: float, lower: bool) -> float:
         """Centre of the upper or lower object row on a split layer.
@@ -3012,6 +3232,13 @@ SV_BOUND_SLACK = 1.3
 # sweep can put hundreds of points in one screen; labelling every one is both
 # unreadable and a drawText per point per frame.
 SV_LABEL_MIN_SPACING_PX = 46.0
+
+# Decimals an SV value can be *typed* to. A green line's multiplier is
+# -100/beat_length, so under a 60000 BPM red line the SV that moves a note a
+# visible distance differs from its neighbour in the seventh decimal. The graph
+# still labels at 2dp: it is read at a glance, and 8 decimals on every point is
+# a smear -- the spin boxes are where a value is actually tuned.
+SV_DECIMALS = 8
 
 # A click on a green line within this many pixels of its actual value dot
 # adjusts the SV (vertical); farther away on the same line -- the vertical
@@ -4061,11 +4288,6 @@ class GameplayViewerView(QWidget):
         # chosen and for any element a chosen skin does not ship.
         self.skin = TaikoSkin()
 
-        # A fake slider's backwards body: the same drumroll yellow, but
-        # translucent and dashed, because the region is drawn by osu! and
-        # never hittable. See _draw_phantom_body.
-        self.phantom_brush = QColor(*DRUMROLL_COLOR, 45)
-        self.phantom_pen = QPen(QColor(*DRUMROLL_COLOR, 120), 1, Qt.DashLine)
         self.barline_pen = QPen(QColor(225, 230, 240, 90), 1)
         self.hit_pen = QPen(QColor(255, 255, 255, 120), 2)
         self.lane_brush = QColor(28, 33, 43)
@@ -4117,6 +4339,13 @@ class GameplayViewerView(QWidget):
             phantom = self._compute_phantom_end(note)
             if phantom is not None:
                 self._phantom_ends[note.uid] = phantom
+                # It is drawn forward of its head all the same -- the negative
+                # duration becomes a track reaching *right* -- so it widens the
+                # slice like any other body. Without this a long one vanished
+                # the moment its head left the window, taking a thousand pixels
+                # of still-visible track with it.
+                self._max_extend_ms = max(
+                    self._max_extend_ms, abs(phantom - note.time))
         self.update()
 
     # Timing points move the notes here (that is the whole point of the view),
@@ -4455,6 +4684,8 @@ class GameplayViewerView(QWidget):
             band_start, band_end = self.kiai_bands[band_index]
             if band_start <= self.current_time < band_end:
                 anchor_ms = band_start
+            elif self.current_time >= band_end:
+                anchor_ms = self._unfinished_pulse_anchor(band_start, band_end)
         pulse = beat_pulse(self.beat_points, self.current_time, anchor_ms) if anchor_ms is not None else 0.0
 
         painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
@@ -4551,18 +4782,26 @@ class GameplayViewerView(QWidget):
                 if playfield_alpha > 0:
                     painter.fillRect(self.rect(), QColor(255, 255, 255, playfield_alpha))
             for note in self.notes[first:after_last]:
+                end_time = self._note_end_time(note)
+                hit = self._has_been_hit(note)
                 # A circle that has been played is gone and has nothing to
                 # light. A slider always has something: its cap, which outlives
-                # its head.
-                hit = self._has_been_hit(note)
+                # its head -- a fake slider's included, since that passes
+                # straight through the hit position.
                 if hit and not note.is_slider:
                     continue
                 x = self.x_for_time(note.time)
                 radius = big_radius if (note.is_finisher or note.is_spinner) else normal_radius
                 if not -radius <= x <= self.width() + radius:
                     continue
+                # A fake slider takes its own stamp like every other object --
+                # that *is* the shiny: a stack of them under one note, each
+                # stamping the same millisecond, so the note above reads
+                # brighter the deeper the pile with nothing counting it.
                 strength = kiai_flash_strength(note)
                 big = note.is_finisher or note.is_spinner
+                # A real roll past the target has lost its head, so only its
+                # cap lights from here on.
                 if not hit:
                     draw_kiai_flash(
                         painter, x, center_y, radius, pulse, strength, self.skin, big)
@@ -4571,22 +4810,52 @@ class GameplayViewerView(QWidget):
                 # rather than on the cap -- see draw_note_light.
                 #
                 # **Only where the cap can be seen.** The head is drawn last and
-                # covers it, so on a roll with no body -- every fake slider --
-                # the cap is behind the head and lighting it puts a second stamp
-                # on the head's right half and nowhere else, which reads as a
-                # note lit down one side. Once the head is gone the cap is all
-                # there is, so then it lights on its own.
+                # covers it, so on a roll with no track to speak of the cap sits
+                # behind the head, and lighting it puts a second stamp on the
+                # head's right half and nowhere else -- which reads as a note
+                # lit down one side. Once the head is gone the cap is all there
+                # is, so then it lights on its own.
                 if note.is_slider:
-                    end_time = self._note_end_time(note)
-                    end_x = x if end_time is None else x + (
-                        (end_time - note.time)
-                        * self.velocity_at(note.time) * self.px_per_beat
-                    )
+                    if end_time is not None:
+                        span = end_time - note.time
+                    else:
+                        phantom = self._phantom_end_time(note)
+                        span = 0.0 if phantom is None else abs(phantom - note.time)
+                    end_x = x + span * self.velocity_at(note.time) * self.px_per_beat
                     if hit or end_x > x:
                         draw_kiai_flash(
                             painter, max(end_x, x), center_y, radius, pulse,
                             strength, self.skin, big, "taiko-roll-end", True,
                         )
+
+    def _unfinished_pulse_anchor(self, band_start, band_end) -> float | None:
+        """`band_start` while the pulse the section left running is still fading.
+
+        A kiai section shorter than one beat starts a pulse it cannot finish:
+        at `band_end` the flash cut to black mid-fade, which reads as the
+        chorus being switched off rather than as a beat. The pulse that was in
+        progress when the section ended is allowed to run out -- so the
+        shortest possible kiai still shows one whole beat of light, and a
+        section that ends exactly on a beat is unchanged (`ceil` returns the
+        boundary itself).
+
+        **Under 60 BPM only** (`KIAI_PULSE_CARRY_MIN_BEAT_MS`). Above it the
+        beat is short enough that a section ending inside one simply stops,
+        which is what the end of a chorus should look like; carrying it there
+        would hold light past a kiai the map has finished with. Only a beat
+        long enough for the cut to land on a flash still visibly fading gets
+        to finish.
+
+        Anchored on the section rather than on the playhead: past `band_end`
+        there is no kiai to look up, and the fade has to keep the phase it
+        started with.
+        """
+        point = pulse_beat_point(self.beat_points, band_start)
+        if point is None or point.beat_length <= KIAI_PULSE_CARRY_MIN_BEAT_MS:
+            return None
+        span = band_end - band_start
+        finish = band_start + math.ceil(span / point.beat_length) * point.beat_length
+        return band_start if self.current_time < finish else None
 
     def _has_been_hit(self, note) -> bool:
         """Whether `note`'s circle head is played, and so off the screen.
@@ -4618,6 +4887,12 @@ class GameplayViewerView(QWidget):
             if end_time is not None and end_time > note.time
             else x
         )
+        # A fake slider is drawn forward of its head and outlives it, so
+        # neither this cull nor the hit test below describes it. It does both
+        # for itself.
+        if note.is_slider and end_time is None:
+            self._draw_fake_slider(painter, note, x, center_y, radius)
+            return
         # The time-range slice is bounded by the slowest section in the map, so
         # a fast one lands objects well off either edge; drop those here.
         if end_x + radius < 0 or x - radius > self.width():
@@ -4638,11 +4913,6 @@ class GameplayViewerView(QWidget):
             return
 
         if note.is_slider:
-            if end_time is None:
-                if self._has_been_hit(note):
-                    self._draw_fake_slider_tail(painter, note, x, center_y, radius)
-                    return
-                self._draw_phantom_body(painter, note, x, center_y, radius)
             if self._draw_skinned_roll(
                 painter, x, end_x, center_y, radius, note.is_finisher):
                 return
@@ -4765,10 +5035,9 @@ class GameplayViewerView(QWidget):
           start by its radius. Centred on the end (which is what this did) the
           roll came up half a radius short.
 
-        A **negative** length does not remove the cap, it only collapses the
-        track: `max(end_x, x)` clamps the body to nothing, so the cap butts
-        onto the head itself and reaches to its *right*, which is where osu!
-        draws it. Skipping it there left a fake slider as a bare head.
+        Only a **real** roll reaches here. A negative length is a fake slider,
+        which is a bare track with no head and no cap -- a different object,
+        drawn by `_draw_fake_slider`.
 
         All three tint from the drumroll colour, multiplicatively, which is the
         blend mode the wiki gives for both roll pieces.
@@ -4798,59 +5067,77 @@ class GameplayViewerView(QWidget):
             self.skin, big=big)
         return True
 
-    def _draw_fake_slider_tail(self, painter, note, x, center_y, radius) -> None:
-        """All that is left of a fake slider once it passes the hit position.
+    def _draw_fake_slider(self, painter, note, x, center_y, radius) -> None:
+        """A negative-length fake slider: a head, and a track reaching right.
 
-        The head is played and gone the way a circle's is, and the backwards
-        extent goes with it; the drumroll's tail cap carries on travelling out
-        to the left.
+        `taikohitcircle` in the drumroll colour, the same head a real roll has,
+        plus `taiko-roll-middle` laid from the object's own x and reaching to
+        its **right** by the magnitude of the negative length. No
+        `taiko-roll-end`: the cap belongs to a roll that ends, and this one
+        ends before it starts. At the hit position the whole thing disappears
+        with nothing left travelling on.
 
-        Anchored the way the cap is anchored everywhere else -- origin
-        TopLeft, butted onto where the track ended. A fake slider's track has
-        no width, so that is the head's own x and the cap sits to its right.
+        The track is drawn **to scale**, which is why the two ends of the range
+        look like different objects and are not. A `-800` track is over a
+        thousand pixels of the same yellow at the same height, so the head sits
+        at its left edge and reads as part of the bar; the canonical `-0.0001`
+        collapses the track to nothing and leaves the head as the only thing
+        on screen. Padding the track to visibility would invent geometry the
+        map does not have, and dropping the head because a long one hides it
+        made every short fake slider -- which is most of them -- invisible.
 
-        Without a skin there is no cap art, so the built-in stand-in is the
-        drumroll colour in the shape a built-in drumroll ends in: a disc.
-        """
-        tail = self.skin.scaled(
-            "taiko-roll-end", self._cap_height(round(radius * 2)), self.slider_brush)
-        if tail is not None:
-            painter.drawPixmap(
-                QPointF(x, center_y - tail.height() / 2.0), tail)
-            return
-        painter.setPen(self.note_pen)
-        painter.setBrush(self.slider_brush)
-        painter.drawEllipse(QPointF(x + radius / 2.0, center_y), radius, radius)
+        It appears at full opacity like any other object. There is no fade-in:
+        a stack of them is a stack of identical opaque objects and reads as
+        one, and what makes a shiny note brighter is the kiai stamp each of
+        them takes, not any difference in how they are drawn.
 
-    def _draw_phantom_body(self, painter, note, x, center_y, radius) -> None:
-        """The backwards extent of a negative-length fake slider.
-
-        Drawn **to scale**, which means the canonical `-0.0001` fake slider
-        shows nothing at all: its body reaches about a tenth of a pixel behind
-        its head, and that is exactly why it is invisible in game. Anything
-        else -- a minimum width, an exaggeration factor -- would be inventing
-        geometry the map does not have, and this view exists to answer what the
-        map will really look like.
-
-        What it does show is a fake slider whose length was chosen large
-        enough to matter, where the body genuinely reaches back over earlier
-        objects. Dashed and translucent because it is a region that is drawn
-        but never hittable, which is the distinction the head alone cannot
-        make.
+        **Only the head is taken away at the hit position.** The track and its
+        cap pass straight through and carry on out to the left, the way a real
+        roll's do -- so the object outlives its own millisecond and cannot be
+        culled on where its head is.
         """
         end_time = self._phantom_end_time(note)
         if end_time is None:
             return
-        end_x = x + (end_time - note.time) * self.velocity_at(note.time) * self.px_per_beat
-        if end_x >= x - 0.5:
+        width = abs(end_time - note.time) * self.velocity_at(note.time) * self.px_per_beat
+        cap = self._cap_height(round(radius * 2))
+        # The cap butts onto the far end of the track and reaches past it by its
+        # own width (origin TopLeft), so that -- not the head -- is the right
+        # edge of what gets drawn.
+        if x + width + cap < 0 or x - radius > self.width():
             return
-        painter.setPen(self.phantom_pen)
-        painter.setBrush(self.phantom_brush)
-        painter.drawRoundedRect(
-            QRectF(end_x - radius, center_y - radius, (x - end_x) + 2 * radius, radius * 2),
-            radius,
-            radius,
-        )
+        if width >= 0.5:
+            track = self.skin.scaled(
+                "taiko-roll-middle", round(radius * 2), self.slider_brush)
+            if track is not None:
+                painter.drawPixmap(
+                    QRectF(x, center_y - radius, width, radius * 2),
+                    track, QRectF(track.rect()),
+                )
+            else:
+                # No skin: the same track in the drumroll colour, since the
+                # built-in lane has no art of its own.
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(self.slider_brush)
+                painter.drawRect(QRectF(x, center_y - radius, width, radius * 2))
+        tail = self.skin.scaled("taiko-roll-end", cap, self.slider_brush)
+        if tail is not None:
+            painter.drawPixmap(
+                QPointF(x + width, center_y - tail.height() / 2.0), tail)
+        else:
+            # Without a skin there is no cap art, so the stand-in is the
+            # drumroll colour in the shape a built-in drumroll ends in: a disc.
+            painter.setPen(self.note_pen)
+            painter.setBrush(self.slider_brush)
+            painter.drawEllipse(
+                QPointF(x + width + radius / 2.0, center_y), radius, radius)
+        if not self._has_been_hit(note):
+            # Last, so it sits on the near end of its own track the way a real
+            # roll's head does -- and gone once played, like any circle.
+            draw_note_sprite(
+                painter, self.slider_brush, self.note_pen, x, center_y, radius,
+                self.skin, big=note.is_finisher,
+            )
 
 
 def timeline_bar_data(document, duration_ms: int):
@@ -4922,15 +5209,20 @@ class TimingOverviewBar(QWidget):
         The bar is a few hundred pixels wide, so a gimmick map's thousands of
         markers collapse onto the same handful of columns -- recomputing that
         every clock tick was the widget's whole paint cost.
+
+        A column holding both kinds is yellow, the same rule `timeline_bar_data`
+        applies to two points at the same millisecond. Kept per-column and not
+        per-kind because the paint loop draws green last, so a red point sharing
+        a pixel with an inherited one was overpainted and read as green.
         """
         key=(self.width(),self.duration_ms,len(self._marker_kinds))
         if key!=self._marker_cache_key:
-            seen=set();lines=[]
+            columns={}
             for time_ms,kind in self._marker_kinds:
                 x=round(time_ms/self.duration_ms*self.width())
-                if (x,kind) in seen:continue
-                seen.add((x,kind));lines.append((x,kind))
-            self._marker_cache_key=key;self._marker_lines=lines
+                prior=columns.get(x)
+                columns[x]=kind if prior is None or prior==kind else "yellow"
+            self._marker_cache_key=key;self._marker_lines=sorted(columns.items())
         return self._marker_lines
     def mousePressEvent(self,event)->None:
         if event.button()==Qt.LeftButton:self.dragging=True;self._seek(event.position().x())
@@ -5444,14 +5736,18 @@ class GimmickConfigDialog(QDialog):
         self.fake_offset_spin.valueChanged.connect(self._update_caution)
 
         self.length_spin = QDoubleSpinBox()
-        # Negative only: a positive length is a real, hittable drumroll.
-        self.length_spin.setRange(-100000.0, -0.0001)
+        # Short enough to derive no duration: anything longer is a real,
+        # hittable drumroll. The upper bound is the config's own, so the box
+        # cannot ask for a length `GimmickConfig` would reject -- and it
+        # reaches the positive near-zero form (`0.001`) as well as the
+        # canonical negative one.
+        self.length_spin.setRange(-100000.0, FAKE_SLIDER_MAX_LENGTH)
         self.length_spin.setDecimals(4)
         self.length_spin.setValue(config.fake_slider_length)
 
         self.fake_sv_spin = QDoubleSpinBox()
         self.fake_sv_spin.setRange(0.01, 100.0)
-        self.fake_sv_spin.setDecimals(2)
+        self.fake_sv_spin.setDecimals(SV_DECIMALS)
         self.fake_sv_spin.setValue(config.fake_slider_sv)
 
         self.place_notes_check = QCheckBox(
@@ -5525,6 +5821,43 @@ class GimmickConfigDialog(QDialog):
         self.fake_slider_bpm_spin.setDecimals(3)
         self.fake_slider_bpm_spin.setValue(config.fake_slider_bpm_multiplier)
 
+        # The anti-barline converter's four numbers. All four are ratios and
+        # counts rather than milliseconds, so they hold at any BPM: the wall is
+        # a fraction of a beat, the slowdown a factor of it, and the two slit
+        # widths a count of wall ticks.
+        self.anti_density_spin = QSpinBox()
+        self.anti_density_spin.setRange(1, 10000)
+        self.anti_density_spin.setValue(config.anti_lines_per_beat)
+        # Same shape as the plain red-line BPM above, and for the same reason:
+        # unchecked writes the chart's own BPM at each line, which only moves
+        # where the bars fall; a typed value is the scroll effect, since an
+        # uninherited point's BPM is its scroll speed. DEFAULT_RED_LINE_BPM is
+        # only the number the box opens on -- it is never written unless
+        # Custom is ticked.
+        self.anti_bpm_check = QCheckBox(tr("MainWindow", "Custom"))
+        self.anti_bpm_check.setChecked(config.anti_wall_bpm is not None)
+        self.anti_bpm_spin = QDoubleSpinBox()
+        self.anti_bpm_spin.setRange(0.001, 1000000.0)
+        self.anti_bpm_spin.setDecimals(3)
+        self.anti_bpm_spin.setValue(
+            config.anti_wall_bpm if config.anti_wall_bpm is not None
+            else DEFAULT_RED_LINE_BPM
+        )
+        self.anti_bpm_spin.setEnabled(self.anti_bpm_check.isChecked())
+        self.anti_bpm_check.toggled.connect(self.anti_bpm_spin.setEnabled)
+        anti_bpm_row = QHBoxLayout()
+        anti_bpm_row.setContentsMargins(0, 0, 0, 0)
+        anti_bpm_row.addWidget(self.anti_bpm_check)
+        anti_bpm_row.addWidget(self.anti_bpm_spin, 1)
+        self.anti_bpm_widget = QWidget()
+        self.anti_bpm_widget.setLayout(anti_bpm_row)
+        self.anti_don_spin = QSpinBox()
+        self.anti_don_spin.setRange(1, 1000)
+        self.anti_don_spin.setValue(config.anti_don_ticks)
+        self.anti_kat_spin = QSpinBox()
+        self.anti_kat_spin.setRange(1, 1000)
+        self.anti_kat_spin.setValue(config.anti_kat_ticks)
+
         # Each layer is shown the numbers it actually uses. The rest are still
         # carried through `config()` untouched, so opening one layer's dialog
         # cannot silently reset the other's structure.
@@ -5549,6 +5882,22 @@ class GimmickConfigDialog(QDialog):
             layout.addRow(tr("MainWindow", "Red line offset (ms)"), self.offset_spin)
             layout.addRow(tr("MainWindow", "Redline BPM"), self.red_bpm_widget)
             layout.addRow("", self.place_notes_check)
+            layout.addRow(tr("MainWindow", "Anti-barline lines per beat"), self.anti_density_spin)
+            layout.addRow(tr("MainWindow", "Anti-barline barline BPM"), self.anti_bpm_widget)
+            layout.addRow(tr("MainWindow", "Anti-barline Don slit (ticks)"), self.anti_don_spin)
+            layout.addRow(tr("MainWindow", "Anti-barline Kat slit (ticks)"), self.anti_kat_spin)
+            anti_hint = QLabel(tr(
+                "MainWindow",
+                "Anti-barline packs the lane with bars and takes bars away where each "
+                "note is, so the notes read as slits in a solid white sheet. Lines per "
+                "beat is how tight the wall is. A barline BPM below the chart's own "
+                "packs it tighter still -- a red line's BPM is also its scroll speed, so "
+                "a third of the BPM draws the same lines a third as far apart. The two "
+                "slit widths are what tells a Don from a Kat, since the notes themselves "
+                "are invisible.",
+            ))
+            anti_hint.setWordWrap(True)
+            layout.addRow(anti_hint)
         else:
             layout.addRow(tr("MainWindow", "Fake slider offset (ms)"), self.fake_offset_spin)
             layout.addRow(tr("MainWindow", "Fake slider length"), self.length_spin)
@@ -5639,6 +5988,12 @@ class GimmickConfigDialog(QDialog):
             red_line_offset_ms=self.offset_spin.value(),
             fake_slider_offset_ms=self.fake_offset_spin.value(),
             fake_slider_sv=self.fake_sv_spin.value(),
+            anti_lines_per_beat=self.anti_density_spin.value(),
+            anti_wall_bpm=(
+                self.anti_bpm_spin.value() if self.anti_bpm_check.isChecked() else None
+            ),
+            anti_don_ticks=self.anti_don_spin.value(),
+            anti_kat_ticks=self.anti_kat_spin.value(),
             place_notes=self.place_notes_check.isChecked(),
             mirror_don_lines=self.mirror_don_check.isChecked(),
             mirror_kat_lines=self.mirror_kat_check.isChecked(),
@@ -5652,6 +6007,382 @@ class GimmickConfigDialog(QDialog):
             shiny_bpm_multiplier=self.shiny_bpm_spin.value(),
             fake_slider_bpm_multiplier=self.fake_slider_bpm_spin.value(),
         )
+
+
+class ConvertNotesDialog(QDialog):
+    """Which structure Convert Notes draws over a dragged range, and its numbers.
+
+    Both gimmick layers ask. The fake slider layer has one structure to draw and
+    so asks only for its numbers; the barline layer has three -- bars drawn
+    around each note, bars taken away where each note is, or a sheet of bars
+    whose slits are cut with SV -- and asks which first.
+
+    The numbers are **per call**. They open on the layer's saved Config so the
+    common case is one click, and what is typed here is used for this drag and
+    forgotten -- a section whose slits want to be wider than the last one's is
+    the normal case, not a reason to re-save the layer.
+    """
+
+    # This layer's own Don/Kat structure, whichever layer that is.
+    STRUCTURE = "structure"
+    ANTI = "anti"
+    HIDDEN = "hidden"
+
+    def __init__(self, config: GimmickConfig, layer_id: str = "barline", parent=None) -> None:
+        super().__init__(parent)
+        self._base = config
+        self.layer_id = layer_id
+        self.setWindowTitle(tr("MainWindow", "Convert notes"))
+        icon = application_icon()
+        if not icon.isNull():
+            self.setWindowIcon(icon)
+
+        layout = QVBoxLayout(self)
+        barline = layer_id == "barline"
+        self.mode_combo = QComboBox()
+        if barline:
+            # Literal tr() calls, one per option -- see AddViewDialog on the gate.
+            self.mode_combo.addItem(tr("MainWindow", "Barline notes"), self.STRUCTURE)
+            self.mode_combo.addItem(tr("MainWindow", "Anti-barline"), self.ANTI)
+            self.mode_combo.addItem(tr("MainWindow", "Hidden anti-barline"), self.HIDDEN)
+            top = QFormLayout()
+            top.addRow(tr("MainWindow", "Convert to"), self.mode_combo)
+            layout.addLayout(top)
+        else:
+            self.mode_combo.addItem(tr("MainWindow", "Fake sliders"), self.STRUCTURE)
+
+        self.pages = QStackedWidget()
+        layout.addWidget(self.pages)
+        self.pages.addWidget(
+            self._barline_page(config) if barline else self._fake_slider_page(config)
+        )
+        if barline:
+            self.pages.addWidget(self._anti_page(config))
+            self.pages.addWidget(self._hidden_page(config))
+        self.mode_combo.currentIndexChanged.connect(self.pages.setCurrentIndex)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        pink_spin_buttons(self)
+
+    # -- pages ---------------------------------------------------------------
+
+    @staticmethod
+    def _page():
+        page = QWidget()
+        form = QFormLayout(page)
+        form.setContentsMargins(0, 0, 0, 0)
+        return page, form
+
+    @staticmethod
+    def _hint(text: str) -> QLabel:
+        label = QLabel(text)
+        label.setWordWrap(True)
+        return label
+
+    def _hide_note_check(self, config: GimmickConfig) -> QCheckBox:
+        """The one option both structures share.
+
+        A Don or Kat structure hides the note it is drawn around by putting a
+        60000 BPM line on the note's own millisecond -- the note then scrolls
+        392px/ms, which is to say it is never on screen, and the bars or the
+        fake slider beside it are all the player sees. Unticked, that line
+        carries the chart's *own* BPM instead and omits its barline, so it
+        changes nothing except restarting measure counting: the note stays
+        visible and the structure is drawn around a note you can see.
+        """
+        check = QCheckBox(tr("MainWindow", "Hide the note itself"))
+        check.setChecked(config.hide_note)
+        check.setToolTip(tr(
+            "MainWindow",
+            "On, the note is squashed to invisibility by a gimmick-BPM line and only "
+            "the structure is seen. Off, that line carries the chart's own BPM with "
+            "its barline detached, so the note stays visible inside the structure.",
+        ))
+        return check
+
+    def _slit_note_hint(self) -> QLabel:
+        """The extra half of the story on a converter whose structure is a hole.
+
+        Everywhere else the option is "structure with or without a visible note
+        in it". Here the invisible note is what makes the gap read as an object
+        at all, so showing it changes what the section says rather than only how
+        it looks -- worth one line, not worth refusing the option over.
+        """
+        return self._hint(tr(
+            "MainWindow",
+            "Showing the note changes what this gimmick reads as: the slit is a hole "
+            "in a sheet of bars, and an invisible note is what makes that hole the "
+            "object. Shown, the note travels through its own slit at the chart's "
+            "normal speed while the sheet crawls at the wall speed.",
+        ))
+
+    def _barline_page(self, config: GimmickConfig) -> QWidget:
+        page, form = self._page()
+        self.bpm_spin = QDoubleSpinBox()
+        self.bpm_spin.setRange(1.0, 1000000.0)
+        self.bpm_spin.setDecimals(0)
+        self.bpm_spin.setValue(config.gimmick_bpm)
+        form.addRow(tr("MainWindow", "Gimmick BPM"), self.bpm_spin)
+
+        self.spacing_spin = QSpinBox()
+        self.spacing_spin.setRange(1, 1000)
+        self.spacing_spin.setValue(config.spacing_ms)
+        form.addRow(tr("MainWindow", "Don Spacing (ms)"), self.spacing_spin)
+        self.mirror_don_check = QCheckBox(tr("MainWindow", "Mirror Don bars on both sides"))
+        self.mirror_don_check.setChecked(config.mirror_don_lines)
+        form.addRow("", self.mirror_don_check)
+
+        # Three boxes, three labels, one loop -- but the labels are separate
+        # tr() literals for the same reason every other option list here is:
+        # the catalog is scanned for literals, not built at runtime.
+        self.kat_spins = []
+        labels = (
+            tr("MainWindow", "Kat Spacing 1 (ms)"),
+            tr("MainWindow", "Kat Spacing 2 (ms)"),
+            tr("MainWindow", "Kat Spacing 3 (ms)"),
+        )
+        for label, value in zip(labels, (
+            config.kat_spacing1_ms, config.kat_spacing2_ms, config.kat_spacing3_ms,
+        )):
+            spin = QSpinBox()
+            spin.setRange(1, 1000)
+            spin.setValue(value)
+            self.kat_spins.append(spin)
+            form.addRow(label, spin)
+        self.mirror_kat_check = QCheckBox(tr("MainWindow", "Mirror Kat bars on both sides"))
+        self.mirror_kat_check.setChecked(config.mirror_kat_lines)
+        form.addRow("", self.mirror_kat_check)
+
+        self.hide_note_check = self._hide_note_check(config)
+        form.addRow("", self.hide_note_check)
+        return page
+
+    def _fake_slider_page(self, config: GimmickConfig) -> QWidget:
+        page, form = self._page()
+        self.bpm_spin = QDoubleSpinBox()
+        self.bpm_spin.setRange(1.0, 1000000.0)
+        self.bpm_spin.setDecimals(0)
+        self.bpm_spin.setValue(config.gimmick_bpm)
+        form.addRow(tr("MainWindow", "Gimmick BPM"), self.bpm_spin)
+
+        self.fake_offset_spin = QSpinBox()
+        self.fake_offset_spin.setRange(1, 1000)
+        self.fake_offset_spin.setValue(config.fake_slider_offset_ms)
+        form.addRow(tr("MainWindow", "Fake slider offset (ms)"), self.fake_offset_spin)
+
+        self.length_spin = QDoubleSpinBox()
+        # The config's own bound, so the box cannot ask for a length
+        # GimmickConfig would reject -- see GimmickConfigDialog.
+        self.length_spin.setRange(-100000.0, FAKE_SLIDER_MAX_LENGTH)
+        self.length_spin.setDecimals(4)
+        self.length_spin.setValue(config.fake_slider_length)
+        form.addRow(tr("MainWindow", "Fake slider length"), self.length_spin)
+
+        self.fake_sv_spin = QDoubleSpinBox()
+        self.fake_sv_spin.setRange(0.01, 100.0)
+        self.fake_sv_spin.setDecimals(SV_DECIMALS)
+        self.fake_sv_spin.setValue(config.fake_slider_sv)
+        form.addRow(tr("MainWindow", "Don/Kat gimmick SV"), self.fake_sv_spin)
+
+        self.fake_slider_bpm_spin = QDoubleSpinBox()
+        self.fake_slider_bpm_spin.setRange(0.001, 1000.0)
+        self.fake_slider_bpm_spin.setDecimals(3)
+        self.fake_slider_bpm_spin.setValue(config.fake_slider_bpm_multiplier)
+        form.addRow(tr("MainWindow", "Fake slider redline BPM"), self.fake_slider_bpm_spin)
+
+        self.omit_barline_check = QCheckBox(tr("MainWindow", "Omit barline"))
+        self.omit_barline_check.setChecked(config.omit_barline)
+        form.addRow("", self.omit_barline_check)
+
+        self.hide_note_check = self._hide_note_check(config)
+        form.addRow("", self.hide_note_check)
+        form.addRow(self._hint(tr(
+            "MainWindow",
+            "With the note hidden the gimmick SV above is what takes the already "
+            "squashed note the rest of the way off screen. Showing the note drops it "
+            "and restates the chart's own speed instead, or the note would be flung "
+            "off the screen the line was just told to keep it on.",
+        )))
+        return page
+
+    def _anti_page(self, config: GimmickConfig) -> QWidget:
+        page, form = self._page()
+        self.anti_density_spin = QSpinBox()
+        self.anti_density_spin.setRange(1, 10000)
+        self.anti_density_spin.setValue(config.anti_lines_per_beat)
+        form.addRow(tr("MainWindow", "Lines per beat"), self.anti_density_spin)
+
+        # Same shape as the Config dialog's: unchecked writes the chart's own
+        # BPM at each wall line, which only moves where the bars fall.
+        self.anti_bpm_check = QCheckBox(tr("MainWindow", "Custom"))
+        self.anti_bpm_check.setChecked(config.anti_wall_bpm is not None)
+        self.anti_bpm_spin = QDoubleSpinBox()
+        self.anti_bpm_spin.setRange(0.001, 1000000.0)
+        self.anti_bpm_spin.setDecimals(3)
+        self.anti_bpm_spin.setValue(
+            config.anti_wall_bpm if config.anti_wall_bpm is not None else DEFAULT_RED_LINE_BPM
+        )
+        self.anti_bpm_spin.setEnabled(self.anti_bpm_check.isChecked())
+        self.anti_bpm_check.toggled.connect(self.anti_bpm_spin.setEnabled)
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addWidget(self.anti_bpm_check)
+        row.addWidget(self.anti_bpm_spin, 1)
+        holder = QWidget()
+        holder.setLayout(row)
+        form.addRow(tr("MainWindow", "Barline BPM"), holder)
+
+        self.anti_don_spin = QSpinBox()
+        self.anti_don_spin.setRange(1, 1000)
+        self.anti_don_spin.setValue(config.anti_don_ticks)
+        form.addRow(tr("MainWindow", "Don slit (ticks)"), self.anti_don_spin)
+        self.anti_kat_spin = QSpinBox()
+        self.anti_kat_spin.setRange(1, 1000)
+        self.anti_kat_spin.setValue(config.anti_kat_ticks)
+        form.addRow(tr("MainWindow", "Kat slit (ticks)"), self.anti_kat_spin)
+        self.anti_hide_note_check = self._hide_note_check(config)
+        form.addRow("", self.anti_hide_note_check)
+        form.addRow(self._slit_note_hint())
+        form.addRow(self._hint(tr(
+            "MainWindow",
+            "Packs the lane with bars and takes bars away where each note is, so "
+            "the notes read as slits in a solid sheet. A barline BPM below the "
+            "chart's own packs it tighter still. The two slit widths are what "
+            "tells a Don from a Kat, since the notes themselves are invisible.",
+        )))
+        return page
+
+    def _hidden_page(self, config: GimmickConfig) -> QWidget:
+        page, form = self._page()
+        self.hidden_hide_bpm_spin = QDoubleSpinBox()
+        self.hidden_hide_bpm_spin.setRange(1.0, 1000000.0)
+        self.hidden_hide_bpm_spin.setDecimals(3)
+        self.hidden_hide_bpm_spin.setValue(config.hidden_hide_bpm)
+        form.addRow(tr("MainWindow", "Hide BPM"), self.hidden_hide_bpm_spin)
+
+        self.hidden_wall_bpm_spin = QDoubleSpinBox()
+        self.hidden_wall_bpm_spin.setRange(1.0, 1000000.0)
+        self.hidden_wall_bpm_spin.setDecimals(3)
+        self.hidden_wall_bpm_spin.setValue(config.hidden_wall_bpm)
+        form.addRow(tr("MainWindow", "Wall BPM"), self.hidden_wall_bpm_spin)
+
+        # The floor is not the SV editor's 0.01: this whole gimmick lives at
+        # about that value and the differences carrying the colour are several
+        # decimals below it. SV_DECIMALS is what makes them typeable at all.
+        self.hidden_base_sv_spin = self._sv_spin(config.hidden_base_sv)
+        form.addRow(tr("MainWindow", "Wall SV"), self.hidden_base_sv_spin)
+        self.hidden_don_sv_spin = self._sv_spin(config.hidden_don_sv)
+        form.addRow(tr("MainWindow", "Don SV"), self.hidden_don_sv_spin)
+        self.hidden_kat_sv_spin = self._sv_spin(config.hidden_kat_sv)
+        form.addRow(tr("MainWindow", "Kat SV"), self.hidden_kat_sv_spin)
+
+        self.hidden_window_spin = QSpinBox()
+        self.hidden_window_spin.setRange(1, 64)
+        self.hidden_window_spin.setValue(config.hidden_window_divisor)
+        form.addRow(tr("MainWindow", "Slit length (1/n beat)"), self.hidden_window_spin)
+        self.hidden_hide_note_check = self._hide_note_check(config)
+        form.addRow("", self.hidden_hide_note_check)
+        form.addRow(self._slit_note_hint())
+
+        form.addRow(self._hint(tr(
+            "MainWindow",
+            "One wall line makes osu! draw the whole sheet, and each note's slit is "
+            "opened by raising SV for a fraction of a beat after it. Taiko places an "
+            "object at its distance times the speed at its own time, so the raised "
+            "bars sit ahead of the rest by that excess times how far away they still "
+            "are -- the slit opens with distance and closes at the hit position.",
+        )))
+        caution = self._hint(tr(
+            "MainWindow",
+            "Caution: the three SV values are the gimmick, and they are meant to sit "
+            "within about a percent of each other. Wall SV decides how tight the sheet "
+            "is; Don and Kat only read as a colour while both are above it and Kat is "
+            "the larger. Ordinary-looking values will not read as this gimmick at all.",
+        ))
+        caution.setStyleSheet("color:#ffb347;border:0;")
+        form.addRow(caution)
+        return page
+
+    @staticmethod
+    def _sv_spin(value: float) -> QDoubleSpinBox:
+        spin = QDoubleSpinBox()
+        spin.setRange(10.0 ** -SV_DECIMALS, 100.0)
+        spin.setDecimals(SV_DECIMALS)
+        spin.setSingleStep(0.0001)
+        spin.setValue(value)
+        return spin
+
+    # -- result --------------------------------------------------------------
+
+    def mode(self) -> str:
+        return self.mode_combo.currentData()
+
+    def config(self) -> GimmickConfig:
+        """The layer's config with this call's edits on it.
+
+        Only the active page's fields are applied. The rest ride through
+        untouched, so choosing a converter cannot quietly rewrite the numbers
+        another one uses.
+        """
+        mode = self.mode()
+        if mode == self.ANTI:
+            return replace(
+                self._base,
+                anti_lines_per_beat=self.anti_density_spin.value(),
+                anti_wall_bpm=(
+                    self.anti_bpm_spin.value() if self.anti_bpm_check.isChecked() else None
+                ),
+                anti_don_ticks=self.anti_don_spin.value(),
+                anti_kat_ticks=self.anti_kat_spin.value(),
+                hide_note=self.anti_hide_note_check.isChecked(),
+            )
+        if mode == self.HIDDEN:
+            return replace(
+                self._base,
+                hidden_hide_bpm=self.hidden_hide_bpm_spin.value(),
+                hidden_wall_bpm=self.hidden_wall_bpm_spin.value(),
+                hidden_base_sv=self.hidden_base_sv_spin.value(),
+                hidden_don_sv=self.hidden_don_sv_spin.value(),
+                hidden_kat_sv=self.hidden_kat_sv_spin.value(),
+                hidden_window_divisor=self.hidden_window_spin.value(),
+                hide_note=self.hidden_hide_note_check.isChecked(),
+            )
+        if self.layer_id == "barline":
+            return replace(
+                self._base,
+                gimmick_bpm=self.bpm_spin.value(),
+                spacing_ms=self.spacing_spin.value(),
+                kat_spacing1_ms=self.kat_spins[0].value(),
+                kat_spacing2_ms=self.kat_spins[1].value(),
+                kat_spacing3_ms=self.kat_spins[2].value(),
+                mirror_don_lines=self.mirror_don_check.isChecked(),
+                mirror_kat_lines=self.mirror_kat_check.isChecked(),
+                hide_note=self.hide_note_check.isChecked(),
+            )
+        return replace(
+            self._base,
+            gimmick_bpm=self.bpm_spin.value(),
+            fake_slider_offset_ms=self.fake_offset_spin.value(),
+            fake_slider_length=self.length_spin.value(),
+            fake_slider_sv=self.fake_sv_spin.value(),
+            fake_slider_bpm_multiplier=self.fake_slider_bpm_spin.value(),
+            omit_barline=self.omit_barline_check.isChecked(),
+            hide_note=self.hide_note_check.isChecked(),
+        )
+
+    def accept(self) -> None:
+        # The three Kat spacings have no shared range to keep them distinct, so
+        # like the Config dialog this one combination is checked before the
+        # dialog closes rather than raising in the caller with nothing focused.
+        try:
+            self.config()
+        except GimmickConfigError as error:
+            QMessageBox.warning(self, tr("MainWindow", "Cannot convert with this"), str(error))
+            return
+        super().accept()
 
 
 class BarlineFunctionDialog(QDialog):
@@ -5765,7 +6496,7 @@ class BarlineFunctionDialog(QDialog):
 
         self.sv_spin = QDoubleSpinBox()
         self.sv_spin.setRange(0.01, 100.0)
-        self.sv_spin.setDecimals(4)
+        self.sv_spin.setDecimals(SV_DECIMALS)
         self.sv_spin.setSingleStep(0.05)
         self.sv_spin.setValue(float(current_sv))
         layout.addRow(tr("MainWindow", "SV multiplier"), self.sv_spin)
@@ -6158,7 +6889,7 @@ class TimingLineDialog(QDialog):
             layout.addRow(tr("MainWindow", "BPM"), self.value_spin)
         else:
             self.value_spin.setRange(0.01, 100.0)
-            self.value_spin.setDecimals(3)
+            self.value_spin.setDecimals(SV_DECIMALS)
             self.value_spin.setValue(point.sv_multiplier)
             layout.addRow(tr("MainWindow", "SV multiplier"), self.value_spin)
 
@@ -6471,11 +7202,11 @@ class SVFunctionDialog(QDialog):
         # what the writer validates), so the same two spin boxes are told to
         # carry integers rather than a second pair being built beside them.
         low, high = (0.0, 100.0) if volume else (0.01, self.MAX_RATE)
-        # 4 decimals for a rate: -100/beat_length routinely lands on a repeating
+        # SV_DECIMALS for a rate: -100/beat_length routinely lands on a repeating
         # decimal (e.g. 1.4286x), and 2 was rounding the prefilled "nearest
         # green line" value before Generate ever saw it -- so it looked like
         # the generator wasn't reading the existing line at all.
-        step, decimals = (1.0, 0) if volume else (0.05, 4)
+        step, decimals = (1.0, 0) if volume else (0.05, SV_DECIMALS)
 
         self.initial_rate_spin = QDoubleSpinBox()
         self.initial_rate_spin.setRange(low, high)
@@ -7112,10 +7843,10 @@ class LibraryPageController:
         """
         original = self.original_metadata_check.isChecked()
         grouping = str(self.library_group_combo.currentData())
-        needle = self.library_search.text().strip().lower()
+        query = self.library_search.text()
         entries: list[tuple[str, str, str, Path]] = []
         for folder, difficulties in self.library_songs.items():
-            if needle and not any(needle in difficulty.search_text() for difficulty in difficulties):
+            if not matches_search(difficulties, query):
                 continue
             first = difficulties[0]
             label = first.song_label(original)
@@ -8152,6 +8883,14 @@ class MainWindow(QMainWindow):
             # as tabs. Padding rather than a typed width, so a longer
             # translation still fits (see equalize_button_widths).
             button.setStyleSheet("QPushButton { padding-left: 30px; padding-right: 30px; }")
+            # Pinned to what the label costs *checked*, not left on sizeHint.
+            # These are checkable and the hint is taken in the unchecked state,
+            # which is two pixels of border and one font weight short of how
+            # the selected tab is actually painted -- so whichever page you
+            # were on had the last letter of its own name clipped. Per button
+            # rather than equalized, so the four keep their ragged widths and a
+            # longer translation still fits.
+            fit_button_width(button)
         self.page_button_group = QButtonGroup(self)
         self.page_button_group.setExclusive(True)
         self.page_button_group.addButton(self.library_page_button, PAGE_LIBRARY)
@@ -9409,10 +10148,10 @@ class MainWindow(QMainWindow):
         ("kiai_sound", "sv", "Kiai and Sound Volume"),
     )
 
-    @staticmethod
-    def is_fake_slider(note) -> bool:
-        """A drumroll of negative length: drawn, never hittable."""
-        return note.is_slider and note.length is not None and note.length < 0
+    # The predicate itself is module-level (TimelineGameplay is defined long
+    # before this class and needs it to decide whether to cap a roll), and this
+    # is the name the rest of the window and the tests reach it by.
+    is_fake_slider = staticmethod(is_fake_slider)
 
     # AddViewDialog's chart-only types, and the gimmick layer each one is.
     # Adding "Barlines Only" from the dialog gets the same view the gimmick
@@ -9607,6 +10346,10 @@ class MainWindow(QMainWindow):
             # this layer's material as the object is -- but only for the
             # dialog: see TimelineGameplay.timing_dialog_enabled.
             view.timing_dialog_enabled = True
+            # Double-clicking the *object* types its length instead. The
+            # toolbox's Length applies to what it places next; this is how an
+            # already-placed one is changed.
+            view.note_length_dialog_enabled = True
             view.ghost_style = "fake_slider"
             # This layer draws only its own structures' lines, and their BPM is
             # the thing being tuned -- a shiny's retimed line especially, where
@@ -9798,11 +10541,29 @@ class MainWindow(QMainWindow):
         belonging to the object that happened to be there, and rebuilding a
         sweep because one note was retyped is worse than a line left behind.
         Red lines go.
+
+        **The chart's own notes are the other exception, and this is where a
+        delete stops matching a drag.** `_expand_move` pulls in the real note
+        standing on a gimmick line because a structure and the note it
+        decorates have to travel together -- but a gimmick is drawn *around*
+        a note that was already there (`_without_redundant_note`), so deleting
+        the gimmick and taking the note with it deletes a beat of the map
+        nobody asked to lose. Removing a barline Don took the don with it;
+        removing an anti-barline wall line took whatever note its squash line
+        was hiding. Only what was actually selected, plus the gimmick's own
+        drawn objects -- fake sliders, which exist for no other reason -- are
+        taken. A structure that had to write its own note leaves that note
+        behind, which is one Delete in layer 1 rather than lost music.
         """
         state = self._states.get(difficulty_path)
         if state is None:
             return
         notes, points = self._expand_move(state, set(note_uids), set(point_uids))
+        wanted = set(note_uids)
+        notes = [
+            note for note in notes
+            if note.uid in wanted or self.is_fake_slider(note)
+        ]
         points = [point for point in points if point.uninherited]
         if not notes and not points:
             return
@@ -9948,6 +10709,30 @@ class MainWindow(QMainWindow):
         it. Owning only `note - 5` would have hidden every green line a mapper
         had ever put on a note, in the layer whose whole job is to show them.
         """
+        times = self._sv_layer_owned_times(layer_id, document)
+        if times is None or layer_id != "sv_barline":
+            return times
+        # ...plus every green line that belongs to nothing at all: no note, no
+        # fake slider, no red line. Owned by no layer, it was drawn in none of
+        # them, while the Kiai and Sound Volume layer -- which owns every
+        # millisecond -- listed it happily, so the map plainly had SV the SV
+        # views denied. Unowned SV is barline SV; this layer already holds the
+        # chart's own timing.
+        #
+        # Here and not in `_sv_layer_object_times`, which is what Generate
+        # sweeps: an orphan is a line, not an object, and a sweep across the
+        # barline layer targets red lines. This is only what the layer shows
+        # and what a paste can land on.
+        claimed = set()
+        for other in ("sv_chart", "sv_fake_slider", "sv_barline"):
+            claimed |= self._sv_layer_owned_times(other, document) or set()
+        return times | {
+            round(point.time) for point in document.timing_points
+            if point.inherited and round(point.time) not in claimed
+        }
+
+    def _sv_layer_owned_times(self, layer_id: str, document) -> set[int] | None:
+        """A layer's objects, and those times shifted by its `sv_offset_ms`."""
         times = self._sv_layer_object_times(layer_id, document)
         if times is None:
             return None
@@ -10164,6 +10949,10 @@ class MainWindow(QMainWindow):
                     lambda uid, end_ms, dp=pairing.target: self._edit_note_duration(dp, uid, end_ms)
                 )
             if view_type == "chart":
+                view.note_length_edit_requested.connect(
+                    lambda uid, dp=pairing.target: self._type_note_length(dp, uid)
+                )
+            if view_type == "chart":
                 # Right click and Delete both remove what the layer shows -- a
                 # fake slider in layer 2, a barline note in layer 3, a normal
                 # note in layer 1 -- together with the structure around it. The
@@ -10222,9 +11011,13 @@ class MainWindow(QMainWindow):
 
             frame.closed.connect(self._close_gimmick_view)
             frame.move_requested.connect(self._move_view)
-            self.gimmick_views_layout.insertWidget(
-                self.gimmick_views_layout.count() - 1, frame
-            )
+            # Above anything added with "+", not merely above the trailing
+            # stretch: a band added to this page outlives the rebuild that
+            # happens on every visit, so appending put the six layers *under*
+            # it and a gameplay preview crept to the top of the page each time
+            # you left the tab and came back. `_gimmick_views` was cleared
+            # above, so its length is how many layers are already placed.
+            self.gimmick_views_layout.insertWidget(len(self._gimmick_views), frame)
             self._gimmick_views.append(frame)
 
         # Something has to be showing before the first click lands -- and be
@@ -10344,6 +11137,7 @@ class MainWindow(QMainWindow):
     def _gimmick_commands(
         self, state, pairing, layer_id: str, kind: str, time_ms: int, indices,
         copies: int | None = None, big: bool = False,
+        config: GimmickConfig | None = None,
     ) -> list:
         """Everything one gimmick structure writes, as commands. [] for a no-op.
 
@@ -10355,10 +11149,15 @@ class MainWindow(QMainWindow):
 
         `time_ms` arrives already snapped: the batch path snaps to the notes it
         is converting, not to the grid.
+
+        `config` overrides the layer's saved one for this call. Convert Notes
+        asks for its numbers per drag (see `ConvertNotesDialog`), and those must
+        not be written back to the layer.
         """
         if kind in ("don", "kat"):
             time_ms = self._note_centre_near(state.document, time_ms)
-        config = self._gimmick_config(layer_id)
+        if config is None:
+            config = self._gimmick_config(layer_id)
         # Shiny is a fake slider with its own offset and several sliders on it,
         # so the builder is the same one with a flag -- see gimmick_session.
         shiny = kind == "shiny"
@@ -10505,6 +11304,10 @@ class MainWindow(QMainWindow):
         One gesture, one signal: Function and Convert are both "drag a range,
         then do something to it", and which of the two it was is a property of
         the view rather than of the drag.
+
+        Anti-barline used to be a fourth button here. It is one of the things
+        Convert Notes can draw now (`ConvertNotesDialog`), and a second way in
+        that could only ever use the layer's saved numbers was the worse one.
         """
         if tool == "kiai":
             self._set_kiai_range(difficulty_path, start_ms, end_ms)
@@ -10661,6 +11464,119 @@ class MainWindow(QMainWindow):
             self._refresh_difficulty_views(difficulty_path)
             self._refresh_difficulty_sv_views(difficulty_path)
 
+    def _convert_to_anti_barline(
+        self, difficulty_path: Path, start_ms: float, end_ms: float,
+        config: GimmickConfig | None = None,
+    ) -> None:
+        """Turn a dragged range into the anti-barline gimmick.
+
+        Reached from Convert Notes, which is where all three converters live.
+
+        The whole structure is one undo step, because it is one thing: a wall
+        of red lines with a slit taken out of it per note, and half of it
+        without the other half is either a solid white lane with nothing in it
+        or a chart of invisible notes.
+
+        Only plain circles are converted -- see `gimmick_session.anti_barline`.
+        A finisher, a drumroll and a spinner in the range are left alone, so
+        the six downbeats of a section like the reference one stay ordinary
+        notes to be marked however the mapper wants.
+
+        A wall tick landing on a millisecond that already carries an
+        uninherited point is dropped rather than stacked: osu! honours only the
+        first of two on a timestamp, so the second is a line the layer would
+        draw and hit-test forever while changing nothing.
+        """
+        pairing = self._gimmick_pairing
+        state = self._states.get(difficulty_path)
+        if state is None or pairing is None:
+            return
+        if config is None:
+            config = self._gimmick_config("barline")
+        try:
+            points = gimmick_anti_barline(
+                [
+                    note for note in state.document.hit_objects
+                    if start_ms <= note.time <= end_ms
+                ],
+                start_ms, end_ms, pairing.base_timing, config,
+            )
+        except GimmickConfigError as error:
+            QMessageBox.warning(self, tr("MainWindow", "Cannot place this"), str(error))
+            return
+        if not points:
+            self.show_toast(tr("MainWindow", "No notes in the selected range to convert."))
+            return
+        # Only the red lines are filtered against what is already there. The
+        # green line beside each one is this layer's handle on it and has to
+        # survive even where the map's own timing supplied the red line, or
+        # the wall would have gaps in the SV layer exactly where the chart has
+        # timing of its own.
+        taken = {round(p.time) for p in state.document.timing_points if p.uninherited}
+        points = [
+            point for point in points
+            if point.inherited or round(point.time) not in taken
+        ]
+        if not any(point.uninherited for point in points):
+            self.show_toast(tr("MainWindow", "There is already a gimmick here."))
+            return
+        # Same reason as every other generator: a thousand lines with kiai off
+        # is a thousand ways to kill the section they were drawn across.
+        carry_active_state(points, state.document.timing_points)
+        state.history.push(InsertTimingPoints(points), state)
+        with self._refresh_cycle():
+            self._refresh_difficulty_views(pairing.target)
+            self._refresh_difficulty_sv_views(pairing.target)
+
+    def _convert_to_hidden_anti_barline(
+        self, difficulty_path: Path, start_ms: float, end_ms: float,
+        config: GimmickConfig,
+    ) -> None:
+        """Turn a dragged range into the hidden anti-barline gimmick.
+
+        One undo step, for the same reason the classic converter is one: the
+        wall and the slits are halves of one picture, and either alone is a
+        white lane or a chart of invisible notes.
+
+        Unlike the classic converter this writes four lines per note and two for
+        the whole range, so nothing here is dense enough to want the
+        already-taken filter that one needs -- but a note whose millisecond
+        already carries a red line would still lose its hide line to it (osu!
+        honours the first on a timestamp), so those are dropped and reported
+        rather than written into a structure that would silently not work.
+        """
+        pairing = self._gimmick_pairing
+        state = self._states.get(difficulty_path)
+        if state is None or pairing is None:
+            return
+        try:
+            points = gimmick_hidden_anti_barline(
+                [
+                    note for note in state.document.hit_objects
+                    if start_ms <= note.time <= end_ms
+                ],
+                start_ms, end_ms, pairing.base_timing, config,
+            )
+        except GimmickConfigError as error:
+            QMessageBox.warning(self, tr("MainWindow", "Cannot place this"), str(error))
+            return
+        if not points:
+            self.show_toast(tr("MainWindow", "No notes in the selected range to convert."))
+            return
+        taken = {round(p.time) for p in state.document.timing_points if p.uninherited}
+        points = [
+            point for point in points
+            if point.inherited or round(point.time) not in taken
+        ]
+        if not any(point.uninherited for point in points):
+            self.show_toast(tr("MainWindow", "There is already a gimmick here."))
+            return
+        carry_active_state(points, state.document.timing_points)
+        state.history.push(InsertTimingPoints(points), state)
+        with self._refresh_cycle():
+            self._refresh_difficulty_views(pairing.target)
+            self._refresh_difficulty_sv_views(pairing.target)
+
     def _convert_notes_to_gimmick(
         self, difficulty_path: Path, layer_id: str, start_ms: float, end_ms: float,
     ) -> None:
@@ -10674,10 +11590,28 @@ class MainWindow(QMainWindow):
 
         Fake sliders and drumrolls are skipped: they are what the tool *writes*,
         and converting its own output is how a range gets gimmicked twice.
+
+        Both layers ask first, because both have numbers a section wants tuned
+        for it -- and the barline layer also has three different structures the
+        same drag could draw. Which one, and its numbers, are properties of the
+        section rather than of the layer: `ConvertNotesDialog` opens on the
+        layer's Config and the edits live for this call only.
         """
         pairing = self._gimmick_pairing
         state = self._states.get(difficulty_path)
         if state is None or pairing is None:
+            return
+        dialog = ConvertNotesDialog(self._gimmick_config(layer_id), layer_id, self)
+        accepted = dialog.exec() == QDialog.DialogCode.Accepted
+        mode, config = dialog.mode(), dialog.config()
+        dialog.deleteLater()
+        if not accepted:
+            return
+        if mode == ConvertNotesDialog.ANTI:
+            self._convert_to_anti_barline(difficulty_path, start_ms, end_ms, config)
+            return
+        if mode == ConvertNotesDialog.HIDDEN:
+            self._convert_to_hidden_anti_barline(difficulty_path, start_ms, end_ms, config)
             return
         indices = count_from(self._next_original_index(state))
         commands: list = []
@@ -10686,7 +11620,7 @@ class MainWindow(QMainWindow):
                 continue
             commands.extend(self._gimmick_commands(
                 state, pairing, layer_id, "kat" if note.is_kat else "don",
-                round(note.time), indices,
+                round(note.time), indices, config=config,
             ))
         if not commands:
             self.show_toast(tr("MainWindow", "No notes in the selected range to convert."))
@@ -10876,6 +11810,33 @@ class MainWindow(QMainWindow):
     def _kiai_bands(self, document_points) -> list[tuple[int, int]]:
         return self._cached("kiai", lambda: kiai_spans(document_points, KIAI_OPEN_END_MS))
 
+    def _refresh_view_frame(self, frame) -> None:
+        """Re-read the document into one view, on demand.
+
+        One place that knows what each kind of view is called and which of its
+        refresh methods to use, so a caller cannot refresh a frame's chart and
+        silently leave the gameplay preview beside it holding the old document.
+
+        Falls back to the gimmick pairing's target: a view added to the gimmick
+        page with "+" is showing that difficulty whatever it was opened against.
+        """
+        difficulty_path = getattr(frame, "difficulty_path", None)
+        state = self._states.get(difficulty_path) if difficulty_path is not None else None
+        if state is None and self._gimmick_pairing is not None:
+            state = self._states.get(self._gimmick_pairing.target)
+        if state is None:
+            return
+        # refresh_*, not load_document, for the same reason every other refresh
+        # path uses them: this must not throw the view back to the first object.
+        for attribute, method in (
+            ("chart_view", "refresh_notes"),
+            ("gameplay_view", "refresh_notes"),
+            ("sv_view", "refresh_points"),
+        ):
+            view = getattr(frame, attribute, None)
+            if view is not None:
+                getattr(view, method)(state.document)
+
     def _refresh_gimmick_views(self) -> None:
         # Once per refresh cycle, not once per caller. An edit runs both
         # `_refresh_difficulty_views` and `_refresh_difficulty_sv_views` and
@@ -10893,13 +11854,11 @@ class MainWindow(QMainWindow):
             for frame in self._gimmick_views:
                 # refresh_*, not load_document: a placement must not throw the
                 # cursor back to the first object in all six layers.
-                chart = getattr(frame, "chart_view", None)
-                if chart is not None:
-                    chart.refresh_notes(state.document)
-                    continue
-                sv = getattr(frame, "sv_view", None)
-                if sv is not None:
-                    sv.refresh_points(state.document)
+                # Every view the frame holds, not the first one found: a
+                # `continue` after the chart meant a frame carrying a second
+                # view was refreshed for one of them and left stale for the
+                # other.
+                self._refresh_view_frame(frame)
 
     def _editor_snap_changed(self) -> None:
         divisor = int(self.editor_snap_combo.currentData())
@@ -11094,6 +12053,9 @@ class MainWindow(QMainWindow):
             )
             view.note_duration_edit_requested.connect(
                 lambda uid, new_end_ms, dp=difficulty_path: self._edit_note_duration(dp, uid, new_end_ms)
+            )
+            view.note_length_edit_requested.connect(
+                lambda uid, dp=difficulty_path: self._type_note_length(dp, uid)
             )
             # Same handler the gimmick page's own layers use: _move_objects'
             # _expand_move only grows a drag into the structure around it when
@@ -11886,6 +12848,39 @@ class MainWindow(QMainWindow):
         state.history.push(SetNoteFields(note.uid, {"extras": (note.extras, new_extras)}), state)
         self._refresh_difficulty_views(difficulty_path)
 
+    def _type_note_length(self, difficulty_path: Path, uid: int) -> None:
+        """Double click a fake slider: type its `length`.
+
+        The one number that decides how far a fake slider draws, and the one
+        the drag handles cannot reach -- its end precedes its start, so it has
+        no right edge to pull. The toolbox's Length is what the *next* one is
+        placed with; this is how one already in the map is changed.
+
+        Bounded above by `FAKE_SLIDER_MAX_LENGTH` for the same reason
+        `GimmickConfig` is: past it the object stops being a fake slider and
+        becomes a real, scoreable drumroll, which is not an edit to this
+        object but a different object.
+        """
+        state = self._states.get(difficulty_path)
+        if state is None:
+            return
+        note = next((n for n in state.document.hit_objects if n.uid == uid), None)
+        if note is None or note.length is None or not self.is_fake_slider(note):
+            return
+        length, accepted = QInputDialog.getDouble(
+            self, tr("MainWindow", "Fake slider length"),
+            tr("MainWindow", "Length (osu! pixels, no duration is the point)"),
+            float(note.length), -100000.0, FAKE_SLIDER_MAX_LENGTH, 4,
+        )
+        if not accepted or length == note.length:
+            return
+        curve = note.extras[0] if note.extras else f"L|{note.x + 100}:{note.y}"
+        slides = note.extras[1] if len(note.extras) > 1 else "1"
+        new_extras = (curve, slides, gimmick_format_length(length))
+        state.history.push(
+            SetNoteFields(note.uid, {"extras": (note.extras, new_extras)}), state)
+        self._refresh_difficulty_views(difficulty_path)
+
     def _delete_note(self, difficulty_path: Path, uid: int) -> None:
         state = self._states.get(difficulty_path)
         if state is None:
@@ -12583,6 +13578,11 @@ class MainWindow(QMainWindow):
         # there reports a width its padded self does not fit in.
         equalize_button_widths([self.editor_play_button, *self.editor_playback_speed_buttons])
         equalize_button_widths([self.timeline_play_button, *self.playback_speed_buttons])
+        # Three playback rows, not two. The gimmick page's was left out of this
+        # and so kept its build-time hint: unpadded, and measured before the
+        # checked rule could make "100%" heavier -- five pixels short of its own
+        # label, on the page this program is mostly used on.
+        equalize_button_widths([self.gimmick_play_button, *self.gimmick_playback_speed_buttons])
 
     def _snapshot_transform_group(self, group: str):
         ref = self._transform_page_refs[group]

@@ -204,6 +204,66 @@ class FancyArrangerPageTests(unittest.TestCase):
         ]
         self.assertEqual(clipped, [], f"buttons narrower than their label: {clipped}")
 
+    def test_a_checkable_button_is_measured_in_its_checked_chrome(self):
+        """`QPushButton:checked` is `border: 1px solid` against the base rule's
+        `border: 0`, so selecting a button costs it two pixels that were never
+        in the width it was sized to -- and every tool row's selected button
+        clipped the last letter of its own label. Font-independent, unlike the
+        weight half of the same rule, so this holds on the offscreen platform
+        where every glyph measures the same."""
+        from PySide6.QtWidgets import QPushButton
+
+        checkable = QPushButton("Select", self.window)
+        checkable.setCheckable(True)
+        plain = QPushButton("Select", self.window)
+        try:
+            self.assertGreater(
+                gui.button_chrome_width(checkable), gui.button_chrome_width(plain),
+            )
+        finally:
+            checkable.deleteLater()
+            plain.deleteLater()
+
+    def test_a_ragged_row_still_fits_every_label(self):
+        """`widths=False` used to leave the width to sizeHint, which Qt takes in
+        the font the button *reports* -- 600 even while a checked one is painted
+        at 700."""
+        from PySide6.QtWidgets import QPushButton
+
+        buttons = [QPushButton(text, self.window) for text in ("Select", "Multiple Fake Slider")]
+        for button in buttons:
+            button.setCheckable(True)
+        try:
+            gui.equalize_button_widths(buttons, heights=True, widths=False)
+            self.assertNotEqual(
+                buttons[0].minimumWidth(), buttons[1].minimumWidth(),
+                "widths=False must stay ragged",
+            )
+            for button in buttons:
+                with self.subTest(text=button.text()):
+                    self.assertGreaterEqual(
+                        button.minimumWidth(), gui.button_text_width(button),
+                    )
+        finally:
+            for button in buttons:
+                button.deleteLater()
+
+    def test_all_three_playback_rows_are_sized(self):
+        """The gimmick page's row was left out of showEvent and kept its
+        build-time hint -- unpadded, and five pixels short of "100%"."""
+        rows = (
+            [self.window.editor_play_button, *self.window.editor_playback_speed_buttons],
+            [self.window.timeline_play_button, *self.window.playback_speed_buttons],
+            [self.window.gimmick_play_button, *self.window.gimmick_playback_speed_buttons],
+        )
+        for row in rows:
+            with self.subTest(first=row[1].text()):
+                self.assertEqual(len({button.width() for button in row}), 1)
+                for button in row:
+                    self.assertGreaterEqual(
+                        button.width(), gui.button_text_width(button),
+                    )
+
     def test_the_fancy_arranger_step_buttons_show_their_glyphs(self):
         """`ParameterControl` and `DifficultyValueControl` build the +/- pair
         themselves, and both used to type a width smaller than the padding."""

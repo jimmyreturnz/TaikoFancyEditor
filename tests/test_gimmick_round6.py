@@ -15,6 +15,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
+import gimmick_session as gs
 import gui
 from tests.test_gimmick_editor import _GimmickFixture
 
@@ -38,7 +39,24 @@ class _Session(_GimmickFixture):
 
 
 class ConvertToolTests(_Session, unittest.TestCase):
-    """Turning a range of the chart's own notes into gimmick structures."""
+    """Turning a range of the chart's own notes into gimmick structures.
+
+    Convert Notes asks for its numbers now (`ConvertNotesDialog`), so every
+    test here answers it with the layer's own defaults -- which is what these
+    were written against. `ConvertNotesDialogTests` is where the answering
+    itself is the subject.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        original = gui.ConvertNotesDialog
+
+        class Accepted(original):
+            def exec(self):
+                return gui.QDialog.DialogCode.Accepted
+
+        gui.ConvertNotesDialog = Accepted
+        self.addCleanup(setattr, gui, "ConvertNotesDialog", original)
 
     def _range_of_notes(self, count: int) -> tuple[float, float, list]:
         notes = sorted(
@@ -124,6 +142,392 @@ class ConvertToolTests(_Session, unittest.TestCase):
     def test_both_layers_offer_the_tool(self):
         for layer in ("fake_slider", "barline"):
             self.assertIn("convert", dict(gui.MainWindow.GIMMICK_TOOLSETS[layer]))
+
+
+class AntiBarlineToolTests(_Session, unittest.TestCase):
+    """The barline layer's anti-barline converter, wired end to end."""
+
+    def _range_of_notes(self, count: int) -> tuple[float, float, list]:
+        notes = sorted(
+            (n for n in self.document.hit_objects if n.is_circle and not n.is_finisher),
+            key=lambda n: n.time,
+        )[:count]
+        # Note-to-note, no padding: the wall reaching past both is the point.
+        return notes[0].time, notes[-1].time, notes
+
+    def _convert(self, start, end):
+        self.window._convert_to_anti_barline(
+            self.window._gimmick_pairing.target, start, end
+        )
+
+    def test_it_is_reached_through_convert_notes_and_not_its_own_button(self):
+        """It had a fourth button in the barline row until Convert Notes could
+        draw all three structures; a second way in that could only use the
+        layer's saved numbers was the worse one."""
+        self.assertNotIn("anti", dict(gui.MainWindow.GIMMICK_TOOLSETS["barline"]))
+        self.assertNotIn("anti", self.window.gimmick_tool_buttons["barline"])
+        self.assertNotIn("anti", gui.TimelineGameplay.RANGE_TOOLS)
+        self.assertEqual(gui.ConvertNotesDialog.ANTI, "anti")
+
+    def test_it_writes_a_wall_and_leaves_the_notes_alone(self):
+        start, end, notes = self._range_of_notes(3)
+        before = list(self.document.hit_objects)
+        reds = len([p for p in self.document.timing_points if p.uninherited])
+
+        self._convert(start, end)
+
+        self.assertEqual(self.document.hit_objects, before, "no note is added or moved")
+        self.assertGreater(
+            len([p for p in self.document.timing_points if p.uninherited]), reds + 10,
+            "a wall is many lines, not a handful",
+        )
+        for note in notes:
+            squash = [
+                p for p in self.document.timing_points
+                if p.uninherited and round(p.time) == round(note.time)
+            ]
+            self.assertTrue(squash and squash[0].omit_first_barline)
+
+    def test_the_wall_shows_up_in_the_sv_barlines_layer(self):
+        """Layer 6 owns every red line's millisecond already, but it draws
+        *green* lines -- so without a handle on each one the wall was a
+        thousand barlines the layer listed and could not show."""
+        start, end, _ = self._range_of_notes(3)
+        before = {round(p.time) for p in self.document.timing_points if p.uninherited}
+
+        self._convert(start, end)
+
+        wall = {round(p.time) for p in self.document.timing_points if p.uninherited} - before
+        greens = {round(p.time) for p in self.document.timing_points if p.inherited}
+        owned = self.window._sv_layer_times("sv_barline", self.document)
+        # The note squash/restore pair is in `wall` too and is deliberately
+        # bare -- those two carry omit-first-barline and draw no bar at all.
+        notes = {round(n.time) for n in self.document.hit_objects}
+        bars = {at for at in wall if at not in notes and at - 1 not in notes}
+        self.assertTrue(bars)
+        self.assertEqual(bars - greens, set(), "a wall line with no green handle")
+        self.assertEqual(bars - owned, set(), "a wall line the layer does not own")
+
+    def test_the_first_and_last_note_are_slits_too(self):
+        """Dragged exactly note-to-note -- which is what a drag over a run of
+        notes is -- both edge notes still end up as holes in the sheet rather
+        than at the edge of it."""
+        start, end, notes = self._range_of_notes(3)
+        before = {round(p.time) for p in self.document.timing_points if p.uninherited}
+
+        self._convert(start, end)
+
+        note_times = {round(n.time) for n in notes}
+        wall = sorted(
+            round(p.time) for p in self.document.timing_points
+            if p.uninherited and p.meter == 4 and round(p.time) not in before
+            and round(p.time) not in note_times
+        )
+        for note in (notes[0], notes[-1]):
+            with self.subTest(note=note.time):
+                self.assertTrue([t for t in wall if t < note.time - 1])
+                self.assertTrue([t for t in wall if t > note.time + 1])
+
+    def test_the_whole_wall_is_one_undo_step(self):
+        start, end, _ = self._range_of_notes(3)
+        points_before = list(self.document.timing_points)
+
+        self._convert(start, end)
+        self.state.history.undo(self.state)
+
+        self.assertEqual(self.document.timing_points, points_before)
+
+    def test_a_range_with_nothing_convertible_in_it_writes_nothing(self):
+        points_before = list(self.document.timing_points)
+        toasts = []
+        self.window.show_toast = lambda text: toasts.append(text)
+
+        self._convert(1.0, 2.0)
+
+        self.assertEqual(self.document.timing_points, points_before)
+        self.assertTrue(toasts, "the user is told why nothing happened")
+
+    def test_the_wall_never_stacks_on_the_maps_own_red_lines(self):
+        """Only the first uninherited point on a millisecond is meaningful;
+        a second is a line the layer draws and hit-tests forever for nothing."""
+        start, end, _ = self._range_of_notes(4)
+        self._convert(start, end)
+        reds = [round(p.time) for p in self.document.timing_points if p.uninherited]
+        self.assertEqual(len(reds), len(set(reds)))
+
+
+class ConvertNotesDialogTests(_Session, unittest.TestCase):
+    """Convert Notes in the barline layer asks which structure, and its numbers.
+
+    Three converters behind one drag, and the numbers are per call -- the layer
+    Config is only what the boxes open on.
+    """
+
+    def _dialog(self, layer_id="barline"):
+        return gui.ConvertNotesDialog(self.window._gimmick_config(layer_id), layer_id)
+
+    def _range_of_notes(self, count: int):
+        notes = sorted(
+            (n for n in self.document.hit_objects if n.is_circle and not n.is_finisher),
+            key=lambda n: n.time,
+        )[:count]
+        return notes[0].time, notes[-1].time, notes
+
+    def _convert_with(self, mode, start, end, layer_id="barline", checks=(), **edits):
+        """Run Convert Notes with the dialog answered for us."""
+        window = self.window
+
+        class Answered(gui.ConvertNotesDialog):
+            def exec(self):
+                index = self.mode_combo.findData(mode)
+                if index >= 0:
+                    self.mode_combo.setCurrentIndex(index)
+                for name, value in edits.items():
+                    getattr(self, name).setValue(value)
+                for name, value in checks:
+                    getattr(self, name).setChecked(value)
+                return gui.QDialog.DialogCode.Accepted
+
+        original = gui.ConvertNotesDialog
+        gui.ConvertNotesDialog = Answered
+        try:
+            window._convert_notes_to_gimmick(
+                window._gimmick_pairing.target, layer_id, start, end
+            )
+        finally:
+            gui.ConvertNotesDialog = original
+
+    def test_the_barline_layer_offers_the_three_converters(self):
+        dialog = self._dialog()
+        try:
+            modes = [dialog.mode_combo.itemData(i) for i in range(dialog.mode_combo.count())]
+            self.assertEqual(modes, ["structure", "anti", "hidden"])
+        finally:
+            dialog.deleteLater()
+
+    def test_the_fake_slider_layer_asks_only_for_its_numbers(self):
+        """One structure to draw, so nothing to choose between -- but the same
+        per-call numbers, and the same option about the note."""
+        dialog = self._dialog("fake_slider")
+        try:
+            self.assertEqual(dialog.mode(), gui.ConvertNotesDialog.STRUCTURE)
+            self.assertEqual(dialog.mode_combo.count(), 1)
+            self.assertEqual(
+                dialog.fake_offset_spin.value(),
+                self.window._gimmick_config("fake_slider").fake_slider_offset_ms,
+            )
+            self.assertTrue(dialog.hide_note_check.isChecked())
+        finally:
+            dialog.deleteLater()
+
+    def test_showing_the_note_writes_the_charts_own_bpm_with_no_bar(self):
+        """The squash is what makes the note invisible, so the option is which
+        BPM that line carries -- and detached, or it stamps a bar over the note
+        it was just told to show."""
+        start, end, notes = self._range_of_notes(3)
+        self._convert_with(
+            "structure", start, end, checks=(("hide_note_check", False),),
+        )
+        at = round(notes[0].time)
+        own = [
+            point for point in self.document.timing_points
+            if point.uninherited and round(point.time) == at
+        ]
+        self.assertTrue(own)
+        self.assertNotAlmostEqual(own[-1].bpm, gs.DEFAULT_GIMMICK_BPM, places=3)
+        self.assertTrue(own[-1].omit_first_barline)
+
+    def test_hiding_the_note_is_the_default_and_still_squashes(self):
+        start, end, notes = self._range_of_notes(3)
+        self._convert_with("structure", start, end)
+        at = round(notes[0].time)
+        own = [
+            point for point in self.document.timing_points
+            if point.uninherited and round(point.time) == at
+        ]
+        self.assertTrue(any(
+            abs(point.bpm - gs.DEFAULT_GIMMICK_BPM) < 1e-3 for point in own
+        ))
+
+    def test_the_boxes_open_on_the_layer_config(self):
+        dialog = self._dialog()
+        try:
+            config = self.window._gimmick_config("barline")
+            self.assertEqual(dialog.spacing_spin.value(), config.spacing_ms)
+            self.assertEqual(dialog.anti_don_spin.value(), config.anti_don_ticks)
+            self.assertAlmostEqual(
+                dialog.hidden_kat_sv_spin.value(), config.hidden_kat_sv, places=8,
+            )
+        finally:
+            dialog.deleteLater()
+
+    def test_an_edit_reaches_the_config_without_touching_the_others(self):
+        """Only the active page's fields are applied, so picking a converter
+        cannot quietly rewrite the numbers another one uses."""
+        dialog = self._dialog()
+        try:
+            base = self.window._gimmick_config("barline")
+            dialog.mode_combo.setCurrentIndex(dialog.mode_combo.findData("hidden"))
+            dialog.hidden_wall_bpm_spin.setValue(999.0)
+            dialog.anti_don_spin.setValue(base.anti_don_ticks + 5)
+            edited = dialog.config()
+            self.assertEqual(edited.hidden_wall_bpm, 999.0)
+            self.assertEqual(edited.anti_don_ticks, base.anti_don_ticks)
+        finally:
+            dialog.deleteLater()
+
+    def test_the_fake_slider_layer_converts_through_the_same_dialog(self):
+        start, end, _ = self._range_of_notes(3)
+        before = len(self.document.timing_points)
+        self._convert_with("structure", start, end, layer_id="fake_slider")
+        self.assertGreater(len(self.document.timing_points), before)
+
+    def test_hidden_mode_writes_the_hidden_structure(self):
+        start, end, notes = self._range_of_notes(3)
+        before = list(self.document.hit_objects)
+
+        self._convert_with("hidden", start, end)
+
+        self.assertEqual(self.document.hit_objects, before, "no note is added or moved")
+        hide = [
+            p for p in self.document.timing_points
+            if p.uninherited and round(p.time) == round(notes[0].time)
+        ]
+        self.assertTrue(hide)
+        self.assertAlmostEqual(hide[-1].bpm, gs.DEFAULT_HIDDEN_HIDE_BPM, places=3)
+        self.assertTrue(hide[-1].omit_first_barline)
+
+    def test_the_dialogs_numbers_do_not_reach_the_saved_config(self):
+        """Per call: a section whose slits want to be wider than the last one's
+        is the normal case, not a reason to re-save the layer."""
+        start, end, _ = self._range_of_notes(3)
+        before = self.window._gimmick_config("barline")
+
+        self._convert_with("hidden", start, end, hidden_wall_bpm_spin=999.0)
+
+        self.assertEqual(self.window._gimmick_config("barline"), before)
+
+    def test_cancelling_writes_nothing(self):
+        start, end, _ = self._range_of_notes(3)
+        points_before = list(self.document.timing_points)
+
+        class Cancelled(gui.ConvertNotesDialog):
+            def exec(self):
+                return gui.QDialog.DialogCode.Rejected
+
+        original = gui.ConvertNotesDialog
+        gui.ConvertNotesDialog = Cancelled
+        try:
+            self.window._convert_notes_to_gimmick(
+                self.window._gimmick_pairing.target, "barline", start, end
+            )
+        finally:
+            gui.ConvertNotesDialog = original
+        self.assertEqual(self.document.timing_points, points_before)
+
+    def test_cancelling_writes_nothing_in_the_fake_slider_layer_either(self):
+        start, end, _ = self._range_of_notes(3)
+        points_before = list(self.document.timing_points)
+
+        class Cancelled(gui.ConvertNotesDialog):
+            def exec(self):
+                return gui.QDialog.DialogCode.Rejected
+
+        original = gui.ConvertNotesDialog
+        gui.ConvertNotesDialog = Cancelled
+        try:
+            self.window._convert_notes_to_gimmick(
+                self.window._gimmick_pairing.target, "fake_slider", start, end
+            )
+        finally:
+            gui.ConvertNotesDialog = original
+        self.assertEqual(self.document.timing_points, points_before)
+
+
+class DeleteKeepsTheChartTests(_Session, unittest.TestCase):
+    """Deleting a gimmick takes the gimmick, not the music under it.
+
+    A structure is drawn *around* a note that was already there
+    (`_without_redundant_note`), and `_expand_move` pulls that note in so a
+    drag moves the two together. On a delete that same expansion was removing
+    a beat of the map nobody asked to lose.
+    """
+
+    def _plain(self, index=0):
+        return sorted(
+            (n for n in self.document.hit_objects if n.is_circle and not n.is_finisher),
+            key=lambda n: n.time,
+        )[index]
+
+    def _has(self, note):
+        return any(n.uid == note.uid for n in self.document.hit_objects)
+
+    def _red_at(self, time_ms, bpm=60000.0):
+        return next(
+            p for p in self.document.timing_points
+            if p.uninherited and round(p.time) == round(time_ms) and p.bpm == bpm
+        )
+
+    def test_removing_a_barline_don_keeps_the_don(self):
+        note = self._plain()
+        at = round(note.time)
+        self.window._place_gimmick("barline", "don", at)
+
+        self.window._delete_gimmick_objects(
+            self.window._gimmick_pairing.target, (), [self._red_at(at).uid]
+        )
+
+        self.assertTrue(self._has(note), "the chart's own note went with the bars")
+        self.assertEqual(
+            [p for p in self.document.timing_points
+             if p.uninherited and p.bpm == 60000.0 and round(p.time) == at],
+            [], "the bars stayed behind",
+        )
+
+    def test_removing_a_fake_slider_don_keeps_the_note_and_takes_the_slider(self):
+        note = self._plain()
+        at = round(note.time)
+        self.window._place_gimmick("fake_slider", "don", at)
+        slider = next(
+            n for n in self.document.hit_objects
+            if gui.MainWindow.is_fake_slider(n) and abs(n.time - at) < 10
+        )
+
+        self.window._delete_gimmick_objects(
+            self.window._gimmick_pairing.target, (), [self._red_at(at).uid]
+        )
+
+        self.assertTrue(self._has(note))
+        self.assertFalse(self._has(slider), "the drawn object is the gimmick's own")
+
+    def test_removing_an_anti_barline_line_keeps_the_note_it_hid(self):
+        note, following = self._plain(0), self._plain(1)
+        at = round(note.time)
+        self.window._convert_to_anti_barline(
+            self.window._gimmick_pairing.target, note.time, following.time
+        )
+        squash = self._red_at(at)
+        wall = [
+            p for p in self.document.timing_points
+            if p.uninherited and p.meter == 4 and p.time > at + 5
+        ][0]
+
+        self.window._delete_gimmick_objects(
+            self.window._gimmick_pairing.target, (), [squash.uid, wall.uid]
+        )
+
+        self.assertTrue(self._has(note))
+        for point in (squash, wall):
+            self.assertNotIn(point.uid, [p.uid for p in self.document.timing_points])
+
+    def test_a_note_that_was_actually_selected_still_goes(self):
+        """The rule is "not pulled in by expansion", not "never" -- layer 1 is
+        where a note is deleted, and it has to keep working."""
+        note = self._plain()
+        self.window._delete_gimmick_objects(
+            self.window._gimmick_pairing.target, [note.uid]
+        )
+        self.assertFalse(self._has(note))
 
 
 class EffectsBitTests(_Session, unittest.TestCase):
@@ -989,6 +1393,34 @@ class SVLayerOwnershipTests(_Session, unittest.TestCase):
 
         times = self.window._sv_layer_object_times("sv_fake_slider", self.document)
         self.assertIn(at, times)
+
+    def test_an_orphan_green_line_lands_in_the_barline_layer(self):
+        """A green line on nothing at all -- no note, no fake slider, no red
+        line -- used to be owned by no SV layer and so showed in none of them,
+        while the Kiai and Sound Volume layer listed it happily."""
+        at = 12345
+        self.document.timing_points.append(gui.TimingPoint.inherited_at(at, 1.7))
+        self.document.timing_points.sort(key=lambda p: p.time)
+
+        self.assertIn(at, self.window._sv_layer_times("sv_barline", self.document))
+        self.assertNotIn(at, self.window._sv_layer_times("sv_chart", self.document))
+        self.assertNotIn(
+            at, self.window._sv_layer_times("sv_fake_slider", self.document))
+        # A line, not an object: a Generate sweep across the layer still
+        # targets its red lines and not this.
+        self.assertNotIn(
+            at, self.window._sv_layer_object_times("sv_barline", self.document))
+
+    def test_a_green_line_that_already_has_an_owner_is_not_also_the_barlines(self):
+        """Only the unowned ones move: a line on a note stays layer 4's, or
+        the same millisecond would be drawn in two layers at once."""
+        note = self.document.hit_objects[0]
+        at = round(note.time)
+        self.document.timing_points.append(gui.TimingPoint.inherited_at(at, 1.7))
+        self.document.timing_points.sort(key=lambda p: p.time)
+
+        self.assertIn(at, self.window._sv_layer_times("sv_chart", self.document))
+        self.assertNotIn(at, self.window._sv_layer_times("sv_barline", self.document))
 
     def test_a_shiny_placement_writes_exactly_one_inherited_point_at_the_snap(self):
         """Task 3: the restore-point append must not stack a second green

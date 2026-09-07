@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+from types import SimpleNamespace
 import unittest
 from pathlib import Path
 
@@ -344,7 +345,7 @@ class HitPositionTests(unittest.TestCase):
         self.assertFalse(view._has_been_hit(note))
 
     def _what_is_drawn(self, note, at):
-        """(skin elements asked for, phantom bodies, note heads) for one frame."""
+        """(skin elements asked for, tracks drawn, note heads) for one frame."""
         view = self._view([note], at=at)
         phantom = view._compute_phantom_end(note)
         if phantom is not None:
@@ -363,34 +364,120 @@ class HitPositionTests(unittest.TestCase):
             view.set_skin(loaded)
 
             bodies, heads = [], []
-            body = gui.GameplayViewerView._draw_phantom_body
+            body = gui.GameplayViewerView._draw_fake_slider
             sprite = gui.draw_note_sprite
-            gui.GameplayViewerView._draw_phantom_body = (
+            gui.GameplayViewerView._draw_fake_slider = (
                 lambda s, *a: bodies.append(1))
             gui.draw_note_sprite = (
                 lambda *a, **k: heads.append(1))
             try:
                 view.grab()
             finally:
-                gui.GameplayViewerView._draw_phantom_body = body
+                gui.GameplayViewerView._draw_fake_slider = body
                 gui.draw_note_sprite = sprite
         return asked, bodies, heads
 
-    def test_before_the_target_it_draws_its_head_and_its_extent(self):
+    def test_before_the_target_it_is_drawn_by_its_own_routine(self):
+        """A fake slider is not routed through the real roll's drawing -- it
+        has no cap, and its track reaches the other way."""
         note = self._fake(1000)
         asked, bodies, heads = self._what_is_drawn(note, at=900.0)
         self.assertEqual(len(bodies), 1)
-        self.assertEqual(len(heads), 1)
+        self.assertNotIn("taiko-roll-end", asked)
 
-    def test_past_the_target_only_the_cap_carries_on(self):
-        """The head is played and gone the way a circle's is, and the backwards
-        extent goes with it; the cap travels out to the left on its own."""
+    def test_past_the_target_it_is_still_drawn_but_headless(self):
+        """Only the head is taken away at the hit position, the way a circle
+        is. The track and its cap pass straight through, so the object is still
+        being drawn -- it used to return before anything at all."""
         note = self._fake(1000)
-        asked, bodies, heads = self._what_is_drawn(note, at=1200.0)
-        self.assertIn("taiko-roll-end", asked)
-        self.assertNotIn("taikohitcircle", asked)
-        self.assertEqual(bodies, [], "no backwards extent")
-        self.assertEqual(heads, [], "no head")
+        _asked, bodies, heads = self._what_is_drawn(note, at=1200.0)
+        self.assertEqual(len(bodies), 1, "the object stopped being drawn")
+        self.assertEqual(heads, [], "the head is played and gone")
+
+    def test_the_canonical_short_one_is_still_a_visible_circle(self):
+        """Its track collapses to a thousandth of a pixel, so the head is the
+        whole object. Dropping the head because a long one hides it behind its
+        own track made every short fake slider -- which is most of them --
+        invisible."""
+        for length in (-0.001, -0.0001):
+            with self.subTest(length=length):
+                note = self._fake(1000, length)
+                view = self._view([note], at=1000.0 - 1.0)
+                view._phantom_ends[note.uid] = view._compute_phantom_end(note)
+                heads = []
+                sprite = gui.draw_note_sprite
+                gui.draw_note_sprite = lambda *a, **k: heads.append(1)
+                try:
+                    view.grab()
+                finally:
+                    gui.draw_note_sprite = sprite
+                    view.close()
+                self.assertEqual(len(heads), 1)
+
+    def test_it_is_still_drawn_once_its_head_has_left_the_screen(self):
+        """A long one is a thousand pixels of track behind a head that has
+        already gone past the left edge -- culled on the head it disappeared
+        while most of it was still on screen."""
+        note = self._fake(1000, -800.0)
+        view = self._view([note], at=1000.0)
+        view._phantom_ends[note.uid] = view._compute_phantom_end(note)
+        span = abs(view._phantom_ends[note.uid] - 1000.0)
+        width = span * view.velocity_at(1000.0) * view.px_per_beat
+        self.assertGreater(width, view.width(), "the fixture is too short to show it")
+
+        # Far enough past that the head is off the left edge, but not so far
+        # that the track has followed it off.
+        view.current_time = 1000.0 + (span / 2.0)
+        self.assertLess(view.x_for_time(1000.0), 0.0, "the head is still on screen")
+        view.skin.scaled = lambda *a, **k: None
+        drawn = []
+        original = gui.QPainter.drawRect
+        gui.QPainter.drawRect = lambda self, rect: drawn.append(rect)
+        try:
+            view.grab()
+        finally:
+            gui.QPainter.drawRect = original
+            view.close()
+        self.assertTrue(drawn, "the track was culled with its head")
+
+    def test_the_slice_is_widened_by_the_forward_extent(self):
+        """The same thing one level up: the visible-range slice has to reach
+        back far enough to still find the note whose track is on screen."""
+        note = self._fake(1000, -800.0)
+        probe = self._view([note], at=1000.0)
+        span = abs(probe._compute_phantom_end(note) - 1000.0)
+        probe.close()
+
+        document = SimpleNamespace(
+            hit_objects=[note], slider_multiplier=1.4,
+            timing_points=[TimingPoint(time=0.0, beat_length=500.0, meter=4)],
+        )
+        view = gui.GameplayViewerView()
+        view.resize(900, 200)
+        view.refresh_notes(document)
+        self.assertGreaterEqual(view._max_extend_ms, span)
+        view.close()
+
+    def test_the_track_reaches_right_by_the_negative_length(self):
+        """Its extent is the magnitude of the negative length, drawn to scale
+        and to the right of the object."""
+        view = self._view([self._fake(1000, -400.0)], at=900.0)
+        note = view.notes[0]
+        view._phantom_ends[note.uid] = view._compute_phantom_end(note)
+        drawn = []
+        view.skin.scaled = lambda *a, **k: None  # built-in track, one drawRect
+        original = gui.QPainter.drawRect
+        gui.QPainter.drawRect = lambda self, rect: drawn.append(rect)
+        try:
+            view.grab()
+        finally:
+            gui.QPainter.drawRect = original
+        self.assertTrue(drawn, "no track drawn")
+        track = drawn[-1]
+        x = view.x_for_time(1000.0)
+        expected = abs(view._phantom_ends[note.uid] - 1000.0) *             view.velocity_at(1000.0) * view.px_per_beat
+        self.assertAlmostEqual(track.left(), x, delta=0.5)
+        self.assertAlmostEqual(track.width(), expected, delta=0.5)
 
 
 class DrumrollPartsTests(unittest.TestCase):
@@ -417,7 +504,7 @@ class DrumrollPartsTests(unittest.TestCase):
         loaded.scaled = lambda e, d, c=None: (asked.append((e, c)) or inner(e, d, c))
         return loaded, asked
 
-    def _preview_parts(self, length):
+    def _preview_parts(self, length, at=1000.0):
         with tempfile.TemporaryDirectory() as directory:
             loaded, asked = self._skin_with_spy(Path(directory))
             view = gui.GameplayViewerView()
@@ -442,7 +529,7 @@ class DrumrollPartsTests(unittest.TestCase):
                 phantom = view._compute_phantom_end(note)
                 if phantom is not None:
                     view._phantom_ends[note.uid] = phantom
-            view.current_time = 1000.0
+            view.current_time = at
             asked.clear()
             view.grab()
             return asked
@@ -453,15 +540,20 @@ class DrumrollPartsTests(unittest.TestCase):
             with self.subTest(piece=piece):
                 self.assertIn(piece, names)
 
-    def test_a_negative_length_slider_still_gets_its_cap(self):
-        """A negative length collapses the *track*, not the cap: `max(end_x,
-        x)` clamps the body to nothing, so the cap butts onto the head and
-        reaches to its right, which is where osu! draws it."""
-        for length in (-400.0, 0.0):
-            with self.subTest(length=length):
-                names = [element for element, _c in self._preview_parts(length)]
-                self.assertIn("taiko-roll-end", names)
-                self.assertIn("taikohitcircle", names)
+    def test_a_negative_length_slider_is_all_three_pieces_too(self):
+        """Head, track and cap, the same three a real roll has -- the track
+        just runs the other way."""
+        names = [element for element, _c in self._preview_parts(-400.0)]
+        for piece in ("taiko-roll-middle", "taiko-roll-end", "taikohitcircle"):
+            with self.subTest(piece=piece):
+                self.assertIn(piece, names)
+
+    def test_a_fake_sliders_cap_outlives_its_head(self):
+        """Past the hit position the head is gone and the cap is still
+        travelling, which is the one way a fake slider is not like a circle."""
+        names = [element for element, _c in self._preview_parts(-400.0, at=1700.0)]
+        self.assertIn("taiko-roll-end", names)
+        self.assertNotIn("taikohitcircle", names)
 
     def test_every_piece_takes_the_drumroll_colour(self):
         for element, colour in self._preview_parts(400.0):

@@ -972,11 +972,15 @@ class GimmickToolTests(_GimmickFixture, unittest.TestCase):
         )
         self.assertEqual(document.timing_points, before)
 
-    def test_config_rejects_a_positive_fake_slider_length(self):
+    def test_config_cannot_ask_for_a_real_drumroll_length(self):
+        """The box's ceiling is the config's own, so it cannot produce a value
+        GimmickConfig would reject -- and it reaches the near-zero positive
+        form as well as the canonical negative one."""
         dialog = gui.GimmickConfigDialog(
             gui.GimmickConfig(), "fake_slider", gui.GimmickConfig(), self.window,
         )
-        self.assertLess(dialog.length_spin.maximum(), 0)
+        self.assertEqual(dialog.length_spin.maximum(), gui.FAKE_SLIDER_MAX_LENGTH)
+        self.assertLess(dialog.length_spin.minimum(), 0)
         dialog.deleteLater()
 
 
@@ -1084,6 +1088,11 @@ class GimmickSVLayerTests(_GimmickFixture, unittest.TestCase):
     The fixture has green lines at 2000 and 4000, hit objects at 1000-5000 plus
     a fake slider at 54692, and red lines at 0 and 6000 -- so only 2000 lands on
     a real object, and neither green line touches a fake slider or a red line.
+
+    4000 is therefore the orphan: SV belonging to nothing at all. It goes to
+    the barline layer, which is the one that holds the chart's own timing --
+    owned by nobody it was drawn in no SV layer, while the Kiai and Sound
+    Volume layer listed it.
     """
 
     def setUp(self) -> None:
@@ -1102,7 +1111,7 @@ class GimmickSVLayerTests(_GimmickFixture, unittest.TestCase):
     def test_the_three_layers_do_not_share_each_other_s_sv(self):
         self.assertEqual(self._shown("sv_chart"), [2000], "SV on a real hit object")
         self.assertEqual(self._shown("sv_fake_slider"), [])
-        self.assertEqual(self._shown("sv_barline"), [])
+        self.assertEqual(self._shown("sv_barline"), [4000], "the orphan")
 
     def test_a_fake_sliders_sv_belongs_to_the_fake_slider_layer_alone(self):
         """Layer 4 is the *chart's* SV: real notes, plus a shiny's own line.
@@ -1124,7 +1133,8 @@ class GimmickSVLayerTests(_GimmickFixture, unittest.TestCase):
         self.window._refresh_gimmick_views()
 
         # 0 is 500ms/beat, 6000 is 400ms/beat -- the BPM is not a criterion.
-        self.assertEqual(self._shown("sv_barline"), [0, 6000])
+        # 4000 is the orphan green line, which this layer also holds.
+        self.assertEqual(self._shown("sv_barline"), [0, 4000, 6000])
 
     def test_a_gimmick_layer_draws_a_stacked_line_green_not_yellow(self):
         """Only inherited points reach these layers, so a red line sharing the
@@ -1480,13 +1490,26 @@ class GimmickInteractionTests(_GimmickFixture, unittest.TestCase):
         )
 
     def test_right_clicking_a_fake_slider_don_removes_the_whole_structure(self):
+        """The lines and the drawn object go; the hittable note stays.
+
+        A gimmick is drawn *around* a note that was already in the chart, and a
+        delete cannot tell that note from one the structure had to write for
+        itself -- so it keeps both rather than deleting a beat of the map. This
+        used to assert "the note and the slider both go", which is the safe
+        half of that trade in the wrong direction.
+        """
         self.window._place_gimmick("fake_slider", "don", 10000)
         self._right_click(self.window._gimmick_views[1].chart_view, 10001)
 
         self.assertEqual(self._red_times(9990, 10010), [])
         self.assertEqual(
-            [n for n in self.document.hit_objects if 9990 <= n.time <= 10010], [],
-            "the note and the slider both go",
+            [n for n in self.document.hit_objects
+             if 9990 <= n.time <= 10010 and gui.MainWindow.is_fake_slider(n)], [],
+            "the drawn object is the gimmick's own",
+        )
+        self.assertTrue(
+            [n for n in self.document.hit_objects if n.time == 10000 and n.is_circle],
+            "the hittable note is not the gimmick's to delete",
         )
 
     def test_a_layer_with_its_own_gimmick_bpm_is_still_one_structure(self):
@@ -1500,15 +1523,21 @@ class GimmickInteractionTests(_GimmickFixture, unittest.TestCase):
         self._right_click(self.window._gimmick_views[1].chart_view, 10001)
 
         self.assertEqual(self._red_times(9990, 10010), [])
-        self.assertEqual([n for n in self.document.hit_objects if 9990 <= n.time <= 10010], [])
+        self.assertEqual(
+            [n for n in self.document.hit_objects
+             if 9990 <= n.time <= 10010 and gui.MainWindow.is_fake_slider(n)], [],
+            "the whole structure goes whichever BPM its layer holds",
+        )
 
     def test_right_clicking_a_barline_note_removes_the_whole_structure(self):
+        """All of it is bars, so all of it goes -- except the note underneath,
+        which the bars were drawn around. See the fake slider case above."""
         self.window._place_gimmick("barline", "kat", 10000)
         # On one of its restore bars, not its centre: they are the same pixel.
         self._right_click(self.window._gimmick_views[2].chart_view, 9995)
 
         self.assertEqual(self._red_times(9990, 10010), [])
-        self.assertEqual([n for n in self.document.hit_objects if n.time == 10000], [])
+        self.assertTrue([n for n in self.document.hit_objects if n.time == 10000])
 
     def test_the_structures_sv_survives_its_deletion(self):
         """Only the red lines go. A green line describes the chart's scroll
@@ -1543,7 +1572,13 @@ class GimmickInteractionTests(_GimmickFixture, unittest.TestCase):
         layer.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_Backspace, Qt.NoModifier))
 
         self.assertEqual(self._red_times(9990, 10010), [])
-        self.assertEqual([n for n in self.document.hit_objects if 9990 <= n.time <= 10010], [])
+        # The fake slider *was* what the click selected, so it goes; the note
+        # beside it was only pulled in by the structure walk, so it stays.
+        self.assertEqual(
+            [n for n in self.document.hit_objects
+             if 9990 <= n.time <= 10010 and gui.MainWindow.is_fake_slider(n)], [],
+        )
+        self.assertTrue([n for n in self.document.hit_objects if n.time == 10000])
 
     def test_the_deletion_is_one_undo_step(self):
         self.window._place_gimmick("barline", "kat", 10000)
@@ -1907,6 +1942,24 @@ class GimmickAddViewTests(_GimmickFixture, unittest.TestCase):
             view = self.window._editor_views[-1].gameplay_view
             self.assertEqual(len(view.notes), count, view_type)
             self.assertTrue(view.timing_points, "timing is never filtered -- it moves the notes")
+
+    def test_a_rebuild_keeps_the_six_layers_above_an_added_band(self):
+        """Leaving the tab and coming back rebuilds the layers; an added band
+        survives that, so appending the layers left it sitting on top."""
+        target = self.window._gimmick_pairing.target
+        self.window._add_editor_view(
+            "gameplay", target, container=self.window.gimmick_views_layout
+        )
+        added = self.window._editor_views[-1]
+        self.window._open_gimmick_layers()
+
+        layout = self.window.gimmick_views_layout
+        frames = [
+            layout.itemAt(i).widget() for i in range(layout.count())
+            if isinstance(layout.itemAt(i).widget(), gui.EditorViewFrame)
+        ]
+        self.assertEqual(frames[: len(self.window._gimmick_views)], self.window._gimmick_views)
+        self.assertIs(frames[-1], added)
 
     def test_the_dialog_offers_the_three_gameplay_only_views(self):
         dialog = gui.AddViewDialog([("Oni", self.path)], self.window, self.path)

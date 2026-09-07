@@ -80,6 +80,28 @@ class TaikoDifficulty:
         )).lower()
 
 
+def matches_search(difficulties, query: str) -> bool:
+    """Whether one of `difficulties` carries every keyword in `query`.
+
+    Each whitespace-separated word is its own keyword and they are matched
+    against the pooled `search_text`, so "jimmyre dea vio" finds a mapper, a
+    title and a difficulty name at once without the user having to know which
+    field each word came from -- and without typing any of them in full. Taken
+    as one literal needle it matched nothing: those three words never appear
+    in that order in any field.
+
+    All of them against the *same* difficulty, not the mapset as a whole. The
+    version is the one field that differs between a song's difficulties, so
+    spreading the words across them would make "oni futsuu" match any mapset
+    that merely has both.
+    """
+    words = query.lower().split()
+    return not words or any(
+        all(word in text for word in words)
+        for text in (difficulty.search_text() for difficulty in difficulties)
+    )
+
+
 def read_header(path: Path) -> dict[str, str] | None:
     """Return the indexed header fields, or None when the file cannot be read.
 

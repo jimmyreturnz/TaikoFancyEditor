@@ -453,6 +453,122 @@
             <translation>このレイヤーは通常のフェイクスライダーの速度のみを扱います。シャイニーは意図的に対象外です。シャイニーのギミック線はノーツ上にあるため、通常譜面のSVレイヤーでノーツと輝きをまとめて調整できます。</translation>
         </message>
         <message>
+            <source>Convert notes</source>
+            <translation>ノーツを変換</translation>
+        </message>
+        <message>
+            <source>Convert to</source>
+            <translation>変換先</translation>
+        </message>
+        <message>
+            <source>Barline notes</source>
+            <translation>小節線ノーツ</translation>
+        </message>
+        <message>
+            <source>Hidden anti-barline</source>
+            <translation>隠しアンチ小節線</translation>
+        </message>
+        <message>
+            <source>Lines per beat</source>
+            <translation>1拍あたりの線の数</translation>
+        </message>
+        <message>
+            <source>Barline BPM</source>
+            <translation>小節線のBPM</translation>
+        </message>
+        <message>
+            <source>Don slit (ticks)</source>
+            <translation>ドンのスリット幅 (ティック)</translation>
+        </message>
+        <message>
+            <source>Kat slit (ticks)</source>
+            <translation>カッのスリット幅 (ティック)</translation>
+        </message>
+        <message>
+            <source>Hide BPM</source>
+            <translation>消去用BPM</translation>
+        </message>
+        <message>
+            <source>Wall BPM</source>
+            <translation>壁のBPM</translation>
+        </message>
+        <message>
+            <source>Wall SV</source>
+            <translation>壁のSV</translation>
+        </message>
+        <message>
+            <source>Don SV</source>
+            <translation>ドンのSV</translation>
+        </message>
+        <message>
+            <source>Kat SV</source>
+            <translation>カッのSV</translation>
+        </message>
+        <message>
+            <source>Slit length (1/n beat)</source>
+            <translation>スリットの長さ (1/n 拍)</translation>
+        </message>
+        <message>
+            <source>Cannot convert with this</source>
+            <translation>この設定では変換できません</translation>
+        </message>
+        <message>
+            <source>Packs the lane with bars and takes bars away where each note is, so the notes read as slits in a solid sheet. A barline BPM below the chart's own packs it tighter still. The two slit widths are what tells a Don from a Kat, since the notes themselves are invisible.</source>
+            <translation>レーンを小節線で埋め尽くし、ノーツの位置だけ線を抜きます。ノーツは一枚の白い面に入ったスリットとして見えます。譜面自身より低い小節線BPMにすると、線はさらに密になります。ノーツ自体は見えないので、2つのスリット幅がドンとカッを区別する唯一の手がかりです。</translation>
+        </message>
+        <message>
+            <source>One wall line makes osu! draw the whole sheet, and each note's slit is opened by raising SV for a fraction of a beat after it. Taiko places an object at its distance times the speed at its own time, so the raised bars sit ahead of the rest by that excess times how far away they still are -- the slit opens with distance and closes at the hit position.</source>
+            <translation>壁の線1本でosu!が面全体を描き、各ノーツのスリットは直後の数分の1拍だけSVを上げて開けます。太鼓はオブジェクトを「残り距離×そのオブジェクト自身の時刻の速度」に置くため、上げた分の速度に残り距離を掛けただけ小節線が前に出ます。スリットは遠いほど広く開き、判定位置で閉じます。</translation>
+        </message>
+        <message>
+            <source>Caution: the three SV values are the gimmick, and they are meant to sit within about a percent of each other. Wall SV decides how tight the sheet is; Don and Kat only read as a colour while both are above it and Kat is the larger. Ordinary-looking values will not read as this gimmick at all.</source>
+            <translation>注意: 3つのSV値そのものがギミックであり、互いに1%程度の差に収まるようにします。壁のSVは面の密度を決めます。ドンとカッは、どちらも壁のSVより大きく、かつカッの方が大きいときだけ色として読み取れます。普通に見える値ではこのギミックとして成立しません。</translation>
+        </message>
+        <message>
+            <source>Fake sliders</source>
+            <translation>フェイクスライダー</translation>
+        </message>
+        <message>
+            <source>Hide the note itself</source>
+            <translation>ノーツ自体を隠す</translation>
+        </message>
+        <message>
+            <source>On, the note is squashed to invisibility by a gimmick-BPM line and only the structure is seen. Off, that line carries the chart's own BPM with its barline detached, so the note stays visible inside the structure.</source>
+            <translation>オンにすると、ギミックBPMの線でノーツが潰されて見えなくなり、構造だけが見えます。オフにすると、その線は譜面自身のBPMを持ち小節線は切り離されるので、ノーツは構造の中に見えたまま残ります。</translation>
+        </message>
+        <message>
+            <source>With the note hidden the gimmick SV above is what takes the already squashed note the rest of the way off screen. Showing the note drops it and restates the chart's own speed instead, or the note would be flung off the screen the line was just told to keep it on.</source>
+            <translation>ノーツを隠す場合、上のギミックSVが、すでに潰れたノーツを画面外まで押し出す役割を持ちます。ノーツを見せる場合はこれを使わず譜面自身の速度を書き直します。そうしないと、見せるために置いた線の意図に反して、ノーツが画面外へ飛ばされてしまいます。</translation>
+        </message>
+        <message>
+            <source>Showing the note changes what this gimmick reads as: the slit is a hole in a sheet of bars, and an invisible note is what makes that hole the object. Shown, the note travels through its own slit at the chart's normal speed while the sheet crawls at the wall speed.</source>
+            <translation>ノーツを見せると、このギミックの意味が変わります。スリットは小節線の面に空いた穴であり、その穴を「オブジェクト」に見せているのは見えないノーツだからです。見せた場合、ノーツは譜面本来の速度で自分のスリットを通り抜け、面のほうは壁の速度でゆっくり流れます。</translation>
+        </message>
+        <message>
+            <source>Anti-barline</source>
+            <translation>アンチ小節線</translation>
+        </message>
+        <message>
+            <source>Anti-barline lines per beat</source>
+            <translation>アンチ小節線: 1拍あたりの線の数</translation>
+        </message>
+        <message>
+            <source>Anti-barline barline BPM</source>
+            <translation>アンチ小節線: 小節線のBPM</translation>
+        </message>
+        <message>
+            <source>Anti-barline Don slit (ticks)</source>
+            <translation>アンチ小節線: ドンの隙間 (本)</translation>
+        </message>
+        <message>
+            <source>Anti-barline Kat slit (ticks)</source>
+            <translation>アンチ小節線: カツの隙間 (本)</translation>
+        </message>
+        <message>
+            <source>Anti-barline packs the lane with bars and takes bars away where each note is, so the notes read as slits in a solid white sheet. Lines per beat is how tight the wall is. A barline BPM below the chart's own packs it tighter still -- a red line's BPM is also its scroll speed, so a third of the BPM draws the same lines a third as far apart. The two slit widths are what tells a Don from a Kat, since the notes themselves are invisible.</source>
+            <translation>アンチ小節線はレーンを小節線で埋め尽くし、ノーツの位置だけ小節線を取り除きます。その結果、ノーツは真っ白な面に走る隙間として見えます。1拍あたりの線の数が壁の密度です。譜面自身より低い小節線BPMにすると、さらに密になります。赤線のBPMはスクロール速度でもあるため、BPMを1/3にすれば同じ線が1/3の間隔で描かれます。ノーツ自体は不可視なので、2つの隙間の幅がドンとカツを見分ける唯一の手がかりです。</translation>
+        </message>
+        <message>
             <source>Convert Notes</source>
             <translation>ノーツを変換</translation>
         </message>
@@ -999,6 +1115,14 @@ Every beatmap in it is checked once for taiko difficulties, and the result is re
         <message>
             <source>Sound volume</source>
             <translation>サウンド音量</translation>
+        </message>
+        <message>
+            <source>Fake slider length</source>
+            <translation>フェイクスライダーの長さ</translation>
+        </message>
+        <message>
+            <source>Length (osu! pixels, no duration is the point)</source>
+            <translation>長さ (osu!ピクセル、長さを持たないことが狙い)</translation>
         </message>
         <message>
             <source>Hitsound volume (%)</source>

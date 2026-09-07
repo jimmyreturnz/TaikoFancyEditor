@@ -11,16 +11,18 @@ import math
 import os
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QPointF, Qt
-from PySide6.QtGui import QMouseEvent
+from PySide6.QtGui import QMouseEvent, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication
 
 import gui
 from osu_io.parser import parse_osu
+from osu_io.timing import TimingPoint
 from tests.osu_fixtures import write_fixture
 
 _APP: QApplication | None = None
@@ -511,8 +513,49 @@ class SVEditorIntegrationTests(unittest.TestCase):
             gui.SVFunctionDialog = original_dialog_class
 
         self.assertEqual(len(created_dialogs), 1)
-        self.assertEqual(created_dialogs[0].initial_rate_spin.decimals(), 4)
+        self.assertEqual(created_dialogs[0].initial_rate_spin.decimals(), gui.SV_DECIMALS)
         self.assertAlmostEqual(created_dialogs[0].initial_rate_spin.value(), 1.4286, places=3)
+
+
+class SVPrecisionTests(unittest.TestCase):
+    """Under a 60000 BPM red line the useful SV steps live past the sixth
+    decimal, so the boxes have to reach them -- the graph still reads at 2dp."""
+
+    def test_the_graph_still_labels_at_two_decimals(self):
+        """The graph is read at a glance; 8 decimals on every point is a smear."""
+        view = gui.SVEditorView()
+        view.resize(600, 220)
+        view.window_ms = 4000.0
+        view.current_time = 2000.0
+        view.set_timing_points([
+            TimingPoint(time=1000.0, beat_length=-100.0 / 1.00000001, uninherited_flag=0),
+        ])
+
+        drawn: list[str] = []
+
+        def spy(painter, *args):
+            if len(args) == 2 and isinstance(args[1], str):
+                drawn.append(args[1])
+            return None
+
+        pixmap = QPixmap(view.size())
+        painter = QPainter(pixmap)
+        with patch.object(QPainter, "drawText", spy):
+            view._draw_sv_curve(painter, 20.0, 200.0, 0.0, 20000.0)
+        painter.end()
+
+        self.assertIn("1.00x", drawn)
+
+    def test_sv_boxes_carry_the_full_precision(self):
+        point = TimingPoint(
+            time=1000.0, beat_length=-100.0 / 1.00000001, uninherited_flag=0
+        )
+        dialog = gui.TimingLineDialog(point)
+        try:
+            self.assertEqual(dialog.value_spin.decimals(), gui.SV_DECIMALS)
+            self.assertEqual(f"{dialog.value_spin.value():.8f}", "1.00000001")
+        finally:
+            dialog.deleteLater()
 
 
 if __name__ == "__main__":

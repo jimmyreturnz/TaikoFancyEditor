@@ -6,7 +6,8 @@
 - pasting snaps to the grid instead of landing on the raw playhead
 - SV lines can be rubber-band selected, and the view scrolls when the drag
   runs past its edge
-- a plain left click deselects
+- a plain left click on empty space deselects (a click on an object
+  selects it -- see ChartDeselectTests)
 - generated SV carries the kiai state it was dropped into
 - spinners show a grey band between start and end
 - "Drumroll"/"Denden" are called "Slider"/"Spinner"
@@ -431,13 +432,42 @@ class SVRangeSelectionTests(WindowTestCase):
 
 
 class ChartDeselectTests(WindowTestCase):
-    def test_a_left_click_clears_the_chart_selection(self):
+    def test_a_left_click_on_empty_space_clears_the_chart_selection(self):
+        """Clear of every selected note's *column*, not just of the note row:
+        a press anywhere in a selected object's column grabs it, which is what
+        makes dragging a whole selection by one member work. The old version
+        of this test clicked x=400, y=100 -- the middle of the view, which is
+        the baseline of an 800x200 chart and lands on a note. That used to
+        clear; a click on an object now selects it (see below).
+
+        1250ms is 250ms from the notes either side, 50px at this zoom, clear
+        of even a finisher's radius.
+        """
         view = self._chart_view()
         view.resize(800, 200)
+        view.window_ms = 4000.0
+        view.current_time = 2000.0
         view.selected = {n.original_index for n in self.state.document.hit_objects[:3]}
-        _press(view, 400.0)
-        _release(view, 400.0)
+        x = view.x_for_time(1250.0)
+        _press(view, x)
+        _release(view, x)
         self.assertEqual(view.selected, set())
+
+    def test_a_click_on_a_note_selects_it_here_too(self):
+        """Same widget and the same yellow `selected_note_pen` as a gimmick
+        layer, so the same gesture has to mean the same thing: a click on the
+        object selects the object. The Editor page used to clear instead, so a
+        note here could only be selected by boxing it and the selection
+        outline never appeared from a click."""
+        view = self._chart_view()
+        view.resize(800, 200)
+        view.window_ms = 4000.0
+        view.current_time = 2000.0
+        note = next(n for n in self.state.document.hit_objects if n.time == 1000)
+        x = view.x_for_time(1000.0)
+        _press(view, x, y=view._baseline_y())
+        _release(view, x, y=view._baseline_y())
+        self.assertEqual(view.selected, {note.original_index})
 
     def test_the_fancy_arranger_timeline_deselects_too(self):
         timeline = self.window.timeline
@@ -447,20 +477,41 @@ class ChartDeselectTests(WindowTestCase):
         _release(timeline, 400.0)
         self.assertEqual(timeline.selected, set())
 
-    def test_a_drag_still_selects(self):
+    def test_a_drag_off_the_objects_still_selects(self):
+        """Clear of the note row, so the press is not on anything. A press on
+        an object's own circle grabs it instead -- see
+        test_a_press_on_a_note_moves_it_without_selecting_first."""
         view = self._chart_view()
         view.resize(800, 200)
         view.window_ms = 4000.0
         view.current_time = 2000.0
-        _press(view, view.x_for_time(900.0))
-        _move(view, view.x_for_time(2600.0))
-        _release(view, view.x_for_time(2600.0))
+        above = view._baseline_y() - max(view.note_radii()) - 5.0
+        _press(view, view.x_for_time(900.0), y=above)
+        _move(view, view.x_for_time(2600.0), y=above)
+        _release(view, view.x_for_time(2600.0), y=above)
         self.assertTrue(view.selected)
 
+    def test_a_press_on_a_note_moves_it_without_selecting_first(self):
+        """Grabbing a thing means grabbing it. `move_requires_selection` still
+        governs a press *beside* a note, which is what keeps the rubber band."""
+        view = self._chart_view()
+        view.resize(800, 200)
+        view.window_ms = 4000.0
+        view.current_time = 2000.0
+        note = next(n for n in self.state.document.hit_objects if n.time == 1000)
+        self.assertNotIn(note.original_index, view.selected)
+
+        _press(view, view.x_for_time(1000.0), y=view._baseline_y())
+        _move(view, view.x_for_time(1600.0), y=view._baseline_y())
+        _release(view, view.x_for_time(1600.0), y=view._baseline_y())
+
+        moved = next(n for n in self.state.document.hit_objects if n.uid == note.uid)
+        self.assertAlmostEqual(moved.time, 1600, delta=125)
+
     def test_dragging_an_already_selected_note_moves_it(self):
-        """A note in the current selection is what a select-tool drag
-        relocates -- see move_requires_selection. Grabbing an unselected one
-        instead starts a fresh rubber-band (test_a_drag_still_selects)."""
+        """A note in the current selection is relocated by a drag that grabs
+        it anywhere in its column, not only on its circle -- which is what
+        makes dragging a whole selection by one of its members work."""
         view = self._chart_view()
         view.resize(800, 200)
         view.window_ms = 4000.0
