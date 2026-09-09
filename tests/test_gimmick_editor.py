@@ -1065,7 +1065,9 @@ class GimmickPageChromeTests(_GimmickFixture, unittest.TestCase):
         view = self.window._gimmick_views[0].chart_view
         view.resize(800, 90)
         view.grab()  # paints; must not raise
-        self.assertLessEqual(min(31.0, view.height() * 0.22) * 1.35 * 2, view.height())
+        self.assertLessEqual(
+            min(31.0, view.height() * 0.22) * gui.TAIKO_STRONG_SCALE * 2, view.height(),
+        )
 
     def test_the_snap_combo_drives_every_layer(self):
         combo = self.window.gimmick_snap_combo
@@ -1369,9 +1371,17 @@ class GimmickStructureTests(_GimmickFixture, unittest.TestCase):
         self.assertIn(10000, reds, "the gimmick line sits on the note")
         self.assertIn(10003, reds, "and the restore where the slider goes in")
 
-    def test_a_fake_slider_don_carries_its_gimmick_sv(self):
-        """A green line on the gimmick line takes the note the rest of the way
-        off screen; another on the restore is what layer 5 shows of the slider."""
+    def test_a_fake_slider_don_carries_its_gimmick_sv_and_nothing_else(self):
+        """`fake_slider_sv` on the gimmick line stays -- it is the gimmick's own
+        number, and it takes the squashed note the rest of the way off screen.
+
+        The second green line on the restore does not. That one was
+        `sv_restore_point` handing back the chart's SV, and this layer no longer
+        carries the chart's SV in any form. It was also what layer 5 showed of
+        the slider, so this structure now arrives without a handle there -- an
+        accepted cost of the change, pinned here so it is not mistaken for a
+        regression later.
+        """
         self.window.gimmick_configs["fake_slider"] = gui.GimmickConfig(fake_slider_sv=12.0)
         self.window._place_gimmick("fake_slider", "don", 10000)
         offset = self.window._gimmick_config("fake_slider").fake_slider_offset_ms
@@ -1381,7 +1391,8 @@ class GimmickStructureTests(_GimmickFixture, unittest.TestCase):
             if p.inherited and 9990 <= p.time <= 10010
         }
         self.assertAlmostEqual(greens[10000].sv_multiplier, 12.0)
-        self.assertIn(10000 + offset, greens, "layer 5 needs a line on the slider")
+        self.assertNotIn(10000 + offset, greens, "no chart SV handed back on the restore")
+        self.assertEqual(list(greens), [10000.0], "the gimmick's own SV is the only green line")
 
     def test_a_fake_slider_don_squashes_its_own_note_too(self):
         """The 60000 BPM line goes on the note, not on the slider: the note the
@@ -2365,6 +2376,62 @@ class GimmickClipboardTests(_GimmickFixture, unittest.TestCase):
         )
         self.assertEqual(len(pasted), 3, pasted)
         self.assertEqual(pasted[2] - pasted[0], 2, "the structure kept its shape")
+
+    def test_a_copied_structure_keeps_its_green_line_and_its_file_order(self):
+        """A Don fake slider's `fake_slider_sv` is what takes the squashed note
+        the rest of the way off screen, and copy dropped every inherited point
+        -- so the pasted structure was a squashed but still-drawn note. It has
+        to land *after* the red line sharing its millisecond too: osu! resolves
+        a shared timestamp by file order and an uninherited point resets SV to
+        1.0x, so the other way round it is silently cancelled."""
+        self.window._place_gimmick("fake_slider", "don", 10000)
+        fake = self.window._gimmick_views[1].chart_view
+        fake.refresh_notes(self.document)
+        source = next(
+            p for p in self.document.timing_points
+            if p.inherited and round(p.time) == 10000
+        )
+        # The layer draws fake sliders, not notes -- the structure is grabbed by
+        # its slider and `_expand_move` grows it into the rest.
+        offset = self.window._gimmick_config("fake_slider").fake_slider_offset_ms
+        fake.selected = {
+            n.original_index for n in self.document.hit_objects
+            if n.time == 10000 + offset
+        }
+
+        self.window._active_chart_view = fake
+        self.window._copy_notes()
+        fake.current_time = 20000.0
+        self.window._paste_notes()
+
+        at_20000 = [p for p in self.document.timing_points if round(p.time) == 20000]
+        self.assertEqual(
+            [p.uninherited for p in at_20000], [True, False], "red line first",
+        )
+        self.assertAlmostEqual(at_20000[1].sv_multiplier, source.sv_multiplier)
+
+    def test_a_paste_does_not_stack_a_second_green_line_on_one_millisecond(self):
+        """Same rule the red lines follow: the millisecond already has SV, and
+        a second point there only overrides what is in it."""
+        self.window._place_gimmick("fake_slider", "don", 10000)
+        self.window._place_gimmick("fake_slider", "don", 20000)
+        fake = self.window._gimmick_views[1].chart_view
+        fake.refresh_notes(self.document)
+        offset = self.window._gimmick_config("fake_slider").fake_slider_offset_ms
+        fake.selected = {
+            n.original_index for n in self.document.hit_objects
+            if n.time == 10000 + offset
+        }
+        self.window._active_chart_view = fake
+        self.window._copy_notes()
+        before = len([p for p in self.document.timing_points if p.inherited])
+
+        fake.current_time = 20000.0
+        self.window._paste_notes()
+
+        self.assertEqual(
+            len([p for p in self.document.timing_points if p.inherited]), before,
+        )
 
     def test_the_fake_slider_layer_copies_the_line_that_makes_it_fake(self):
         """Layer 2 owns no red lines, so its selection never contains one --

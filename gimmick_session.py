@@ -228,6 +228,19 @@ class GimmickConfig:
     # offset later as the only thing drawn. Configurable because how far the
     # note has to go depends on the chart's own scroll speed.
     fake_slider_sv: float = DEFAULT_FAKE_SLIDER_SV
+    # Whether a *plain* fake slider writes a red line of its own. It has no
+    # note to hide, so that line only ever applies `fake_slider_bpm_multiplier`
+    # -- at the default it restates the chart's own BPM and changes nothing,
+    # and the Multiple tool writes one per slider, a run of dead lines. Off
+    # gives the bare drawn object and gives up the retiming with it.
+    #
+    # Plain fake sliders only. Don and Kat are unaffected (their line is the
+    # squash that hides the note, which is the whole gimmick) and so is a
+    # shiny, whose line is the only thing identifying it -- see `fake_slider`.
+    #
+    # Defaults on, which is what every structure written before this dial
+    # existed did.
+    fake_slider_red_line: bool = True
     place_notes: bool = True
     # Whether a barline note's bars go on both sides of it or only after it.
     # See `barline_note`: mirrored reads as one object centred on the note,
@@ -598,12 +611,11 @@ def fake_slider(
     * **shiny** (`shiny=True`) -- a glow around a note that *stays visible*, so
       squashing it is not an option: that would delete the very note the glow
       decorates. Its red line sits on the snap itself, retimed by
-      `shiny_bpm_multiplier`, and a green line always follows it restating the
-      SV that multiplier divides out of the timeline -- see
-      `GimmickConfig.shiny_bpm_multiplier`. `shiny_count` sliders, the stack
-      that reads as white, sit `shiny_offset_ms` later, beside the note rather
-      than on it. With a Don/Kat `kind` a real, hittable note is written on the
-      snap as well, undisturbed by any of this.
+      `shiny_bpm_multiplier`, and that is the whole structure: no green line.
+      `shiny_count` sliders, the stack that reads as white, sit
+      `shiny_offset_ms` later, beside the note rather than on it. With a
+      Don/Kat `kind` a real, hittable note is written on the snap as well,
+      undisturbed by any of this.
     * **Don / Kat, not shiny** -- the one case that deliberately hides its
       note. A gimmick-BPM line squashes the snap to nothing; an SV line on top
       of it (`fake_slider_sv`) -- the uninherited point has just reset SV to
@@ -613,6 +625,13 @@ def fake_slider(
       `fake_slider_bpm_multiplier`), which is exactly where the fake slider --
       small for Don, big (finisher bit) for Kat -- is the only thing left to
       look at.
+
+    **No structure here carries the chart's own SV.** The only green line left
+    is the Don/Kat `fake_slider_sv`, which is the gimmick's own number and
+    exists to finish taking an already-squashed note off screen -- so it is
+    written only when `hide_note` is on, and dropped with the squash when it is
+    off. A fake slider is decoration: inheriting the speed of whichever section
+    it was dropped in made identical structures scroll differently.
 
     Wherever there is a green line, it is always written *after* the red line
     sharing its millisecond: osu! resolves a shared timestamp by file order,
@@ -649,21 +668,35 @@ def fake_slider(
         # white is a separate, later object; see `shiny_offset_ms`.
         slider_at = time_ms + config.shiny_offset_ms
         red_bpm = base_bpm_at(base_timing, time_ms) * config.shiny_bpm_multiplier
-        points = [
-            TimingPoint.uninherited_at(time_ms, red_bpm, omit_first_barline=omit),
-            # Always written, even at multiplier 1.0 (then it simply restates
-            # the SV in force): it is the handle the SV layer for this
-            # structure is made of, not only a correction for a retimed line.
-            TimingPoint.inherited_at(
-                time_ms, sv_at(base_timing, time_ms) / config.shiny_bpm_multiplier,
-            ),
-        ]
+        # No green line. This used to restate the chart's SV divided by the
+        # multiplier -- both a correction for the retiming and the handle the
+        # SV layer was made of -- but the chart's speed has no business
+        # reaching a shiny: the same structure scrolled differently depending
+        # on which section it was dropped in, which is not what "shiny" is.
+        # The retiming compensation goes with it, deliberately.
+        points = [TimingPoint.uninherited_at(time_ms, red_bpm, omit_first_barline=omit)]
     elif kind == "regular":
         # No note, no squash: the drawn object alone, one offset after the
-        # snap, at the chart's own BPM.
+        # snap, at the chart's own BPM -- and whether it gets a line at all is
+        # the mapper's call (`fake_slider_red_line`).
+        #
+        # There is nothing to hide here, so that line only ever applied
+        # `fake_slider_bpm_multiplier`: at the default it re-states the chart's
+        # own BPM and changes nothing, and a run of them (the Multiple tool)
+        # writes one dead line per slider restating a speed already in force.
+        # Off is therefore the cheaper structure and on is the one that can be
+        # retimed, which is why it is a dial rather than a decision made here.
+        #
+        # Only this branch is gated. Don and Kat need theirs -- the squash *is*
+        # the gimmick -- and a shiny's is what identifies it: it writes no note
+        # of its own, so `MainWindow._compute_shiny_times` has nothing but that
+        # line to tell a standalone shiny from a plain fake slider.
         slider_at = time_ms + config.fake_slider_offset_ms
-        bpm = base_bpm_at(base_timing, slider_at) * config.fake_slider_bpm_multiplier
-        points = [TimingPoint.uninherited_at(slider_at, bpm, omit_first_barline=omit)]
+        if config.fake_slider_red_line:
+            bpm = base_bpm_at(base_timing, slider_at) * config.fake_slider_bpm_multiplier
+            points = [TimingPoint.uninherited_at(slider_at, bpm, omit_first_barline=omit)]
+        else:
+            points = []
     else:
         slider_at = time_ms + config.fake_slider_offset_ms
         restore_bpm = base_bpm_at(base_timing, slider_at) * config.fake_slider_bpm_multiplier
@@ -682,10 +715,16 @@ def fake_slider(
                 else base_bpm_at(base_timing, time_ms),
                 omit_first_barline=omit or not config.hide_note,
             ),
-            TimingPoint.inherited_at(
-                time_ms,
-                config.fake_slider_sv if config.hide_note
-                else sv_at(base_timing, time_ms),
+            # Only `fake_slider_sv`, and only when it has a squashed note to
+            # finish taking off screen. With `hide_note` off this restated the
+            # chart's own SV, which is the one thing this layer must not carry:
+            # a fake slider is decoration, and inheriting the speed of whatever
+            # section it landed in made identical structures scroll
+            # differently. `fake_slider_sv` is the gimmick's own number and
+            # stays -- without it the hidden note is not hidden.
+            *(
+                [TimingPoint.inherited_at(time_ms, config.fake_slider_sv)]
+                if config.hide_note else []
             ),
             TimingPoint.uninherited_at(slider_at, restore_bpm, omit_first_barline=omit),
         ]
@@ -1075,9 +1114,14 @@ def sv_restore_point(
     changes nothing on its own then -- the uninherited point it follows has just
     said 1.0x -- but it is the handle the SV layer for that structure is made of:
     a layer matches its green lines by exact millisecond, so with nothing there
-    the fake slider layer had no line to show, drag or generate from, which is
-    the whole of what layer 5 is for. Writing one that agrees with the timing
-    beats making the user place one by hand before they can edit it.
+    it has no line to show, drag or generate from. Writing one that agrees with
+    the timing beats making the user place one by hand before they can edit it.
+
+    **The fake slider layer no longer asks for one.** It carries no SV from the
+    chart in any form, so `_gimmick_commands` skips this call for it -- which
+    does cost layer 5 the handles described above, deliberately. Everything
+    still calling this (the barline structures, the plain red line tool) is
+    unaffected.
     """
     active = active_point_at(sorted_by_time(points), time_ms)
     if active is None:

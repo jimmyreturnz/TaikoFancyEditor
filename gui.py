@@ -1754,6 +1754,11 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
         # yellow fake slider it will become, or as the bar a barline note draws.
         # The shape a tool writes differs per layer, so the ghost has to as well.
         self.ghost_style = "note"
+        # (start, end, distance, slider_offset) while the Multiple Fake Slider
+        # tool is held, None otherwise -- the run its ghost previews. The offset
+        # rides along because the view has no gimmick config of its own to read
+        # it from. See `_set_gimmick_tool`.
+        self.multi_run: tuple[int, int, int, int] | None = None
         # Write the BPM beside each red line this view owns. On in the barline
         # layer, whose whole material is red lines and where the number used to
         # be readable only by dropping down to the SV layer under it.
@@ -2080,9 +2085,15 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
         sizes these used to be fixed at. A split layer halves it again: it
         draws two rows of objects instead of one, and at the full radius the
         two overlap and the pair reads as a single smear.
+
+        The finisher is the ruleset's own ratio (`TAIKO_STRONG_SCALE`, 1.538x)
+        rather than the 1.35x this was drawn at, so a big note reads as big
+        here and at the same proportion the gameplay preview draws it. No
+        second cap on it: `normal` is already capped, and the old 42.0 was
+        only ever that cap times the ratio.
         """
         normal = min(31.0, self.height() * (0.15 if self.split_rows else 0.22))
-        return normal, min(42.0, normal * 1.35)
+        return normal, normal * TAIKO_STRONG_SCALE
 
     def _note_near_x(self, x: float, radius_px: float | None = None, y: float | None = None):
         """Nearest note whose drawn circle covers `x`, for grabbing and deleting.
@@ -3132,12 +3143,18 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
         # rather than a note, so it previews through _draw_layer_ghost below.
         # Without it here the one tool whose whole output is a drawn object was
         # the one tool that showed nothing under the cursor.
-        if self.tool not in ("don", "kat", "regular", "shiny", "slider", "spinner") or self._hover_time is None:
+        if self.tool not in ("don", "kat", "regular", "shiny", "multi", "slider", "spinner") or self._hover_time is None:
             return
 
         snapped = self.snap_ms(self._hover_time)
         x = self.x_for_time(snapped)
-        if x < -60 or x > self.width() + 60:
+        # "multi" places a run either side of the click, so its own x can be off
+        # screen while the run is not; it does its own bounds check per ghost.
+        if self.tool != "multi" and (x < -60 or x > self.width() + 60):
+            return
+
+        if self.tool == "multi":
+            self._draw_multi_run_ghost(painter, baseline_y, normal_radius, finisher_radius, snapped, shift_held)
             return
 
         if self.tool == "slider":
@@ -3174,6 +3191,45 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
         painter.setBrush(brush)
         painter.setPen(self.ghost_pen)
         painter.drawEllipse(QPointF(x, note_center_y), radius, radius)
+
+    def _draw_multi_run_ghost(
+        self, painter: QPainter, baseline_y: int, normal_radius: float,
+        finisher_radius: float, snapped: float, shift_held: bool,
+    ) -> None:
+        """The Multiple Fake Slider tool's preview: the whole run, not one dot.
+
+        The tool writes N structures at `click+start .. click+end` stepped by
+        `distance`, so a single ghost under the cursor said nothing about what
+        a click was about to place -- and Shift, which sizes every one of them,
+        showed nothing at all because "multi" was missing from the tool list in
+        `_draw_placement_ghost`.
+
+        Positions are the tool's own (`_multi_fake_slider_commands`), plus the
+        `fake_slider_offset_ms` that puts each drawn object one offset after
+        its structure -- the ghost stands where the slider lands, not where the
+        structure is anchored. Shift sizes them the same way it sizes a
+        Don or Kat in a normal chart; see `gimmick_session.fake_slider`, which
+        honours `big` for `kind="regular"`.
+        """
+        if not self.multi_run:
+            return
+        start, end, distance, offset = self.multi_run
+        if distance <= 0:
+            return
+        radius = finisher_radius if shift_held else normal_radius
+        position = start
+        while position <= end:
+            x = self.x_for_time(snapped + position + offset)
+            # Per ghost, because a long run reaches well past both edges.
+            if -60 <= x <= self.width() + 60:
+                if self.ghost_style != "note":
+                    self._draw_layer_ghost(painter, x, baseline_y, radius)
+                else:
+                    painter.setBrush(self.ghost_don_brush)
+                    painter.setPen(self.ghost_pen)
+                    y = baseline_y if self.symmetric else baseline_y - radius
+                    painter.drawEllipse(QPointF(x, y), radius, radius)
+            position += distance
 
     def _draw_layer_ghost(self, painter: QPainter, x: float, baseline_y: float, radius: float) -> None:
         """Don/Kat previewed as what *this layer* writes, not as a note.
@@ -5755,6 +5811,15 @@ class GimmickConfigDialog(QDialog):
         )
         self.place_notes_check.setChecked(config.place_notes)
 
+        # Plain fake sliders only -- Don/Kat need their squash and a shiny is
+        # identified by its line. Off is the bare drawn object, which is what
+        # the Multiple tool wants: on, it writes one line per slider in a run,
+        # each restating a BPM already in force.
+        self.fake_red_line_check = QCheckBox(
+            tr("MainWindow", "Write a red line for plain fake sliders")
+        )
+        self.fake_red_line_check.setChecked(config.fake_slider_red_line)
+
         # Mirrored reads as one object centred on the note; unticked, the bars
         # all trail it -- a squash on the note and its restores after it, which
         # is the style several hand-made maps are written in and which nothing
@@ -5904,6 +5969,7 @@ class GimmickConfigDialog(QDialog):
             layout.addRow(tr("MainWindow", "Don/Kat gimmick SV"), self.fake_sv_spin)
             layout.addRow(tr("MainWindow", "Omit barline"), self.omit_barline_check)
             layout.addRow(tr("MainWindow", "Fake slider redline BPM"), self.fake_slider_bpm_spin)
+            layout.addRow("", self.fake_red_line_check)
             layout.addRow(tr("MainWindow", "Shiny offset (ms)"), self.shiny_offset_spin)
             layout.addRow(tr("MainWindow", "Shiny note count"), self.shiny_count_spin)
             layout.addRow(tr("MainWindow", "Shiny redline BPM"), self.shiny_bpm_spin)
@@ -5988,6 +6054,7 @@ class GimmickConfigDialog(QDialog):
             red_line_offset_ms=self.offset_spin.value(),
             fake_slider_offset_ms=self.fake_offset_spin.value(),
             fake_slider_sv=self.fake_sv_spin.value(),
+            fake_slider_red_line=self.fake_red_line_check.isChecked(),
             anti_lines_per_beat=self.anti_density_spin.value(),
             anti_wall_bpm=(
                 self.anti_bpm_spin.value() if self.anti_bpm_check.isChecked() else None
@@ -6613,7 +6680,8 @@ class BarlineFunctionDialog(QDialog):
         span = times[-1] - times[0]
         return [
             start_bpm + (end_bpm - start_bpm) * sv_ease(
-                function_id, 0.0 if span <= 0 else (at - times[0]) / span
+                function_id, 0.0 if span <= 0 else (at - times[0]) / span,
+                start_bpm, end_bpm,
             )
             for at in times
         ]
@@ -6950,23 +7018,64 @@ class TimingLineDialog(QDialog):
         return changes
 
 
-def sv_ease(function_id: str, t: float) -> float:
+def _true_exp_ease(t: float, initial: float | None, final: float | None) -> float:
+    """The one curve whose shape is not fixed.
+
+    Interpolating `initial + (final - initial) * this` reduces exactly to
+    `initial * (final / initial) ** t` -- a geometric sweep, multiplying by a
+    constant factor per step, which is what reads as an even acceleration. So
+    the bend has to come from the range itself: 1.0 -> 1.1 is nearly a straight
+    line where 1.0 -> 10.0 is a hard curve.
+
+    A fixed shape cannot do that. This was `(exp(3t) - 1) / (exp(3) - 1)`,
+    which gave every range the same bend and put every intermediate point in
+    the wrong place -- 0.52x out at the midpoint of a 1 -> 10 sweep -- while
+    still hitting both endpoints exactly, which is why it looked right.
+
+    Falls back to linear on any range with no geometric reading: equal
+    endpoints (the 0/0), a zero start, or a sign change, whose fractional power
+    is complex rather than an error in Python. TaikoEditor guards the same
+    cases at `SvFunctionLayer` lines 275-287.
+    """
+    if initial is None or final is None or initial == final or initial == 0:
+        return t
+    ratio = final / initial
+    if ratio <= 0:
+        return t
+    try:
+        eased = (initial - initial * ratio ** t) / (initial - final)
+    except (OverflowError, ValueError):
+        return t
+    return eased if math.isfinite(eased) else t
+
+
+def sv_ease(
+    function_id: str, t: float,
+    initial: float | None = None, final: float | None = None,
+) -> float:
     """0..1 progress -> 0..1 eased position. Shared by the preview square and
     the actual generated points, so the preview is an honest picture of what
     Generate produces, not just a decoration.
+
+    Ported from TaikoEditor's `SvFunctionLayer` (its lines 118-128), so the
+    same-named curve in either editor writes the same numbers. That includes
+    its naming of the sine pair, which is the *inverse* of easings.net's: here
+    "Sin In" is fast at the start and slow at the end.
+
+    `initial`/`final` are the endpoints the caller goes on to interpolate
+    between. Only "true_exp" reads them; every other curve is a fixed arc.
     """
     t = max(0.0, min(1.0, t))
     if function_id == "sin_in":
-        return 1 - math.cos(t * math.pi / 2)
-    if function_id == "sin_out":
         return math.sin(t * math.pi / 2)
+    if function_id == "sin_out":
+        return 1 - math.cos(t * math.pi / 2)
     if function_id == "exp1.3":
         return t ** 1.3
     if function_id == "exp1.6":
         return t ** 1.6
     if function_id == "true_exp":
-        k = 3.0
-        return (math.exp(k * t) - 1) / (math.exp(k) - 1)
+        return _true_exp_ease(t, initial, final)
     if function_id == "sin":
         return -(math.cos(math.pi * t) - 1) / 2
     return t  # "linear" and any unrecognized id
@@ -7049,7 +7158,9 @@ class SVFunctionPreview(QWidget):
         self.update()
 
     def rate_at(self, t: float) -> float:
-        return self.initial_rate + (self.final_rate - self.initial_rate) * sv_ease(self.function_id, t)
+        return self.initial_rate + (self.final_rate - self.initial_rate) * sv_ease(
+            self.function_id, t, self.initial_rate, self.final_rate,
+        )
 
     def rates(self, count: int) -> list[float]:
         """The `count` values Generate would write, in order.
@@ -7064,7 +7175,7 @@ class SVFunctionPreview(QWidget):
                 self.initial_rate,
                 abs(self.final_rate - self.initial_rate),
                 count,
-                lambda t: sv_ease(self.function_id, t),
+                lambda t: sv_ease(self.function_id, t, self.initial_rate, self.final_rate),
                 per_pair=self.oscillate == "pair",
             )
         return [self.rate_at(index / max(1, count - 1)) for index in range(count)]
@@ -9837,6 +9948,16 @@ class MainWindow(QMainWindow):
             # Line and Function in layers 4, 5 and 6 did nothing at all.
             if hasattr(view, "set_new_combo"):
                 view.set_new_combo(tool_id == "new_combo")
+            # The Multiple tool's ghost has to draw the whole run, so the view
+            # needs the run shape as well as the tool. Pushed here rather than
+            # read back through the window, so the ghost is drawn from the same
+            # three numbers `_multi_fake_slider_commands` will place from.
+            if hasattr(view, "multi_run"):
+                view.multi_run = (
+                    (*self._multi_fake_slider_params,
+                     self._gimmick_config("fake_slider").fake_slider_offset_ms)
+                    if tool_id == "multi" else None
+                )
             if tool_id != "new_combo":
                 view.set_tool(tool_id)
 
@@ -10731,6 +10852,30 @@ class MainWindow(QMainWindow):
             if point.inherited and round(point.time) not in claimed
         }
 
+    def _sv_layer_paste_times(self, layer_id: str, document) -> set[int] | None:
+        """Milliseconds a paste in this layer lands on: one per object.
+
+        Ownership deliberately covers an object's own millisecond *and* the one
+        `sv_offset_ms` away, because a map arrives with SV already written on
+        its notes and the layer has to show that too. Pasting onto the owned
+        set therefore had two targets for every object -- with layer 4's
+        default -5ms offset, four copied lines filled two notes, one line on
+        each note and one 5ms before it, and half of them sat where the layer's
+        own Generate never writes.
+
+        A paste lands where Generate lands: the object's millisecond shifted by
+        the layer's offset. Whatever else a layer owns and did not derive from
+        an object -- the barline layer's orphan green lines -- is a line rather
+        than an object and has no offset of its own, so it stays a target as it
+        is.
+        """
+        times = self._sv_layer_times(layer_id, document)
+        offset = self._gimmick_config(layer_id).sv_offset_ms
+        if times is None or not offset:
+            return times
+        objects = self._sv_layer_object_times(layer_id, document) or set()
+        return (times - objects) | {at + offset for at in objects}
+
     def _sv_layer_owned_times(self, layer_id: str, document) -> set[int] | None:
         """A layer's objects, and those times shifted by its `sv_offset_ms`."""
         times = self._sv_layer_object_times(layer_id, document)
@@ -11084,7 +11229,11 @@ class MainWindow(QMainWindow):
         state = self._states.get(pairing.target)
         if state is None:
             return
-        time_ms = round(snap_time(pairing.base_timing, time_ms, self._gimmick_snap_divisor()))
+        # osu_snap_ms, not round: a snapped position goes *down* (see
+        # time_axis.osu_snap_ms), so rounding put a structure one millisecond
+        # above the chart's own notes on the same snap, on every beat whose
+        # fractional part happened to be at least .5.
+        time_ms = osu_snap_ms(snap_time(pairing.base_timing, time_ms, self._gimmick_snap_divisor()))
         if kind == "multi":
             commands = self._multi_fake_slider_commands(state, pairing, time_ms, big)
         else:
@@ -11115,6 +11264,12 @@ class MainWindow(QMainWindow):
         structure's `+fake_slider_offset_ms`, never at the shiny's `+1`.
         Built with `_gimmick_commands(..., kind="regular", ...)` per position
         rather than a second structure builder.
+
+        The run writes **no timing points at all**, and needs no special case
+        to manage it: a plain fake slider structure carries none either way now
+        (see `gimmick_session.fake_slider`), so N positions produce N sliders
+        and nothing else. This tool is where that showed up worst -- N dead
+        lines for one run -- but the rule is the structure's, not the tool's.
 
         One counter shared across the whole run, the same reason
         `_generate_fake_sliders` and `_convert_notes_to_gimmick` share theirs:
@@ -11238,14 +11393,23 @@ class MainWindow(QMainWindow):
         # whenever the cluster already carries an inherited point at the
         # handle's time, which is only ever the shiny case, since every other
         # structure's last point is the uninherited restore line.
-        restore_at = max(point.time for point in points)
-        already_handled = any(
-            not point.uninherited and round(point.time) == round(restore_at) for point in points
-        )
-        if not already_handled:
-            restore = sv_restore_point(state.document.timing_points, time_ms - 1, restore_at)
-            if kind != "red_line" or restore.sv_multiplier != 1.0:
-                points = [*points, restore]
+        # ...except in the fake slider layer, which now takes no SV from the
+        # chart at all -- not the builder's own green lines and not this
+        # handle. A fake slider is decoration, and handing it back the speed of
+        # whatever section it was dropped in made identical structures scroll
+        # differently. The cost is accepted and real: layer 5 matches its green
+        # lines by exact millisecond, so these structures no longer arrive with
+        # a line for it to show, drag or sweep from.
+        if layer_id != "fake_slider" and points:
+            restore_at = max(point.time for point in points)
+            already_handled = any(
+                not point.uninherited and round(point.time) == round(restore_at)
+                for point in points
+            )
+            if not already_handled:
+                restore = sv_restore_point(state.document.timing_points, time_ms - 1, restore_at)
+                if kind != "red_line" or restore.sv_multiplier != 1.0:
+                    points = [*points, restore]
 
         # Kiai is a property of the active timing point, so a gimmick line
         # written without it ends the section it lands in for everything after
@@ -12461,7 +12625,7 @@ class MainWindow(QMainWindow):
             self._paste_notes()
 
     def _copy_notes(self) -> None:
-        """Copy a chart view's selection: its notes *and* the red lines it owns.
+        """Copy a chart view's selection: its notes *and* the lines it owns.
 
         Both, because in the gimmick page they are one thing. A fake slider
         without its 60000 BPM line is an ordinary drumroll, and the barline
@@ -12487,11 +12651,16 @@ class MainWindow(QMainWindow):
             notes, lines = self._expand_move(
                 state, {note.uid for note in notes}, {point.uid for point in lines},
             )
-            # Red lines only, the same rule the delete path follows: a green
-            # line is the SV layers' description of the chart's scroll speed at
-            # a millisecond, not part of the object standing on it, and pasting
-            # copies of it elsewhere is not what copying a slider asked for.
-            lines = [point for point in lines if point.uninherited]
+        # Green lines are copied too, and sorted behind the red line sharing
+        # their millisecond. A gimmick's SV is part of the structure, not a
+        # description of it: a Don/Kat fake slider's `fake_slider_sv` is what
+        # takes the squashed note off screen, and a barline structure's handle
+        # line is written by the same generator as its bars -- copied without
+        # them, a pasted structure was a different object from the one copied.
+        # The order matters because osu! resolves a shared timestamp by file
+        # order and an uninherited point resets SV to 1.0x, so a green line
+        # ahead of its red one is silently cancelled.
+        lines = sorted(lines, key=lambda point: (point.time, 0 if point.uninherited else 1))
         base = min(
             [note.time for note in notes] + [point.time for point in lines]
         )
@@ -12534,7 +12703,12 @@ class MainWindow(QMainWindow):
         # milliseconds off every snap it was built on. `snap_points` rather
         # than the document's own timing: in a gimmick layer that is the base
         # snapshot, and the document's 60000 BPM lines have no usable grid.
-        base = round(max(0.0, snap_time(view.snap_points, view.current_time, view.snap_divisor)))
+        # `osu_snap_ms`, the same truncation the playhead itself lands on
+        # (`TimeAxisMixin.snap_ms`) -- rounding to nearest here put the paste a
+        # millisecond *ahead* of the cursor on every beat whose fractional part
+        # was at least .5, which is why a pattern pasted a few beats along kept
+        # ending up one millisecond off the grid it was copied from.
+        base = osu_snap_ms(max(0.0, snap_time(view.snap_points, view.current_time, view.snap_divisor)))
         next_index = self._next_original_index(state)
         pasted = []
         for entry in self._note_clipboard:
@@ -12545,10 +12719,17 @@ class MainWindow(QMainWindow):
                 original_index=next_index,
             ))
             next_index += 1
-        # Never a second uninherited point on a millisecond that already has
-        # one -- the same rule the barline generator follows, for the same
-        # reason: only the first is meaningful and the rest are invisible.
-        taken = {round(p.time) for p in state.document.timing_points if p.uninherited}
+        # Never a second point of the *same kind* on a millisecond that already
+        # has one -- the same rule the barline generator follows, for the same
+        # reason: of two red lines on a millisecond only the first is ever read,
+        # and a second green line there just overrides the one already in it.
+        taken = {
+            kind: {
+                round(p.time) for p in state.document.timing_points
+                if bool(p.uninherited) is kind
+            }
+            for kind in (True, False)
+        }
         lines = [
             TimingPoint(
                 time=float(base + entry["offset"]), beat_length=entry["beat_length"],
@@ -12557,7 +12738,7 @@ class MainWindow(QMainWindow):
                 uninherited_flag=entry["uninherited_flag"], effects=entry["effects"],
             )
             for entry in self._timing_clipboard
-            if not entry["uninherited_flag"] or base + entry["offset"] not in taken
+            if base + entry["offset"] not in taken[bool(entry["uninherited_flag"])]
         ]
         commands = []
         if pasted:
@@ -12630,9 +12811,17 @@ class MainWindow(QMainWindow):
         if state is None:
             return
 
+        # None from `_sv_layer_times` means "owns every millisecond", which is
+        # the *delta* case, not the empty one -- the Kiai and Sound Volume layer
+        # is a gimmick layer that owns them all. Collapsed with `or ()` it came
+        # out as owning none, so every paste there found no targets, toasted and
+        # did nothing. Only a layer with its own scattered set maps by index.
         layer_id = getattr(view, "gimmick_layer", None)
-        if layer_id is not None:
-            owned = sorted(self._sv_layer_times(layer_id, state.document) or ())
+        owned_times = (
+            self._sv_layer_paste_times(layer_id, state.document) if layer_id is not None else None
+        )
+        if owned_times is not None:
+            owned = sorted(owned_times)
             targets = [at for at in owned if at >= view.current_time - 0.001]
             if not targets:
                 self.show_toast(tr(
@@ -12664,7 +12853,7 @@ class MainWindow(QMainWindow):
             return
 
         # Same grid snap as the note paste -- see _paste_notes.
-        base = round(max(0.0, snap_time(
+        base = osu_snap_ms(max(0.0, snap_time(
             extract_timing_points(state.document), view.current_time, view.snap_divisor,
         )))
         pasted = [
@@ -13291,7 +13480,9 @@ class MainWindow(QMainWindow):
             params["initial_rate"],
             abs(params["final_rate"] - params["initial_rate"]),
             len(times),
-            lambda t: sv_ease(params["function"], t),
+            lambda t: sv_ease(
+                params["function"], t, params["initial_rate"], params["final_rate"],
+            ),
             per_pair=oscillate == "pair",
         ) if oscillate else []
         points = []
@@ -13304,14 +13495,27 @@ class MainWindow(QMainWindow):
             if wobble:
                 rate = wobble[index]
             else:
-                eased = sv_ease(params["function"], t)
+                eased = sv_ease(
+                    params["function"], t, params["initial_rate"], params["final_rate"],
+                )
                 rate = params["initial_rate"] + (params["final_rate"] - params["initial_rate"]) * eased
             if params["relative_to_final_bpm"] and start_bpm:
                 # Compensate for a BPM change across the range so the
                 # perceived scroll speed matches `rate` regardless of where
                 # the local BPM lands, not just the raw multiplier.
+                #
+                # Scroll distance is SV / beat_length, so it goes as SV * BPM
+                # -- to hold it steady as BPM rises, SV has to come *down*.
+                # This read `local / start`, which compounded the BPM change
+                # instead of cancelling it: at 180 -> 360 BPM a requested 1.5x
+                # wrote 3.0 and scrolled four times the intended speed, where
+                # TaikoEditor (`SVFunctionTool` lines 488, 510) writes 0.75.
+                # The regression test only covered a range with no BPM change
+                # in it, where the ratio is 1.0 either way and the direction
+                # cannot be seen.
                 local_bpm = active_uninherited_at(state.document.timing_points, time_ms).bpm or start_bpm
-                rate = rate * (local_bpm / start_bpm)
+                if local_bpm:
+                    rate = rate * (start_bpm / local_bpm)
             # Kiai belongs to the active point, so a generated sweep that
             # doesn't carry it forward switches kiai off for the whole range
             # it covers. Read per point, not once: a range can cross a kiai
@@ -13360,7 +13564,9 @@ class MainWindow(QMainWindow):
             params["initial_rate"],
             abs(params["final_rate"] - params["initial_rate"]),
             len(times),
-            lambda t: sv_ease(params["function"], t),
+            lambda t: sv_ease(
+                params["function"], t, params["initial_rate"], params["final_rate"],
+            ),
             per_pair=oscillate == "pair",
         ) if oscillate else []
 
@@ -13370,7 +13576,9 @@ class MainWindow(QMainWindow):
             if wobble:
                 rate = wobble[index]
             else:
-                eased = sv_ease(params["function"], t)
+                eased = sv_ease(
+                    params["function"], t, params["initial_rate"], params["final_rate"],
+                )
                 rate = params["initial_rate"] + (params["final_rate"] - params["initial_rate"]) * eased
             new_volume = max(0, min(100, round(rate)))
             if new_volume == point.volume:

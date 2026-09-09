@@ -18,13 +18,29 @@ Taiko Fancy Arranger started as a tool for turning osu!taiko notes into visual p
 
 Everything stays a playable osu! beatmap. Sections the editor does not model — storyboards, breaks, colours, editor bookmarks — are passed through byte-for-byte on save.
 
-> **Current release:** v3.2.2  
+> **Current release:** v3.3.0  
 > **Platform:** Windows x64  
 > **Author:** [jimmyreturnz](https://osu.ppy.sh/users/11306153)
 
 The original idea came from a random chat with maruaki101. Other inspirations include Alchyr's ranked maps *13 Stairs* and *Helios*, which use unusual note placement to create visual expression. You should go check it out [here!](https://osu.ppy.sh/beatmapsets/1093671#taiko/3819326)
 
 Many thanks to Mew’s beatmaps for studying reference that made the tool creation possible, and other player’s ideas!
+
+---
+
+## What is new in 3.3.0
+
+A gimmick-editor release: a second anti-barline gimmick, one way into every converter, snapping that matches osu! exactly, and fixes across copy/paste, the SV generator's curves and the fake slider layer.
+
+- **Hidden anti-barline**, in the barline layer's Convert Notes: one red line makes osu! draw the whole barline sheet, and each note's slit is opened by raising SV for a fraction of a beat — so the slit **opens with distance and closes at the hit position**, and the note's colour is only readable while it is far away.
+- **Convert Notes is the one way into every converter**, and its numbers are asked per call instead of being read from — or written back to — the layer's saved Config.
+- **Hide note** on every Don/Kat structure: off, the note stays visible inside its own structure.
+- **Multiple Fake Slider previews the whole run** under the cursor, at the size Shift will give it.
+- **Snapping matches osu!'s truncation** — a snapped position goes down to the whole millisecond, not to the nearest one. Measured over 25 installed maps.
+- **Finisher notes are drawn bigger**, at the ruleset's own 1.538x a normal note.
+- **Fixed:** copy/paste landed 1ms off on some beats; copying a gimmick lost its green line; pasting SV in a gimmick layer ignored the layer's offset; the SV generator's "true exponential" bent the same way for every range and its sine curves were the wrong way round; checked buttons clipped their own labels; the snap grid cost 15.3ms of a 16.3ms frame on an extreme chart.
+
+Full notes: [`docs/releases/v3.3.0.md`](docs/releases/v3.3.0.md).
 
 ---
 

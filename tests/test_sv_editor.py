@@ -22,7 +22,7 @@ from PySide6.QtWidgets import QApplication
 
 import gui
 from osu_io.parser import parse_osu
-from osu_io.timing import TimingPoint
+from osu_io.timing import TimingPoint, active_uninherited_at
 from tests.osu_fixtures import write_fixture
 
 _APP: QApplication | None = None
@@ -72,6 +72,78 @@ class SVEasingTests(unittest.TestCase):
 
     def test_unknown_function_falls_back_to_linear(self):
         self.assertAlmostEqual(gui.sv_ease("nonsense", 0.5), 0.5)
+
+    # -- parity with TaikoEditor -------------------------------------------
+    # Every curve is transcribed from `SvFunctionLayer` lines 118-128 and
+    # 275-287, so the same-named button in either editor writes the same
+    # numbers. Spelled out as the Java expressions rather than simplified, so
+    # a future edit is diffed against the source it was ported from.
+
+    def test_fixed_curves_match_taikoeditor(self):
+        reference = {
+            "linear": lambda x: x,
+            "exp1.3": lambda x: x ** 1.3,
+            "exp1.6": lambda x: x ** 1.6,
+            "sin": lambda x: (math.cos((x + 1) * math.pi) + 1) / 2.0,
+            "sin_in": lambda x: math.cos(x * math.pi / 2.0 + 1.5 * math.pi),
+            "sin_out": lambda x: math.cos(x * math.pi / 2.0 + math.pi) + 1,
+        }
+        for function_id, expected in reference.items():
+            for step in range(21):
+                t = step / 20
+                with self.subTest(function_id=function_id, t=t):
+                    self.assertAlmostEqual(gui.sv_ease(function_id, t), expected(t), places=12)
+
+    def test_sine_pair_follows_taikoeditor_orientation_not_easings_net(self):
+        """"Sin In" is fast at the start here, which is the inverse of the
+        easings.net convention. The two were swapped, so a mapper porting a
+        section between the editors got the mirrored curve from the
+        identically-named button -- 0.38 against 0.08 a quarter of the way in.
+        """
+        self.assertGreater(gui.sv_ease("sin_in", 0.25), 0.25)   # fast start
+        self.assertLess(gui.sv_ease("sin_out", 0.25), 0.25)     # slow start
+        self.assertAlmostEqual(gui.sv_ease("sin_in", 0.5), math.sqrt(0.5), places=12)
+
+    def test_true_exp_is_a_geometric_sweep_over_its_own_range(self):
+        """Unlike every other curve, this one's shape depends on the endpoints:
+        interpolating through it must reduce to initial * (final/initial)**t.
+        A fixed shape hits both endpoints and still lands every point between
+        them wrong, which is how the old `(exp(3t)-1)/(exp(3)-1)` survived.
+        """
+        for initial, final in ((1.0, 2.0), (1.0, 10.0), (2.0, 1.0), (1.0, 1.1), (0.5, 4.0)):
+            for step in range(21):
+                t = step / 20
+                with self.subTest(initial=initial, final=final, t=t):
+                    eased = gui.sv_ease("true_exp", t, initial, final)
+                    self.assertAlmostEqual(
+                        initial + (final - initial) * eased,
+                        initial * (final / initial) ** t,
+                        places=12,
+                    )
+
+    def test_true_exp_curvature_tracks_the_range(self):
+        """A gentle sweep is nearly straight and a violent one is not -- the
+        whole point of the curve, and exactly what a fixed shape cannot do."""
+        gentle = gui.sv_ease("true_exp", 0.5, 1.0, 1.1)
+        steep = gui.sv_ease("true_exp", 0.5, 1.0, 10.0)
+        # 1.0 -> 1.1 bends off the straight line by about 0.012; 1.0 -> 10.0
+        # by more than 0.25. The gap between those two is the property.
+        self.assertLess(abs(gentle - 0.5), 0.02)
+        self.assertLess(steep, 0.25)
+
+    def test_true_exp_falls_back_to_linear_on_a_range_with_no_ratio(self):
+        """Equal endpoints are 0/0, a zero start has no ratio, and a sign
+        change raises a fractional power of a negative -- which in Python is a
+        complex number rather than an error, so it has to be refused up front.
+        Endpoints omitted entirely is the same case: every non-`true_exp`
+        caller passes none.
+        """
+        for initial, final in ((1.0, 1.0), (0.0, 2.0), (1.0, -1.0), (-1.0, 1.0), (None, None)):
+            for t in (0.0, 0.25, 0.5, 1.0):
+                with self.subTest(initial=initial, final=final, t=t):
+                    eased = gui.sv_ease("true_exp", t, initial, final)
+                    self.assertIsInstance(eased, float)
+                    self.assertAlmostEqual(eased, t, places=12)
 
 
 class SVVisualScaleTests(unittest.TestCase):
@@ -424,6 +496,48 @@ class SVEditorIntegrationTests(unittest.TestCase):
 
         for a, r in zip(absolute_points, relative_points):
             self.assertAlmostEqual(a, r, places=2, msg="no BPM change in range -> relative must match absolute")
+
+    def test_relative_to_final_bpm_compensates_against_the_bpm_not_with_it(self):
+        """Scroll distance goes as SV * BPM, so holding the perceived speed
+        steady across a BPM rise means bringing SV *down*.
+
+        The ratio was `local / start`, which compounded the change instead:
+        a doubled BPM turned a requested 1.5x into 3.0 and scrolled four times
+        the intended speed. The test above cannot see it -- with no BPM change
+        in range the ratio is 1.0 whichever way round it is written -- so this
+        one puts a real red line inside the range. TaikoEditor applies the same
+        `firstBPM / localBPM` at `SVFunctionTool` lines 488 and 510.
+        """
+        start_bpm = active_uninherited_at(self.state.document.timing_points, 10000.0).bpm
+        self.assertTrue(start_bpm)
+        # A doubling halfway through the swept range.
+        self.state.document.timing_points.append(
+            TimingPoint.uninherited_at(10500.0, start_bpm * 2)
+        )
+
+        before_ids = {p.uid for p in self.state.document.timing_points}
+        params = {
+            "initial_rate": 1.5, "final_rate": 1.5, "placement": "snaps", "snap_divisor": 4,
+            "position_offset": 0, "omit_barline": False, "relative_to_final_bpm": True,
+            "function": "linear",
+        }
+        self.window._generate_sv(self.path, 10000.0, 11000.0, params)
+        generated = sorted(
+            ((p.time, p.sv_multiplier) for p in self.state.document.timing_points
+             if p.uid not in before_ids),
+        )
+        self.assertTrue(generated)
+
+        before = [sv for time, sv in generated if time < 10500.0]
+        after = [sv for time, sv in generated if time >= 10500.0]
+        self.assertTrue(before and after, "range must straddle the BPM change")
+        # Flat 1.5x request: at the original BPM it stays 1.5, and past the
+        # doubling it halves so that SV * BPM -- the thing actually seen -- is
+        # unchanged. The old direction doubled it to 3.0 instead.
+        for sv in before:
+            self.assertAlmostEqual(sv, 1.5, places=6)
+        for sv in after:
+            self.assertAlmostEqual(sv, 0.75, places=6)
 
     # -- write-to-disk round trip -----------------------------------------------
 

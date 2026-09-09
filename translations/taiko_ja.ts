@@ -1073,6 +1073,10 @@ Every beatmap in it is checked once for taiko difficulties, and the result is re
             <translation>ノーツ自体も配置する</translation>
         </message>
         <message>
+            <source>Write a red line for plain fake sliders</source>
+            <translation>通常のフェイクスライダーに赤線を書き込む</translation>
+        </message>
+        <message>
             <source>Barline Note Tool:</source>
             <translation>小節線ノーツツール:</translation>
         </message>

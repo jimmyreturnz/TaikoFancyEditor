@@ -333,6 +333,59 @@ class BigVariantTests(_Layer2, unittest.TestCase):
             self.layer._draw_placement_ghost(None, 60, 10.0, 20.0)
         return seen[0]
 
+    def _multi_ghosts(self) -> list:
+        """Every (x, radius) the Multiple tool's ghost would draw."""
+        seen = []
+        with patch.object(
+            gui.TimelineGameplay, "_draw_layer_ghost",
+            lambda self, painter, x, baseline_y, radius: seen.append((x, radius)),
+        ):
+            self.layer._draw_placement_ghost(None, 60, 10.0, 20.0)
+        return seen
+
+    def test_the_multiple_tool_previews_the_whole_run(self) -> None:
+        """It draws N ghosts, one per structure the click would place -- a
+        single dot under the cursor said nothing about a run of nine."""
+        self.layer.set_tool("multi")
+        self.layer.multi_run = (0, 16, 2, 2)
+        self.layer.current_time = float(self.SNAP)
+        self.layer._hover_time = float(self.SNAP)
+        with patch.object(
+            gui.QApplication, "keyboardModifiers", staticmethod(lambda: Qt.NoModifier)
+        ):
+            ghosts = self._multi_ghosts()
+        self.assertEqual(len(ghosts), 9, "0..16 step 2 is nine structures")
+        # Strictly increasing x: one per position, in run order.
+        self.assertEqual([x for x, _ in ghosts], sorted(x for x, _ in ghosts))
+
+    def test_the_multiple_tool_ghost_previews_the_big_size(self) -> None:
+        """Shift sizes every ghost in the run, the same way it sizes the single
+        Fake Slider tool's -- "multi" was missing from `_draw_placement_ghost`'s
+        tool list entirely, so it drew nothing and Shift showed nothing."""
+        self.layer.set_tool("multi")
+        self.layer.multi_run = (0, 16, 2, 2)
+        self.layer.current_time = float(self.SNAP)
+        self.layer._hover_time = float(self.SNAP)
+        with patch.object(
+            gui.QApplication, "keyboardModifiers", staticmethod(lambda: Qt.ShiftModifier)
+        ):
+            big = self._multi_ghosts()
+        with patch.object(
+            gui.QApplication, "keyboardModifiers", staticmethod(lambda: Qt.NoModifier)
+        ):
+            small = self._multi_ghosts()
+        self.assertEqual(len(big), len(small))
+        self.assertTrue(big and small)
+        for (_, big_r), (_, small_r) in zip(big, small):
+            self.assertGreater(big_r, small_r)
+
+    def test_the_multiple_tool_draws_nothing_without_a_run(self) -> None:
+        """Selecting the tool and cancelling its dialog leaves no run shape."""
+        self.layer.set_tool("multi")
+        self.layer.multi_run = None
+        self.layer._hover_time = float(self.SNAP)
+        self.assertEqual(self._multi_ghosts(), [])
+
 
 class ShinyMarkTests(unittest.TestCase):
     """A shiny is marked white in the editor, for separation.

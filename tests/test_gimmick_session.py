@@ -537,18 +537,23 @@ class VisibleNoteTests(unittest.TestCase):
         self.assertAlmostEqual(own.bpm, gs.DEFAULT_GIMMICK_BPM, places=3)
         self.assertFalse(own.omit_first_barline)
 
-    def test_a_visible_fake_slider_note_drops_the_gimmick_sv_too(self):
+    def test_a_visible_fake_slider_note_drops_the_gimmick_sv_and_the_line(self):
         """`fake_slider_sv` exists to take an already-squashed note the rest of
         the way off screen, so leaving it in would fling the visible note off
-        the screen the red line was just told to keep it on."""
+        the screen the red line was just told to keep it on.
+
+        With the squash gone the whole green line goes: it used to restate the
+        chart's own SV instead, and this layer no longer carries that at all.
+        """
         config = gs.GimmickConfig(hide_note=False)
         points, _notes = gs.fake_slider(1000, self.BASE, config, kind="don")
         red = next(p for p in points if p.time == 1000.0 and p.uninherited)
-        green = next(p for p in points if p.time == 1000.0 and p.inherited)
         self.assertAlmostEqual(red.bpm, 120.0, places=6)
         self.assertTrue(red.omit_first_barline)
-        self.assertAlmostEqual(green.sv_multiplier, 1.0, places=6)
-        self.assertNotAlmostEqual(green.sv_multiplier, config.fake_slider_sv, places=3)
+        self.assertEqual(
+            [p for p in points if p.time == 1000.0 and p.inherited], [],
+            "a visible note's structure carries no green line at all",
+        )
 
     def test_a_hidden_fake_slider_note_is_unchanged(self):
         config = gs.GimmickConfig()
@@ -713,11 +718,11 @@ class ShinyNoteTests(unittest.TestCase):
         self.assertEqual(len(notes), config.shiny_count)
         self.assertTrue(all(note.is_slider for note in notes))
         self.assertEqual({note.time for note in notes}, {10000 + config.shiny_offset_ms})
-        # The note the glow decorates stays on the snap, so both its lines --
-        # red then green -- sit there too, not on the stack's own offset.
-        self.assertEqual([point.time for point in points], [10000.0, 10000.0])
+        # The note the glow decorates stays on the snap, so its line sits there
+        # too, not on the stack's own offset. One line, not two: a shiny
+        # carries no green line since the chart's SV stopped reaching it.
+        self.assertEqual([point.time for point in points], [10000.0])
         self.assertTrue(points[0].uninherited)
-        self.assertFalse(points[1].uninherited)
         self.assertNotAlmostEqual(points[0].bpm, gs.DEFAULT_GIMMICK_BPM)
 
     def test_the_defaults_keep_the_two_structures_apart(self):
@@ -737,34 +742,43 @@ class ShinyNoteTests(unittest.TestCase):
         with self.assertRaises(gs.GimmickConfigError):
             gs.GimmickConfig(shiny_count=0)
 
-    def test_the_bpm_multiplier_retimes_the_red_line_and_pays_it_back_in_sv(self):
-        """200 BPM at 1.2x becomes 100 BPM at 2.4x -- the same speed, written
-        in numbers a gimmick has room to move in."""
+    def test_the_bpm_multiplier_retimes_the_red_line_and_is_not_paid_back(self):
+        """200 BPM at 1.2x becomes 100 BPM, and nothing hands the speed back.
+
+        The green line that used to pay the retiming back in SV (2.4x here) is
+        gone with the rest of this layer's SV: it was computed from the chart's
+        own 1.2x, which is exactly what a fake slider must not inherit. Losing
+        the compensation along with it is deliberate.
+        """
         base = [
             TimingPoint.uninherited_at(0, 200.0),
             TimingPoint.inherited_at(5, 1.2),
         ]
         config = gs.GimmickConfig(shiny_bpm_multiplier=0.5)
         points, _ = gs.fake_slider(10000, base, config, shiny=True)
-        red_line = points[0]
-        self.assertAlmostEqual(red_line.bpm, 100.0)
-        self.assertAlmostEqual(points[-1].sv_multiplier, 2.4)
-        self.assertEqual(points[-1].time, red_line.time)
-        self.assertTrue(points[-1].inherited, "the green line goes after the red one")
+        self.assertEqual(len(points), 1)
+        self.assertAlmostEqual(points[0].bpm, 100.0)
+        self.assertTrue(points[0].uninherited)
 
-    def test_the_green_line_is_always_written_even_at_multiplier_one(self):
-        """It is the handle the SV layer is made of, not only a correction for
-        a retimed line -- so a shiny at the default multiplier still gets one,
-        simply restating the SV already in force."""
+    def test_a_shiny_never_carries_the_charts_sv_at_any_multiplier(self):
+        """The green line used to be written unconditionally -- as the SV
+        layer's handle at multiplier 1.0, as the retiming correction otherwise.
+        Both readings are gone, so neither multiplier produces one, and the
+        chart's 1.2x never reaches the structure."""
         base = [
             TimingPoint.uninherited_at(0, 200.0),
             TimingPoint.inherited_at(5, 1.2),
         ]
-        points, _ = gs.fake_slider(10000, base, gs.GimmickConfig(), shiny=True)
-        self.assertEqual(len(points), 2)
-        self.assertFalse(points[1].uninherited)
-        self.assertAlmostEqual(points[1].sv_multiplier, 1.2)
-        self.assertFalse(any(point.bpm == gs.DEFAULT_GIMMICK_BPM for point in points if point.uninherited))
+        for multiplier in (1.0, 0.5, 2.0):
+            with self.subTest(multiplier=multiplier):
+                config = gs.GimmickConfig(shiny_bpm_multiplier=multiplier)
+                points, _ = gs.fake_slider(10000, base, config, shiny=True)
+                self.assertEqual([p for p in points if p.inherited], [])
+                self.assertTrue(all(point.uninherited for point in points))
+                self.assertFalse(any(
+                    point.bpm == gs.DEFAULT_GIMMICK_BPM
+                    for point in points if point.uninherited
+                ))
 
     def test_copies_overrides_the_configured_stack(self):
         _, notes = gs.fake_slider(10000, BASE, gs.GimmickConfig(), shiny=True, copies=7)
@@ -780,10 +794,12 @@ class ShinyNoteTests(unittest.TestCase):
         """The owner's real file: 185 BPM from 0, an inherited 1.15x point at
         5ms, and a shiny placed at 65393 with `shiny_bpm_multiplier=0.5`.
 
-        92.5 BPM = 185 x 0.5; SV 2.3x = 1.15 / 0.5. `assertAlmostEqual` on the
-        numbers rather than a literal line: `repr(float)` carries more digits
-        of this particular division than the owner's file happened to show,
-        and that trailing noise is not what this test is guarding.
+        92.5 BPM = 185 x 0.5. The 2.3x green line this file also carried
+        (1.15 / 0.5) is no longer written: it was the chart's own 1.15x reaching
+        into the structure, which this layer no longer does. `assertAlmostEqual`
+        on the number rather than a literal line: `repr(float)` carries more
+        digits of this particular division than the owner's file happened to
+        show, and that trailing noise is not what this test is guarding.
         """
         base = [
             TimingPoint.uninherited_at(0, 185.0),
@@ -793,13 +809,14 @@ class ShinyNoteTests(unittest.TestCase):
         points, notes = gs.fake_slider(65393, base, config, shiny=True)
 
         self.assertAlmostEqual(points[0].bpm, 92.5)
-        self.assertAlmostEqual(points[1].sv_multiplier, 2.3)
-        # Red before green, both on the note's own millisecond, the red one
-        # carrying omit_first_barline (never the green one).
-        self.assertEqual([point.time for point in points], [65393.0, 65393.0])
+        # One line, on the note's own millisecond, carrying omit_first_barline.
+        self.assertEqual([point.time for point in points], [65393.0])
         self.assertTrue(points[0].uninherited and points[0].omit_first_barline)
-        self.assertFalse(points[1].uninherited or points[1].omit_first_barline)
         self.assertFalse(any(point.bpm == gs.DEFAULT_GIMMICK_BPM for point in points if point.uninherited))
+        self.assertEqual(
+            [p.sv_multiplier for p in points if p.inherited], [],
+            "the chart's 1.15x must not reach the shiny",
+        )
 
         self.assertEqual(len(notes), 3)
         self.assertEqual({note.time for note in notes}, {65394})

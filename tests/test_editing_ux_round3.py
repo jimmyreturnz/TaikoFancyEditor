@@ -463,6 +463,34 @@ class ClipboardTests(WindowTestCase):
         self.assertIn(30000, times)
         self.assertIn(30500, times, "relative spacing must be preserved")
 
+    def test_the_paste_anchor_truncates_the_snap_like_every_other_placement(self):
+        """A snapped position goes *down* (`osu_snap_ms`), and the paste anchor
+        rounded to nearest instead -- so on a beat whose fractional part was at
+        least .5 the paste landed a millisecond ahead of the playhead it was
+        aimed at, which is what "paste it a few beats along and it moves by 1ms"
+        was. 172 BPM: an ordinary tempo whose beat is 348.837ms, so beats 1-3
+        round up and 4-6 do not."""
+        view = self._chart_view()
+        self.window._editor_view_focus_changed(None, view)
+        beat = 60000 / 172.0
+        for point in view.base_timing or view.timing_points:
+            if point.uninherited:
+                point.beat_length = beat
+        view.set_base_timing(view.base_timing or view.timing_points)
+        view.set_snap_divisor(1)
+        view.selected = {self.state.document.hit_objects[0].original_index}
+        self.window.copy_selection()
+
+        for index in range(1, 7):
+            view.current_time = view.snap_ms(index * beat)
+            before = {n.time for n in self.state.document.hit_objects}
+            self.window.paste_clipboard()
+            landed = {n.time for n in self.state.document.hit_objects} - before
+            self.assertEqual(
+                landed, {int(view.current_time)},
+                f"beat {index}: paste must land on the playhead's own millisecond",
+            )
+
     def test_pasting_notes_is_one_undo_step(self):
         view = self._chart_view()
         self.window._editor_view_focus_changed(None, view)

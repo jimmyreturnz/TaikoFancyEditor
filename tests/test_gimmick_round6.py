@@ -7,6 +7,7 @@ gets its own module that can be run on its own.
 """
 from __future__ import annotations
 
+import dataclasses
 import os
 import unittest
 from unittest.mock import patch
@@ -974,12 +975,16 @@ class ShinyNoteTests(_Session, unittest.TestCase):
         config.shiny_bpm_multiplier = 0.5
         self.window._place_gimmick("fake_slider", "shiny", 10000)
 
-        # The red+green pair sits on the snap itself, not on the stack --
-        # see the table in gimmick_session.fake_slider's docstring.
+        # The red line sits on the snap itself, not on the stack -- see the
+        # table in gimmick_session.fake_slider's docstring. It is now the whole
+        # structure: the green line that paid the retiming back in SV was
+        # computed from the chart's own speed, which a shiny no longer
+        # inherits, so the retiming is not paid back at all.
         red = next(p for p in self.document.timing_points if p.time == 10000 and p.uninherited)
-        green = next(p for p in self.document.timing_points if p.time == 10000 and p.inherited)
         self.assertAlmostEqual(red.bpm, base_bpm * 0.5)
-        self.assertAlmostEqual(green.sv_multiplier * 0.5, 1.0, places=3)
+        self.assertEqual(
+            [p for p in self.document.timing_points if p.time == 10000 and p.inherited], [],
+        )
 
 
 class HandAuthoredShinyTests(_Session, unittest.TestCase):
@@ -1422,12 +1427,15 @@ class SVLayerOwnershipTests(_Session, unittest.TestCase):
         self.assertIn(at, self.window._sv_layer_times("sv_chart", self.document))
         self.assertNotIn(at, self.window._sv_layer_times("sv_barline", self.document))
 
-    def test_a_shiny_placement_writes_exactly_one_inherited_point_at_the_snap(self):
-        """Task 3: the restore-point append must not stack a second green
-        line where the builder already wrote one."""
+    def test_a_shiny_placement_writes_no_inherited_point_at_the_snap(self):
+        """Task 3 was that the restore-point append must not stack a second
+        green line where the builder already wrote one. Neither is written now
+        -- the builder's carried the chart's SV and the append handed it back
+        -- so the count this guards has gone from one to zero rather than the
+        two it was protecting against."""
         self.window._place_gimmick("fake_slider", "shiny", 10000)
         greens = [p for p in self.document.timing_points if p.time == 10000 and p.inherited]
-        self.assertEqual(len(greens), 1)
+        self.assertEqual(len(greens), 0)
 
 
 class GimmickLayerWiringTests(_Session, unittest.TestCase):
@@ -1475,6 +1483,75 @@ class MultiFakeSliderToolTests(_Session, unittest.TestCase):
             )
         added = [n for n in self.document.hit_objects if n.uid not in before]
         self.assertEqual(len(added), len(positions))
+
+    def _place_run_with_red_lines(self, enabled: bool) -> list:
+        """One run of the Multiple tool at `fake_slider_red_line=enabled`."""
+        self.window.gimmick_configs["fake_slider"] = gui.GimmickConfig(
+            fake_slider_red_line=enabled,
+        )
+        self.window._multi_fake_slider_params = (0, 16, 2)
+        before = {p.uid for p in self.document.timing_points}
+        self.window._place_gimmick("fake_slider", "multi", 10000)
+        return [p for p in self.document.timing_points if p.uid not in before]
+
+    def test_the_run_writes_a_line_per_slider_only_when_the_dial_is_on(self):
+        """`fake_slider_red_line` is what the run's dead lines turn on and off.
+
+        A plain fake slider has no note to hide, so its red line only ever
+        applied `fake_slider_bpm_multiplier` -- and BPM persists until the next
+        uninherited point, so every line after the first re-stated a speed
+        already in force. On, that is nine lines for nine sliders; off, the run
+        is its sliders and nothing else, having given up the retiming.
+        """
+        added = self._place_run_with_red_lines(True)
+        reds = [p for p in added if p.uninherited]
+        self.assertEqual(len(reds), 9, "0..16 step 2, one line each")
+        self.assertEqual(
+            len(self._sliders_at(10000 + self.config.fake_slider_offset_ms)), 1,
+        )
+
+    def test_the_run_writes_no_timing_points_with_the_dial_off(self):
+        added = self._place_run_with_red_lines(False)
+        self.assertEqual(added, [], "the run writes sliders only")
+        # The sliders themselves are still there -- this is not a no-op tool.
+        self.assertEqual(
+            len(self._sliders_at(10000 + self.config.fake_slider_offset_ms)), 1,
+        )
+
+    def test_the_dial_reaches_a_single_plain_fake_slider_too(self):
+        """It belongs to the structure, not to the Multiple tool -- one click
+        of the plain Fake Slider tool obeys the same flag."""
+        for enabled, expected in ((True, 1), (False, 0)):
+            with self.subTest(fake_slider_red_line=enabled):
+                self.window.gimmick_configs["fake_slider"] = gui.GimmickConfig(
+                    fake_slider_red_line=enabled,
+                )
+                at = 10000 if enabled else 14000
+                before = {p.uid for p in self.document.timing_points}
+                self.window._place_gimmick("fake_slider", "regular", at)
+                added = [p for p in self.document.timing_points if p.uid not in before]
+                self.assertEqual(len([p for p in added if p.uninherited]), expected)
+                self.assertEqual(
+                    len(self._sliders_at(at + self.config.fake_slider_offset_ms)), 1,
+                    "the object is written either way",
+                )
+
+    def test_the_dial_defaults_on(self):
+        """What every structure written before the dial existed did."""
+        self.assertTrue(gui.GimmickConfig().fake_slider_red_line)
+
+    def test_a_fake_slider_don_keeps_its_red_lines(self):
+        """The named exception. Its squash line hides the note and its restore
+        brings the chart's BPM back -- drop those and there is no gimmick."""
+        before = {p.uid for p in self.document.timing_points}
+        self.window._place_gimmick("fake_slider", "don", 10000)
+        added = [p for p in self.document.timing_points if p.uid not in before]
+        reds = [p for p in added if p.uninherited]
+        self.assertEqual(len(reds), 2, "the squash and the restore")
+        self.assertEqual(
+            sorted(round(p.time) for p in reds),
+            [10000, 10000 + self.config.fake_slider_offset_ms],
+        )
 
     def test_none_of_the_structures_classify_as_shiny_even_inside_kiai(self):
         self.window._multi_fake_slider_params = (0, 16, 2)
@@ -1554,6 +1631,59 @@ class MultiFakeSliderDialogWiringTests(_Session, unittest.TestCase):
         self.assertTrue(self.window.gimmick_tool_buttons["fake_slider"]["multi"].isChecked())
 
 
+class KiaiSoundPasteTests(_Session, unittest.TestCase):
+    """The one SV layer that owns every millisecond, and so pastes by delta."""
+
+    def _view(self):
+        for frame in self.window._gimmick_views:
+            if getattr(frame, "gimmick_layer", None) == "kiai_sound":
+                return frame.sv_view
+        self.fail("no kiai_sound layer")
+
+    def test_paste_lands_instead_of_toasting_about_owned_milliseconds(self):
+        """`_sv_layer_times` returns None here to mean "owns them all", which is
+        the *delta* case and not the empty one.
+
+        Collapsed with `or ()` it came out as owning none, so `targets` was
+        always empty: every paste on this layer toasted "no milliseconds after
+        the cursor" and wrote nothing, on a layer where every millisecond is
+        available. The other three layers own a scattered set and are unchanged
+        -- see `SVPasteByIndexTests` for the index-mapped path.
+        """
+        self.assertIsNone(
+            self.window._sv_layer_times("kiai_sound", self.document),
+            "this layer owns every millisecond",
+        )
+        target = self.window._gimmick_pairing.target
+        self.document.timing_points.extend((
+            gui.TimingPoint.inherited_at(8000, 1.4),
+            gui.TimingPoint.inherited_at(8500, 1.9),
+        ))
+        self.document.timing_points.sort(key=lambda p: p.time)
+        self.window._refresh_difficulty_sv_views(target)
+
+        view = self._view()
+        self.window._active_sv_view = view
+        sources = [
+            p for p in view.timing_points
+            if p.inherited and round(p.time) in (8000, 8500)
+        ]
+        self.assertEqual(len(sources), 2)
+        view.selected_uids = {p.uid for p in sources}
+        self.window._copy_sv_points()
+        self.assertEqual(len(self.window._sv_clipboard), 2)
+
+        before = {p.uid for p in self.document.timing_points}
+        view.current_time = 20000.0
+        self.window._paste_sv_points()
+
+        added = [p for p in self.document.timing_points if p.uid not in before]
+        self.assertEqual(len(added), 2, "both clipboard entries landed")
+        # Delta-mapped: the 500ms gap between the two is preserved.
+        times = sorted(round(p.time) for p in added)
+        self.assertEqual(times[1] - times[0], 500)
+
+
 class SVPasteByIndexTests(_Session, unittest.TestCase):
     """Task 2: a gimmick SV layer's paste maps onto its own object index."""
 
@@ -1569,15 +1699,28 @@ class SVPasteByIndexTests(_Session, unittest.TestCase):
             n for n in self.document.hit_objects if not gui.MainWindow.is_fake_slider(n)
         ]
         self.window._set_kiai_range(self.target, 0, 30000)
-        # Each placement writes a restore (green) line on the slider's own
-        # millisecond -- see _gimmick_commands -- which is what layer 5's SV
-        # view is made of.
         for t in (10000, 10100, 10200, 10300):
             self.window._place_gimmick("fake_slider", "regular", t)
         self.view = self.window._gimmick_views[4].sv_view
         self.window._active_sv_view = self.view
         self.owned = sorted(self.window._sv_layer_times("sv_fake_slider", self.document))
         self.assertEqual(len(self.owned), 4)
+        # Placement no longer leaves a green line behind: the fake slider layer
+        # carries no SV from the chart, so `_gimmick_commands` skips the
+        # restore point and the builder writes none either. The layer still
+        # *owns* these four milliseconds (asserted above) -- it just arrives
+        # with nothing on them, and a line has to be put there by hand before
+        # there is anything to paste onto. That is what layer 5's own green
+        # line tool leaves, and what this class is really exercising, so the
+        # lines are placed explicitly rather than relied on as a side effect.
+        self.document.timing_points.extend(
+            gui.TimingPoint.inherited_at(at, 1.0) for at in self.owned
+        )
+        # Sorted and pushed into the views: appending behind their backs leaves
+        # each view's snapshot without the new uids, and a selection made of
+        # uids the view does not hold copies nothing at all.
+        self.document.timing_points.sort(key=lambda p: p.time)
+        self.window._refresh_difficulty_sv_views(self.target)
 
     def _point_at(self, time_ms):
         return next(
@@ -1628,6 +1771,31 @@ class SVPasteByIndexTests(_Session, unittest.TestCase):
         self.assertAlmostEqual(self._point_at(self.owned[2]).sv_multiplier, 1.1)
         self.assertAlmostEqual(self._point_at(self.owned[3]).sv_multiplier, 1.2)
 
+    def test_paste_lands_on_the_layer_offset_millisecond_not_the_objects_own(self):
+        """With a non-zero `sv_offset_ms` the layer owns two milliseconds per
+        object -- the object's own (a map arrives with SV on it) and the shifted
+        one Generate writes to -- so a paste had twice the targets it has
+        objects and filled both, half of them where the layer never generates.
+        Layer 4's default offset is -5ms, so this was the default case."""
+        self.window.gimmick_configs["sv_fake_slider"] = dataclasses.replace(
+            self.window._gimmick_config("sv_fake_slider"), sv_offset_ms=5,
+        )
+        for index, at in enumerate(self.owned):
+            self.window._edit_sv_point(self.target, self._point_at(at).uid, 1.1 + index / 10)
+        self.view.selected_uids = {
+            self._point_at(self.owned[0]).uid, self._point_at(self.owned[1]).uid,
+        }
+        self.window._copy_sv_points()
+
+        before = {p.uid for p in self.document.timing_points}
+        self.view.current_time = float(self.owned[2]) - 1
+        self.window._paste_sv_points()
+
+        landed = sorted(
+            round(p.time) for p in self.document.timing_points if p.uid not in before
+        )
+        self.assertEqual(landed, [self.owned[2] + 5, self.owned[3] + 5])
+
     def test_no_owned_milliseconds_after_the_cursor_toasts_and_does_nothing(self):
         self.view.selected_uids = {self._point_at(self.owned[0]).uid}
         self.window._copy_sv_points()
@@ -1656,7 +1824,7 @@ class SVPasteByIndexTests(_Session, unittest.TestCase):
         sv_view.current_time = 5000.0
         self.window._paste_sv_points()
 
-        expected_base = round(max(0.0, gui.snap_time(
+        expected_base = gui.osu_snap_ms(max(0.0, gui.snap_time(
             gui.extract_timing_points(self.document), 5000.0, sv_view.snap_divisor,
         )))
         pasted = self._point_at(expected_base)
