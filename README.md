@@ -14,7 +14,7 @@ Discordもjimmyreturnzです
 
 *日本語版は [README_JP.md](README_JP.md) をご覧ください。*
 
-Taiko Fancy Arranger started as a tool for turning osu!taiko notes into visual patterns — text, shapes, equations, drawings, spirals — without placing every circle by hand. Version 2.0.0 grew it into an editor: browse your osu! Songs folder, open a difficulty, edit notes, edit scroll velocity, preview the chart the way osu! renders it, and still arrange notes into patterns when you want to. Version 3.0.0 adds a dedicated gimmick editor, for the fake sliders, barline tricks and extreme-SV effects that osu!taiko mappers build out of timing points rather than notes. Version 3.2.0 rebuilds song playback so slow practice holds its place, and puts your own osu! skin into every view that draws a note.
+Taiko Fancy Arranger started as a tool for turning osu!taiko notes into visual patterns — text, shapes, equations, drawings, spirals — without placing every circle by hand. Version 2.0.0 grew it into an editor: browse your osu! Songs folder, open a difficulty, edit notes, edit scroll velocity, preview the chart the way osu! renders it, and still arrange notes into patterns when you want to. Version 3.0.0 adds a dedicated gimmick editor, for the fake sliders, barline tricks and extreme-SV effects that osu!taiko mappers build out of timing points rather than notes. 
 
 Everything stays a playable osu! beatmap. Sections the editor does not model — storyboards, breaks, colours, editor bookmarks — are passed through byte-for-byte on save.
 
@@ -22,7 +22,7 @@ Everything stays a playable osu! beatmap. Sections the editor does not model —
 > **Platform:** Windows x64  
 > **Author:** [jimmyreturnz](https://osu.ppy.sh/users/11306153)
 
-The original idea came from a random chat with maruaki101. Other inspirations include Alchyr's ranked maps *13 Stairs* and *Helios*, which use unusual note placement to create visual expression. You should go check it out [here!](https://osu.ppy.sh/beatmapsets/1093671#taiko/3819326)
+The original idea came from a random chat with maruaki101. Main inspirations include Alchyr's ranked maps *13 Stairs* and *Helios*, which use unusual note placement to create visual expression. You should go check it out [here!](https://osu.ppy.sh/beatmapsets/1093671#taiko/3819326)
 
 Many thanks to Mew’s beatmaps for studying reference that made the tool creation possible, and other player’s ideas!
 
@@ -48,7 +48,7 @@ Full development log detail lives in [`docs/DEVELOPMENT_PLAN.md`](docs/DEVELOPME
 
 ## Windows SmartScreen notice
 
-Taiko Fancy Arranger v3.2.0 is a currently unsigned Windows application. The release includes source-level security hardening, input validation, safer file handling, automated tests, and published SHA-256 checksums.
+Taiko Fancy Arranger v3.3.0 is a currently unsigned Windows application. The release includes source-level security hardening, input validation, safer file handling, automated tests, and published SHA-256 checksums.
 
 Windows Defender SmartScreen may still display an "unrecognized app" warning because the executable has not yet established download reputation.
 
@@ -70,7 +70,7 @@ The **Audio** settings page carries hitsound enable and volume, a latency offset
 
 ### Slow playback
 
-25%, 50% and 75% **keep the original pitch**. The song is time-stretched rather than slowed like a record, so a quarter-speed stream still sounds like the instruments it was played on — the same thing osu!'s own editor does, and the reason it is worth practising against.
+25%, 50% and 75% **keep the original pitch**. The song is time-stretched rather than slowed like a record, so a quarter-speed stream still sounds like the instruments it was played on — the same thing osu!'s own editor does, and the reason it is worth practising against. Will try my best to make the audio playback more accurate on different speeds, please stick to 100% for now.
 
 Changing speed does not interrupt anything. Audio already on its way to the speakers finishes at the old speed and everything after it runs at the new one, so there is no gap, no jump, and no drift introduced by the switch.
 
