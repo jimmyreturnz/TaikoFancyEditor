@@ -62,21 +62,11 @@ Language is chosen on first start and can be changed in **Settings**. Changing i
 
 ---
 
-## Audio settings
-
-Notes make sound during playback, using hitsound samples shipped in `assets/se/`: don, kat, big don and big kat each have their own sample. Only circles are voiced — fake sliders and barline gimmicks stay silent.
-
-The **Audio** settings page carries hitsound enable and volume, a latency offset in milliseconds, and music volume, which previously had no UI at all.
-
 ### Slow playback
 
-25%, 50% and 75% **keep the original pitch**. The song is time-stretched rather than slowed like a record, so a quarter-speed stream still sounds like the instruments it was played on — the same thing osu!'s own editor does, and the reason it is worth practising against. Will try my best to make the audio playback more accurate on different speeds, please stick to 100% for now.
+Currently, the audio playback on **25%, 50%, 75%**is still not that accurate and having good enough quality yet. I will try my best to make the audio playback more accurate on different speeds, please stick to 100% for now.
 
-Changing speed does not interrupt anything. Audio already on its way to the speakers finishes at the old speed and everything after it runs at the new one, so there is no gap, no jump, and no drift introduced by the switch.
-
-The playhead is positioned from the sample actually leaving the audio device, not from a progress signal, so it holds its place against the music at every speed.
-
-**Music offset (ms)** on the Audio settings page shifts the playhead to match when sound reaches your ears. It ships at zero, because the right value depends on your device and drivers rather than on anything the app can know. Raise it if the notes look early against what you hear; it is measured in real time, so one value stays correct at every speed.
+**Music offset (ms)** on the Audio settings page shifts the playhead to match when sound reaches your ears. Default value is 0ms, but you can calibrate it inside the settings.
 
 ---
 
@@ -96,6 +86,7 @@ TaikoFancyArranger-Windows-x64.zip
 TaikoFancyArranger.exe
 ```
 
+5. If update exists, upon opening the program, there will be a patch note alongside with an option to download the new version.
 Python and PySide6 are bundled with the portable Windows release. Players using the release ZIP do not need to install Python or run `pip`.
 
 > Windows may show a reputation warning for an unsigned new application. Review the repository and release files before running the program.
@@ -106,9 +97,9 @@ Python and PySide6 are bundled with the portable Windows release. Players using 
 
 1. **Choose a language.** English or 日本語. This screen is deliberately untranslated — it is the one screen that cannot know which language you read.
 2. **Choose your osu! Songs folder.** Pre-filled with `%LOCALAPPDATA%/osu!/Songs` when it exists. The folder is remembered, and can be changed later from the library page.
-3. **Wait for the scan.** The first scan reads every `.osu` file once and takes a while on a large collection. It runs in slices, so the window stays responsive. Later starts show the cached list before verifying it.
+3. **Wait for the scan.** The first scan reads every `.osu` file once and takes a while on a large collection. It runs in slices, so the window stays responsive. Later starts show the cached list before verifying it. You may use the app while it is scanning, but the experience will not be that smooth on the editor and osu. Thus, it is suggested to wait for the scan, or make a small folder that consists of only maps that you would want to edit.
 
-Cancelling the folder picker leaves the library empty with a **Change folder** button rather than a dead end, and offers the setup again next launch.
+Cancelling the folder picker leaves the library empty with a **Change folder** button.
 
 ---
 
@@ -122,7 +113,7 @@ The library page is the front door.
 
 Controls:
 
-- **Search** — matches artist, title, both Unicode variants, difficulty name, creator and tags at once.
+- **Search** — matches artist, title, both Unicode variants, difficulty name, creator and tags at once. Same behavior as osu!
 - **Group by** — nothing, mapper, or artist.
 - **Sort** — A→Z or Z→A, which reverses group order too.
 - **Original language metadata** — shows `ArtistUnicode`/`TitleUnicode` instead of the romanized fields, falling back to whichever the map actually has.
@@ -135,22 +126,16 @@ Only taiko charts (`Mode: 1`) are listed.
 
 The Editor page stacks views vertically, grouped under their difficulty. Open one with **+** (view type + difficulty). Opening a difficulty automatically gives it a chart view and an SV view.
 
+Holding **Ctrl** places at 1ms precision regardless of the snap divisor, with a guide line and a live millisecond readout in the corner of every view.
+
 View types:
 
-| View | What it is |
+| View | Explanation |
 |---|---|
-| Chart | Notes on a time axis, with a snap grid anchored to the top and bottom edges |
+| Chart | Notes on a time axis, with a snap grid |
 | SV editor | Red, green and yellow timing lines plus an effective-SV graph |
-| Gameplay viewer | Read-only osu!taiko-style preview; objects scroll at their own SV |
+| Gameplay viewer | Read-only osu!taiko gameplay preview |
 | Density | The white-to-yellow note density heatmap |
-
-The gameplay viewer's kiai flash reaches every visible note, not just whichever ones happened to be on screen when kiai started.
-
-Above the views: beat snap, the merged time and percentage readout, the timing bar (kiai, bookmarks, SV, BPM), play and speed buttons. The snap divisor is global across the page, so every view stays on the same grid. Zoom (`Ctrl+wheel`) is per difficulty and shared by that difficulty's views. Right-clicking the timing bar while drag-selecting scrubs the playhead without ending the selection.
-
-Per-view chrome: **close**, **lock** (read-only), and the difficulty name at the right.
-
-An action the editor refuses — pasting into the wrong kind of view, for instance — shows a transient toast instead of silently doing nothing.
 
 ### Note editing
 
@@ -167,8 +152,8 @@ The tool row sits at the bottom of the page and acts on the focused chart view.
 
 - Left click places at the snapped time; a translucent ghost previews where it lands.
 - Sliders and spinners are **click-dragged** to their length. Press near the right edge of an existing one to resize it, or drag its tail with the **Select** tool afterwards.
-- Holding **Shift** resizes the note preview immediately; releasing it places a big (finisher) note or slider.
-- Right click deletes the note under the cursor; **Delete** removes the whole selection.
+- Holding **Shift** will changes the note to finisher size.
+- Right click deletes the note under the cursor
 - One object per millisecond, spinners excepted — placing over a note replaces it, as a single undo step.
 
 ### SV editing
@@ -183,9 +168,9 @@ With an SV view focused, the tool row becomes:
 
 - Red lines are uninherited (BPM) points, green are inherited (SV), yellow means both share a millisecond.
 - Click a green line to select it; drag vertically to change its SV, horizontally to retime it, snapped to the grid. Which axis you get depends on how close the click was to the value dot.
-- Rubber-band select a range, `Ctrl+A` for everything visible, `Delete` to remove. Uninherited points are never deleted here.
-- Double-clicking a timing line toggles kiai or the line's omit-barline flag.
-- The graph shows **effective** SV — green over red where both exist — with a fixed 0.1x floor and an autoscaling ceiling.
+- Deleting green lines will not remove Red lines
+- Double-clicking any timing line allows you to toggle kiai or the line's omit-barline flag.
+- The graph shows **effective** SV — green over red where both exist — with a fixed 0.1x floor and an autoscaling ceiling. - to be changed to 0.01x
 
 **Function mode:** drag a range, then choose initial rate, final rate, position offset, whether to omit the first barline, and whether the sweep is relative to the final BPM. Seven curves are offered as tiles, each drawing the sweep you actually typed:
 
@@ -194,12 +179,6 @@ linear   sin in   sin out   exp1.3   exp1.6   true exp   sin
 ```
 
 Points are generated on the notes in range by default, or every N snaps. The default −5 ms offset makes sure the SV is already in force when the note it governs arrives. However many points it makes, it is one undo step.
-
-### Millisecond precision
-
-osu! stores whole milliseconds while the beat grid is fractional, so at deep zoom an object could sit visibly off its own gridline. The grid, the playhead and every placement now agree on one whole millisecond, rounded the way osu! rounds (halves up, where Python rounds halves to even).
-
-Holding **Ctrl** places at 1ms precision regardless of the snap divisor, with a guide line and a live millisecond readout in the corner of every view.
 
 ### Editor shortcuts
 
@@ -220,7 +199,7 @@ Alt+wheel           Change beat snap
 
 All of these are rebindable in **Settings**, except `Delete` and `Ctrl+A`, which belong to the focused view.
 
-Leaving the editor with unsaved work lists which difficulties are unsaved by name and offers **Save**, **Continue without saving**, or **Cancel**. Continuing without saving keeps the edits in the session — nothing is written and nothing is thrown away.
+Leaving the editor with unsaved work lists which difficulties are unsaved by name and offers **Save**, **Continue without saving**, or **Cancel**. Continuing without saving keeps the edits in the session and nothing will be saved.
 
 ---
 
