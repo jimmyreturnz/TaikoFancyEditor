@@ -42,64 +42,7 @@ A gimmick-editor release: a second anti-barline gimmick, one way into every conv
 
 Full notes: [`docs/releases/v3.3.0.md`](docs/releases/v3.3.0.md).
 
----
-
-## What is new in 3.2.2
-
-Bug-fix release: editor navigation, note dragging, the SV generator, background saving, and library scanning.
-
-- **Editor page no longer goes blank** after leaving it and clicking straight back into the Editor tab without picking a song again.
-- **Don/kat can be dragged** to a new position in the regular editor once selected.
-- **SV generator keeps 4 decimal places** on rate/BPM fields instead of rounding a matched value to 2.
-- **SV generator updates an existing green line in place** instead of leaving it and adding a second, offset one beside it.
-- **Fancy Arranger backgrounds now actually save** with Ctrl+S.
-- **Song library gets a Quick Scan button** for a fast incremental scan; Rescan is relabeled to describe the full rebuild it actually does.
-
-Full notes: [`docs/releases/v3.2.2.md`](docs/releases/v3.2.2.md).
-
----
-
-## What is new in 3.2.1
-
-Internal cleanup only — no user-visible changes. `MainWindow` was split into
-smaller classes, a duplicate dead method was removed, and a suspected
-playback stutter under heavy maps was investigated and found to already be
-within budget once views finish their one-time startup cost.
-
-Full notes: [`docs/releases/v3.2.1.md`](docs/releases/v3.2.1.md).
-
----
-
-## What is new in 3.2.0
-
-This release rebuilds song playback and puts your osu! skin into every view that draws a note.
-
-- **Audio playback rebuilt.** The app decodes the track and drives the sound card itself. Changing speed no longer moves the playhead (the old backend lost 114 ms of song time on a 0.25x to 1.0x switch), slowing down keeps the pitch, and the playhead follows the sample actually leaving the device.
-- **Music offset calibration.** Tap along to a click track in **Settings → Audio** and it writes the app's own output offset. It never touches a beatmap's offset.
-- **Skins.** Pick any taiko skin from your osu! Skins folder for note art, drumroll pieces and hitsounds — in the gameplay preview and the editor timeline layers alike, falling back per element to the built-in drawing.
-- **The gameplay preview is the playfield.** The skin's bar, scrolling background, barlines and hit target, at osu!'s own proportions. Notes disappear when they land, drumrolls travel through, and kiai pulses on the beat.
-- **Note opacity.** Set how solid notes are drawn in the editor layers, trading the snap grid's readability against the notes'.
-- **Volume that means something.** The Kiai and Sound Volume layer's number now drives how loud don and kat actually play, its lines only move vertically, and Don and Kat mirror independently in the barline layer.
-- **Fixes worth naming.** No more ear-splitting hitsound burst when scrolling fast, no backwards drift when seeking on a high-BPM section, Settings keeps its own scrolling, and the gimmick page's scrollbar scrolls.
-
-Full notes: [`docs/releases/v3.2.0.md`](docs/releases/v3.2.0.md).
-
----
-
-## What is new in 3.0.0
-
-This release adds a fourth editor page for gimmicks — visual effects built out of timing points rather than notes — plus hitsounds and a run of precision fixes across the whole editor.
-
-- **Gimmick editor page.** Six stacked layers over one difficulty: the normal chart, fake sliders, barline gimmicks, and an SV layer for each of the three. Entering it asks once whether to edit the difficulty in place or copy it to a new `[Gimmick]` difficulty, and takes a base timing snapshot so the grid stays put while thousands of 60000 BPM gimmick lines pile into the file.
-- **Fake sliders and shiny notes.** Dedicated tools for fake sliders, shiny notes, runs of fake sliders at a fixed spacing, converting the chart's own notes into gimmick structures, and painting kiai over a dragged range.
-- **Barline gimmicks.** Notes drawn out of red lines, mirrored around the note or trailing it, with a Function tool that fills a range with red lines on a millisecond count or the beat grid, including a BPM ramp.
-- **Per-structure SV.** Chart, fake slider and barline layers each get their own SV layer that owns only its own structures' green lines, with index-based copy/paste and an oscillating curve added to the generator.
-- **Hitsounds.** Notes sound during playback, using samples shipped in `assets/se/` — don, kat, big don and big kat. A new Audio settings page carries hitsound enable/volume, a latency offset, and music volume.
-- **Millisecond-exact editing.** The grid, playhead and every placement now agree on one whole millisecond, rounded the way osu! rounds. Holding **Ctrl** places at 1ms precision regardless of snap, with a live millisecond readout.
-- **Kiai everywhere.** Kiai sections draw as a translucent orange band in every gimmick layer, generated timing points carry the section's kiai state instead of silently ending it, and the gameplay viewer's kiai flash reaches every visible note.
-- **Smaller editing improvements.** Slider and spinner tails drag with the Select tool, right-click on the timing bar scrubs the playhead without ending a drag-selection, refused actions show a toast instead of doing nothing, and every spin box has pink +/- buttons.
-
-Full detail lives in [`docs/DEVELOPMENT_PLAN.md`](docs/DEVELOPMENT_PLAN.md).
+Full development log detail lives in [`docs/DEVELOPMENT_PLAN.md`](docs/DEVELOPMENT_PLAN.md).
 
 ---
 
