@@ -581,6 +581,100 @@ class LibraryPageTests(unittest.TestCase):
         self._fake_message_box({"role": QMessageBox.RejectRole})
         self.assertFalse(self.window._confirm_leaving_editor())
 
+    def test_escape_at_the_library_asks_before_exiting(self):
+        """The front door: Esc with nothing open still asks first, since a
+        stray keypress there would otherwise close the window outright."""
+        self.run_scan()
+        self._fake_message_box({"role": QMessageBox.RejectRole})
+        closed = []
+        self.window.close = lambda: closed.append(1)
+
+        self.window.keyPressEvent(QKeyEvent(QKeyEvent.KeyPress, Qt.Key_Escape, Qt.NoModifier))
+
+        self.assertEqual(closed, [])
+
+    def test_escape_at_the_library_exits_when_confirmed_and_nothing_is_dirty(self):
+        self.run_scan()
+        self._fake_message_box({"role": QMessageBox.AcceptRole})
+        closed = []
+        self.window.close = lambda: closed.append(1)
+
+        self.window.keyPressEvent(QKeyEvent(QKeyEvent.KeyPress, Qt.Key_Escape, Qt.NoModifier))
+
+        self.assertEqual(closed, [1])
+
+    def test_escape_at_the_library_still_checks_unsaved_work_when_confirmed(self):
+        """Confirming "Exit" does not skip the separate unsaved-changes gate:
+        answering that one "Cancel" must still keep the window open.
+
+        There is no ordinary route to the library page with a dirty,
+        unacknowledged state already sitting on it -- both `_switch_page` and
+        `_back_to_library` run this same unsaved-work check on the way there,
+        so by the time you have arrived it is already resolved. `_show_page`
+        alone (bypassing that) is what puts the window in the state this
+        test needs to reach `_confirm_exit_application`'s own belt-and-
+        suspenders call to it in isolation.
+        """
+        import gui
+
+        self._open_and_dirty()
+        self.window._show_page(gui.PAGE_LIBRARY)
+        self._fake_message_box_sequence([QMessageBox.AcceptRole, QMessageBox.RejectRole])
+        closed = []
+        self.window.close = lambda: closed.append(1)
+
+        self.window.keyPressEvent(QKeyEvent(QKeyEvent.KeyPress, Qt.Key_Escape, Qt.NoModifier))
+
+        self.assertEqual(closed, [])
+        self.assertTrue(self.window.state.history.dirty)
+
+    def test_escape_at_the_library_exits_after_discarding_unsaved_work(self):
+        import gui
+
+        self._open_and_dirty()
+        self.window._show_page(gui.PAGE_LIBRARY)
+        self._fake_message_box_sequence(
+            [QMessageBox.AcceptRole, QMessageBox.DestructiveRole]
+        )
+        closed = []
+        self.window.close = lambda: closed.append(1)
+
+        self.window.keyPressEvent(QKeyEvent(QKeyEvent.KeyPress, Qt.Key_Escape, Qt.NoModifier))
+
+        self.assertEqual(closed, [1])
+
+    def _fake_message_box_sequence(self, roles: list) -> None:
+        """Like `_fake_message_box`, but a different answer for each
+        QMessageBox constructed in turn -- for a flow that shows more than
+        one, such as Esc's exit confirmation followed by the unsaved-work
+        prompt.
+        """
+        import gui
+
+        pending = list(roles)
+
+        class FakeBox(QMessageBox):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self._roles = []
+
+            def addButton(self, text, role):
+                button = super().addButton(text, role)
+                self._roles.append((button, role))
+                return button
+
+            def exec(self):
+                wanted = pending.pop(0)
+                self._clicked = next(b for b, role in self._roles if role == wanted)
+                return 0
+
+            def clickedButton(self):
+                return self._clicked
+
+        original = gui.QMessageBox
+        gui.QMessageBox = FakeBox
+        self.addCleanup(lambda: setattr(gui, "QMessageBox", original))
+
     def _fake_message_box(self, answers: dict) -> None:
         """Answer the unsaved-changes prompt by role instead of by clicking.
 

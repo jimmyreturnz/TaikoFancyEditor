@@ -234,13 +234,32 @@ class GimmickConfig:
     # and the Multiple tool writes one per slider, a run of dead lines. Off
     # gives the bare drawn object and gives up the retiming with it.
     #
-    # Plain fake sliders only. Don and Kat are unaffected (their line is the
-    # squash that hides the note, which is the whole gimmick) and so is a
-    # shiny, whose line is the only thing identifying it -- see `fake_slider`.
+    # Plain fake sliders only. Don and Kat are unaffected -- their line is the
+    # squash that hides the note, which is the whole gimmick. A shiny has its
+    # own dial, `shiny_red_line` below, since dropping its line loses the
+    # retiming and (for a shiny standing on no note of its own) the one thing
+    # that told it apart from a plain fake slider -- a shiny beside a real
+    # chart note keeps neither cost, since the note itself is what
+    # `MainWindow._compute_shiny_times` finds first.
     #
     # Defaults on, which is what every structure written before this dial
     # existed did.
     fake_slider_red_line: bool = True
+    # Whether a shiny writes the red line at its own note's millisecond. At
+    # the default multiplier that line only restates the chart's own BPM, so
+    # a run of shinies is a run of dead lines the same way a plain fake
+    # slider's is -- see `fake_slider_red_line` just above, the same trade.
+    #
+    # Off is only free of cost when the shiny decorates a note that is
+    # already in the chart: `_compute_shiny_times` checks for a note at the
+    # shiny offset before it ever looks for a line there, so the note alone
+    # still identifies it. A shiny placed on empty space has no note either,
+    # and this was its only anchor -- turning the line off there leaves
+    # nothing to tell it apart from a plain fake slider at the same offset.
+    #
+    # Defaults on, matching `fake_slider_red_line` and every shiny written
+    # before this dial existed.
+    shiny_red_line: bool = True
     place_notes: bool = True
     # Whether a barline note's bars go on both sides of it or only after it.
     # See `barline_note`: mirrored reads as one object centred on the note,
@@ -612,10 +631,11 @@ def fake_slider(
       squashing it is not an option: that would delete the very note the glow
       decorates. Its red line sits on the snap itself, retimed by
       `shiny_bpm_multiplier`, and that is the whole structure: no green line.
-      `shiny_count` sliders, the stack that reads as white, sit
-      `shiny_offset_ms` later, beside the note rather than on it. With a
-      Don/Kat `kind` a real, hittable note is written on the snap as well,
-      undisturbed by any of this.
+      Written only when `shiny_red_line` is on -- see that field for what
+      dropping it costs. `shiny_count` sliders, the stack that reads as
+      white, sit `shiny_offset_ms` later, beside the note rather than on it.
+      With a Don/Kat `kind` a real, hittable note is written on the snap as
+      well, undisturbed by any of this.
     * **Don / Kat, not shiny** -- the one case that deliberately hides its
       note. A gimmick-BPM line squashes the snap to nothing; an SV line on top
       of it (`fake_slider_sv`) -- the uninherited point has just reset SV to
@@ -667,14 +687,17 @@ def fake_slider(
         # there is nothing to squash. The stack that makes the glow read as
         # white is a separate, later object; see `shiny_offset_ms`.
         slider_at = time_ms + config.shiny_offset_ms
-        red_bpm = base_bpm_at(base_timing, time_ms) * config.shiny_bpm_multiplier
         # No green line. This used to restate the chart's SV divided by the
         # multiplier -- both a correction for the retiming and the handle the
         # SV layer was made of -- but the chart's speed has no business
         # reaching a shiny: the same structure scrolled differently depending
         # on which section it was dropped in, which is not what "shiny" is.
         # The retiming compensation goes with it, deliberately.
-        points = [TimingPoint.uninherited_at(time_ms, red_bpm, omit_first_barline=omit)]
+        if config.shiny_red_line:
+            red_bpm = base_bpm_at(base_timing, time_ms) * config.shiny_bpm_multiplier
+            points = [TimingPoint.uninherited_at(time_ms, red_bpm, omit_first_barline=omit)]
+        else:
+            points = []
     elif kind == "regular":
         # No note, no squash: the drawn object alone, one offset after the
         # snap, at the chart's own BPM -- and whether it gets a line at all is
@@ -687,10 +710,10 @@ def fake_slider(
         # Off is therefore the cheaper structure and on is the one that can be
         # retimed, which is why it is a dial rather than a decision made here.
         #
-        # Only this branch is gated. Don and Kat need theirs -- the squash *is*
-        # the gimmick -- and a shiny's is what identifies it: it writes no note
-        # of its own, so `MainWindow._compute_shiny_times` has nothing but that
-        # line to tell a standalone shiny from a plain fake slider.
+        # Don and Kat are never gated -- the squash *is* the gimmick. A shiny
+        # has its own `shiny_red_line` dial rather than this one, because a
+        # standalone shiny (no note of its own) loses its only identifying
+        # mark when that line goes; see `shiny_red_line`.
         slider_at = time_ms + config.fake_slider_offset_ms
         if config.fake_slider_red_line:
             bpm = base_bpm_at(base_timing, slider_at) * config.fake_slider_bpm_multiplier

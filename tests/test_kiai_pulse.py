@@ -279,15 +279,15 @@ class ShinyGlowTests(unittest.TestCase):
         self.assertFalse(hasattr(gui, "SHINY_GLOW_COLOR"))
         self.assertFalse(hasattr(gui, "draw_shiny_glow"))
 
-    def test_a_note_over_a_pile_is_untouched_outside_kiai(self):
-        plain = self._colour(0, note=True)
+    def test_a_pile_covers_the_note_it_is_stacked_on(self):
+        """A fake slider is a hit object like any other and draws over the
+        note, so outside a chorus a shiny reads as flat drumroll yellow
+        however deep -- the note under it is not part of the picture."""
         for stack in (3, 8):
             with self.subTest(stack=stack):
                 shown = self._colour(stack, note=True)
                 self.assertEqual(
-                    (shown.red(), shown.green(), shown.blue()),
-                    (plain.red(), plain.green(), plain.blue()),
-                )
+                    (shown.red(), shown.green(), shown.blue()), gui.DRUMROLL_COLOR)
 
     def test_in_kiai_a_deeper_pile_pulses_harder(self):
         """Every object on the pile takes its own stamp, so the pile compounds

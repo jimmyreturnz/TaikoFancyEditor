@@ -587,9 +587,10 @@ class DrumrollPartsTests(unittest.TestCase):
 
 
 class DrawOrderTests(unittest.TestCase):
-    """Bottom to top: anything with a body, then fake sliders, then the
-    hittable notes. The note is the thing being played, so it stays readable
-    and the decoration stacked around it sits behind."""
+    """Bottom to top: anything with a body, then the hittable notes, then
+    fake sliders. A fake slider is a hit object like any other and nothing
+    puts it behind one, so it covers the note it is stacked on and the
+    barlines both."""
 
     def _order(self, notes, at):
         view = gui.GameplayViewerView()
@@ -627,12 +628,14 @@ class DrawOrderTests(unittest.TestCase):
             gui.GameplayViewerView._draw_note = original
         return painted
 
-    def test_a_note_is_painted_after_the_fake_slider_stacked_on_it(self):
+    def test_a_fake_slider_is_painted_over_the_note_it_decorates(self):
+        """Under the note, a shiny note's stack was hidden by the very note it
+        decorates and the shine only showed where it stuck out past it."""
         circle = HitObject(x=256, y=192, time=1500, type=1, hit_sound=0)
         fake = HitObject(x=256, y=192, time=1500, type=2, hit_sound=0,
                          extras=("L|624:192", "1", "-400.0"))
         order = self._order([circle, fake], at=1000.0)
-        self.assertLess(order.index(fake.uid), order.index(circle.uid))
+        self.assertLess(order.index(circle.uid), order.index(fake.uid))
 
     def test_a_real_drumroll_is_painted_before_both(self):
         circle = HitObject(x=256, y=192, time=1500, type=1, hit_sound=0)
@@ -641,8 +644,8 @@ class DrawOrderTests(unittest.TestCase):
         roll = HitObject(x=256, y=192, time=1500, type=2, hit_sound=0,
                          extras=("L|624:192", "1", "400.0"))
         order = self._order([circle, fake, roll], at=1000.0)
-        self.assertLess(order.index(roll.uid), order.index(fake.uid))
-        self.assertLess(order.index(fake.uid), order.index(circle.uid))
+        self.assertLess(order.index(roll.uid), order.index(circle.uid))
+        self.assertLess(order.index(circle.uid), order.index(fake.uid))
 
     def test_a_spinner_goes_down_with_the_bodies(self):
         circle = HitObject(x=256, y=192, time=1500, type=1, hit_sound=0)

@@ -1802,8 +1802,18 @@ class GimmickFunctionTests(_GimmickFixture, unittest.TestCase):
         dialog = gui.BarlineFunctionDialog(1000, 1010, self.window)
         self.assertEqual(dialog.times(), list(range(1000, 1011)), "n=1, m=0 by default")
         dialog.spacing_spin.setValue(4)
-        dialog.offset_spin.setValue(2)
+        dialog.start_offset_spin.setValue(2)
         self.assertEqual(dialog.times(), [1002, 1006, 1010])
+        dialog.deleteLater()
+
+    def test_snap_offset_shifts_each_line_without_moving_the_anchor(self):
+        """Unlike the starting offset, this one must not change which grid
+        lines "every n (ms)" would have picked -- here there is only one
+        rhythm (spacing 1), so every millisecond in range is already picked;
+        the snap offset just slides the whole picked set sideways."""
+        dialog = gui.BarlineFunctionDialog(1000, 1010, self.window)
+        dialog.snap_offset_spin.setValue(3)
+        self.assertEqual(dialog.times(), list(range(1000, 1011)), "ms mode ignores it")
         dialog.deleteLater()
 
     # -- deleting red lines ------------------------------------------------
@@ -2545,11 +2555,43 @@ class BarlineSnapGenerationTests(_GimmickFixture, unittest.TestCase):
         dialog.deleteLater()
         self.assertEqual(times[:3], [0, 250, 500])
 
-    def test_the_offset_still_applies(self):
-        dialog = self._dialog(0, 1000, offset_spin=5)
+    def test_the_snap_offset_still_applies(self):
+        dialog = self._dialog(0, 1000, snap_offset_spin=5)
         times = dialog.times()
         dialog.deleteLater()
         self.assertEqual(times[0], 5)
+
+    def test_the_starting_offset_phase_shifts_which_snaps_are_picked(self):
+        """A snap offset alone would slide every picked line by 5ms, not
+        change which ones "every 2nd snap" picks. The starting offset moves
+        the anchor `_snap_times` counts from instead, so it can pick the
+        *other* half of the grid -- the 125/375/625... beats rather than
+        0/250/500 -- something no per-line shift can do since it always
+        keeps the same beat-grid lines and merely offsets their timestamps."""
+        dialog = self._dialog(0, 1000, snap_count_spin=2, start_offset_spin=125)
+        times = dialog.times()
+        dialog.deleteLater()
+        self.assertEqual(times[:3], [125, 375, 625])
+
+    def test_grid_lines_commit_by_truncation_not_nearest(self):
+        """Reported as the snap offset landing 1ms off unpredictably: a red
+        line 2ms before a grid line sometimes came out 3ms before instead.
+
+        The grid itself was the bug, not the offset -- round()'s banker's
+        rounding does not match `time_axis.osu_snap_ms`'s truncation, which is
+        what every other beat-committing site in the app uses. A 333ms beat at
+        1/4 steps 83.25ms at a time, so the exact fractional part cycles
+        .0/.25/.5/.75 across the grid: round() and floor() agree at .0 and
+        .25, but round() rounds .75 up and .5 either way depending on parity
+        -- both wrong by the project's own "always down" convention, and
+        inconsistently so across one continuous grid.
+        """
+        base = [gui.TimingPoint.uninherited_at(0, 60000.0 / 333.0)]
+        dialog = gui.BarlineFunctionDialog(0, 700, self.window, base_timing=base, snap_divisor=4)
+        dialog.mode_combo.setCurrentIndex(dialog.mode_combo.findData("snaps"))
+        times = dialog.times()
+        dialog.deleteLater()
+        self.assertEqual(times, [0, 83, 166, 249, 333, 416, 499, 582, 666])
 
     def test_without_a_growth_function_the_lines_keep_the_base_bpm(self):
         dialog = self._dialog(0, 1000)

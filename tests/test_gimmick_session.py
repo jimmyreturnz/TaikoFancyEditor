@@ -790,6 +790,25 @@ class ShinyNoteTests(unittest.TestCase):
         self.assertEqual(notes[0].note_kind, "don")
         self.assertEqual(len(notes), 1 + config.shiny_count)
 
+    def test_shiny_red_line_defaults_on(self):
+        """What every shiny written before this dial existed did."""
+        self.assertTrue(gs.GimmickConfig().shiny_red_line)
+
+    def test_shiny_red_line_off_writes_no_timing_point(self):
+        """Same trade as `fake_slider_red_line`: the stack is still drawn, its
+        line is not."""
+        config = gs.GimmickConfig(shiny_red_line=False)
+        points, notes = gs.fake_slider(10000, BASE, config, shiny=True)
+        self.assertEqual(points, [])
+        self.assertEqual(len(notes), config.shiny_count)
+
+    def test_shiny_red_line_off_still_honours_the_bpm_multiplier_field(self):
+        """The multiplier has nowhere to write to with the dial off -- it is
+        simply unused, not an error."""
+        config = gs.GimmickConfig(shiny_red_line=False, shiny_bpm_multiplier=0.5)
+        points, _ = gs.fake_slider(10000, BASE, config, shiny=True)
+        self.assertEqual(points, [])
+
     def test_owner_file_case_185_bpm_with_inherited_1_15x_at_5ms(self):
         """The owner's real file: 185 BPM from 0, an inherited 1.15x point at
         5ms, and a shiny placed at 65393 with `shiny_bpm_multiplier=0.5`.

@@ -986,6 +986,27 @@ class ShinyNoteTests(_Session, unittest.TestCase):
             [p for p in self.document.timing_points if p.time == 10000 and p.inherited], [],
         )
 
+    def test_shiny_red_line_off_writes_the_stack_and_no_line(self):
+        config = self.window._gimmick_config("fake_slider")
+        config.shiny_red_line = False
+        self.window._place_gimmick("fake_slider", "shiny", 10000)
+        self.assertEqual(
+            len(self._sliders_at(10000 + config.shiny_offset_ms)), config.shiny_count
+        )
+        self.assertEqual(self._red(10000), [])
+
+    def test_shiny_red_line_off_loses_detection_with_no_note_to_fall_back_on(self):
+        """The documented cost: a shiny placed on empty space has only its
+        line to tell it apart from a plain fake slider (see `shiny_red_line`
+        in `GimmickConfig`), so turning the line off there makes it read as a
+        plain fake slider instead. A shiny decorating a note already in the
+        chart keeps its identity regardless -- `_compute_shiny_times` checks
+        for the note first."""
+        config = self.window._gimmick_config("fake_slider")
+        config.shiny_red_line = False
+        self.window._place_gimmick("fake_slider", "shiny", 10000)
+        self.assertNotIn(10000 + config.shiny_offset_ms, self.window._shiny_times(self.document))
+
 
 class HandAuthoredShinyTests(_Session, unittest.TestCase):
     """The owner's own file, which is what the classifier has to survive.
@@ -1389,15 +1410,37 @@ class SVLayerOwnershipTests(_Session, unittest.TestCase):
         """The exception: a shiny's own millisecond stays invisible to layer 5
         normally (its speed is layer 4's business), but once something --
         hand-written or generated -- puts a green line exactly there, it has
-        to be editable rather than lost."""
+        to be editable rather than lost.
+
+        Shown via `_sv_layer_times` (what the view displays), not
+        `_sv_layer_object_times` (what Generate sweeps and a paste maps its
+        clipboard onto by index) -- see `test_the_millisecond_is_not_a_generate_or_paste_object`
+        for why the two must disagree here."""
         config = self.window._gimmick_config("fake_slider")
         self.window._place_gimmick("fake_slider", "shiny", 10000)
         at = 10000 + config.shiny_offset_ms
         self.document.timing_points.append(gui.TimingPoint.inherited_at(at, 1.2))
         self.document.timing_points.sort(key=lambda p: p.time)
 
-        times = self.window._sv_layer_object_times("sv_fake_slider", self.document)
+        times = self.window._sv_layer_times("sv_fake_slider", self.document)
         self.assertIn(at, times)
+
+    def test_the_millisecond_is_not_a_generate_or_paste_object(self):
+        """A shiny sitting between plain fake sliders, once it carries its own
+        green line, used to insert an extra slot into layer 5's object set --
+        `_sv_layer_object_times` folded `_shiny_green_line_times` in directly.
+        That extra slot ate a clipboard entry on an index-mapped paste and
+        shifted every fake slider after the shiny by one, and it also gave
+        Generate an uninvited target the layer's own docstring says it never
+        reaches without `include_shiny`."""
+        config = self.window._gimmick_config("fake_slider")
+        self.window._place_gimmick("fake_slider", "shiny", 10000)
+        at = 10000 + config.shiny_offset_ms
+        self.document.timing_points.append(gui.TimingPoint.inherited_at(at, 1.2))
+        self.document.timing_points.sort(key=lambda p: p.time)
+
+        objects = self.window._sv_layer_object_times("sv_fake_slider", self.document)
+        self.assertNotIn(at, objects)
 
     def test_an_orphan_green_line_lands_in_the_barline_layer(self):
         """A green line on nothing at all -- no note, no fake slider, no red
@@ -1806,6 +1849,39 @@ class SVPasteByIndexTests(_Session, unittest.TestCase):
 
         self.assertEqual(self.document.timing_points, points_before)
         self.assertTrue(self.window._toast.isVisible())
+
+    def test_a_shiny_with_its_own_green_line_is_not_a_paste_slot(self):
+        """The bug report: copying SV off a run of plain fake sliders into a
+        destination range that has a shiny sitting between two of them, where
+        that shiny already carries a green line, used to eat a clipboard slot
+        on the shiny and shift every value after it by one -- the fourth
+        fake slider's copied value landed on the shiny instead, and the
+        fourth fake slider itself got nothing."""
+        for index, t in enumerate(self.owned):
+            self.window._edit_sv_point(self.target, self._point_at(t).uid, 1.1 + index / 10)
+        self.view.selected_uids = {self._point_at(t).uid for t in self.owned}
+        self.window._copy_sv_points()
+        self.assertEqual(len(self.window._sv_clipboard), 4)
+
+        # A shiny between the third and fourth owned milliseconds, carrying
+        # its own green line -- the exact scenario that used to insert an
+        # extra slot into the index-mapped walk.
+        self.window._place_gimmick("fake_slider", "shiny", self.owned[2] + 20)
+        config = self.window._gimmick_config("fake_slider")
+        shiny_at = self.owned[2] + 20 + config.shiny_offset_ms
+        self.document.timing_points.append(gui.TimingPoint.inherited_at(shiny_at, 1.0))
+        self.document.timing_points.sort(key=lambda p: p.time)
+        self.window._refresh_difficulty_sv_views(self.target)
+
+        before = {p.uid for p in self.document.timing_points}
+        self.view.current_time = float(self.owned[0]) - 1
+        self.window._paste_sv_points()
+
+        added = [p for p in self.document.timing_points if p.uid not in before]
+        landed = sorted(round(p.time) for p in added)
+        self.assertEqual(landed, list(self.owned), "landed on the four fake sliders, not the shiny")
+        for index, at in enumerate(self.owned):
+            self.assertAlmostEqual(self._point_at(at).sv_multiplier, 1.1 + index / 10)
 
     def test_the_editor_pages_own_sv_view_keeps_the_millisecond_delta_path(self):
         """No `gimmick_layer` attribute at all -- it owns every millisecond,

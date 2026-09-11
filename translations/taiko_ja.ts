@@ -937,6 +937,14 @@ Every beatmap in it is checked once for taiko difficulties, and the result is re
             <translation>保存されていない変更</translation>
         </message>
         <message>
+            <source>Exit</source>
+            <translation>終了</translation>
+        </message>
+        <message>
+            <source>Exit Taiko Fancy Arranger?</source>
+            <translation>Taiko Fancy Arrangerを終了しますか?</translation>
+        </message>
+        <message>
             <source>Wheel: 1 snap</source>
             <translation>ホイール: 1スナップ</translation>
         </message>
@@ -1057,8 +1065,12 @@ Every beatmap in it is checked once for taiko difficulties, and the result is re
             <translation>赤線を生成</translation>
         </message>
         <message>
-            <source>Offset m (ms)</source>
-            <translation>オフセット m (ms)</translation>
+            <source>Starting offset (ms)</source>
+            <translation>開始オフセット (ms)</translation>
+        </message>
+        <message>
+            <source>Snap offset (ms)</source>
+            <translation>スナップオフセット (ms)</translation>
         </message>
         <message>
             <source>Range: {0} to {1}</source>
@@ -1075,6 +1087,10 @@ Every beatmap in it is checked once for taiko difficulties, and the result is re
         <message>
             <source>Write a red line for plain fake sliders</source>
             <translation>通常のフェイクスライダーに赤線を書き込む</translation>
+        </message>
+        <message>
+            <source>Write a red line for shiny notes</source>
+            <translation>シャイニーノーツに赤線を書き込む</translation>
         </message>
         <message>
             <source>Barline Note Tool:</source>
@@ -1383,6 +1399,18 @@ Every beatmap in it is checked once for taiko difficulties, and the result is re
         <message>
             <source>Only red lines at this BPM</source>
             <translation>このBPMの赤線のみ</translation>
+        </message>
+        <message>
+            <source>Only fake sliders with this length</source>
+            <translation>この長さの偽スライダーのみ</translation>
+        </message>
+        <message>
+            <source>Length from</source>
+            <translation>長さ（下限）</translation>
+        </message>
+        <message>
+            <source>Length to</source>
+            <translation>長さ（上限）</translation>
         </message>
         <message>
             <source>Linear</source>

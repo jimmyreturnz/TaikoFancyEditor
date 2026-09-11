@@ -2814,6 +2814,14 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
         rounding error -- and only the centre is the object. Right click and
         drag both ask for it here, so grabbing a barline note means the same
         thing wherever inside it the cursor was.
+
+        `<=`, not `<`, on the tie itself: two points can legitimately share one
+        exact millisecond (a converter's green line stacked on the chart's own,
+        deliberately never deduped -- see `_convert_to_anti_barline`), and
+        `self.timing_points` is stable-sorted from insertion order, so the last
+        of an exact tie is the one osu! actually honours. `<` kept whichever
+        was inserted first -- the superseded one -- so a click there grabbed
+        and showed a dead point while the effective one sat untouched under it.
         """
         best = None
         best_distance = None
@@ -2821,7 +2829,7 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
             if round(point.time) not in self.gimmick_times or not self._owns_timing_point(point):
                 continue
             distance = abs(self.x_for_time(point.time) - x)
-            if distance <= radius_px and (best_distance is None or distance < best_distance):
+            if distance <= radius_px and (best_distance is None or distance <= best_distance):
                 best = point
                 best_distance = distance
         return best
@@ -2833,6 +2841,9 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
         them (`timing_line_times`, the fake slider layer) would otherwise hand
         back a line that is not on screen at all -- the chart's own timing, or
         a barline gimmick's -- and open a dialog for something invisible.
+
+        `<=` on the tie: see `_gimmick_centre_near_x` on why the last of an
+        exact-millisecond tie, not the first, is the point actually in force.
         """
         best = None
         best_distance = None
@@ -2842,7 +2853,7 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
             if not self._owns_timing_point(point):
                 continue
             distance = abs(self.x_for_time(point.time) - x)
-            if distance <= radius_px and (best_distance is None or distance < best_distance):
+            if distance <= radius_px and (best_distance is None or distance <= best_distance):
                 best = point
                 best_distance = distance
         return best
@@ -3296,6 +3307,17 @@ SV_LABEL_MIN_SPACING_PX = 46.0
 # a smear -- the spin boxes are where a value is actually tuned.
 SV_DECIMALS = 8
 
+# The smallest step a vertical drag commits to. Typing still reaches SV_DECIMALS
+# -- this is only what a mouse-move quantizes *to* before it is even sent
+# onward. At full float precision a drag emits a new value on essentially
+# every pixel, so _edit_sv_point's full refresh (history push, hitsound
+# schedule rebuild, every open view) ran once per pixel too -- measured at
+# ~17ms a call on a 3000-point gimmick chart (tools/measure_sv_drag.py),
+# against a mouse that can deliver a move every few ms. Rounding to this step
+# and skipping a call whose value did not actually change (see
+# SVEditorView.mouseMoveEvent) is what lets most of those moves cost nothing.
+SV_DRAG_STEP = 0.01
+
 # A click on a green line within this many pixels of its actual value dot
 # adjusts the SV (vertical); farther away on the same line -- the vertical
 # guide line is drawn full-height, so a click anywhere along it lands "on" the
@@ -3420,6 +3442,7 @@ class SVEditorView(TimeAxisMixin, QWidget):
         self.last_rendered_time = -1.0
         self._drag_point: TimingPoint | None = None
         self._drag_axis: str = "time"  # "time" or "value", set by _begin_point_drag
+        self._last_drag_value: float | None = None
         # Paint caches, rebuilt per edit rather than per frame -- see
         # _rebuild_caches for why that distinction is load-bearing.
         # Milliseconds this view shows SV for, or None to show every point.
@@ -3652,11 +3675,29 @@ class SVEditorView(TimeAxisMixin, QWidget):
         return bottom - ratio * (bottom - top)
 
     def _y_to_sv(self, y: float, top: float, bottom: float) -> float:
+        """The SV under `y`, which is **not** bounded by the drawn axis.
+
+        SV_VISUAL_MIN/MAX are a *drawing* bound -- the floor is fixed so one
+        0.05x stop does not squash a whole map into the top of the graph. The
+        values a green line may hold are SV_SCALE_FLOOR..SV_SCALE_CEILING.
+        Clamping to the graph made the bottom pixel 0.1x, so everything down
+        to 0.01x was unreachable by dragging, and mirrored it at the top: the
+        ceiling autoscales to the map's own maximum, so no drag could ever
+        make a point faster than the fastest one already there. Drag past
+        either edge and the log scale carries on to the real limit.
+
+        Volume is the exception: 0-100% is the whole range, not a window on
+        one, so there is nothing outside it to reach.
+        """
         low, high = self.scale_min, self.scale_max
-        ratio = max(0.0, min(1.0, (bottom - y) / max(1.0, bottom - top)))
+        ratio = (bottom - y) / max(1.0, bottom - top)
         if self.volume_mode:
-            return low + ratio * (high - low)
-        return math.exp(math.log(low) + ratio * (math.log(high) - math.log(low)))
+            return low + max(0.0, min(1.0, ratio)) * (high - low)
+        # Clamped in log space: a cursor thrown far off the widget would
+        # otherwise overflow math.exp before anything got to bound it.
+        return math.exp(min(math.log(SV_SCALE_CEILING), max(
+            math.log(SV_SCALE_FLOOR),
+            math.log(low) + ratio * (math.log(high) - math.log(low)))))
 
     def update_scale(self) -> tuple[float, float]:
         """The current axis. Both bounds are decided per *document*, not per frame.
@@ -3699,24 +3740,35 @@ class SVEditorView(TimeAxisMixin, QWidget):
     def _nearest_inherited(self, x: float, radius_px: float = 20.0) -> TimingPoint | None:
         # Hit-testing follows what is drawn, or a filtered layer would grab and
         # edit a point it never showed.
+        #
+        # `<=` on the tie, not `<`: two green lines can share one exact
+        # millisecond -- a converter's own SV stacked on the chart's, kept
+        # rather than deduped so the layer has no gaps -- and `_visible_points`
+        # is stable-sorted from insertion order, so the last of an exact tie is
+        # the one osu! actually reads. Picking the first instead grabbed and
+        # showed the superseded line while the effective one sat under it.
         best = None
         best_distance = None
         for point in self._visible_points:
             if point.uninherited:
                 continue
             distance = abs(self.x_for_time(point.time) - x)
-            if distance <= radius_px and (best_distance is None or distance < best_distance):
+            if distance <= radius_px and (best_distance is None or distance <= best_distance):
                 best = point
                 best_distance = distance
         return best
 
     def _nearest_point(self, x: float, radius_px: float = 20.0) -> TimingPoint | None:
-        """Nearest point of either kind, for select-mode drag-to-retime."""
+        """Nearest point of either kind, for select-mode drag-to-retime.
+
+        `<=` on the tie: see `_nearest_inherited` on why the last of an
+        exact-millisecond tie is the point actually in force.
+        """
         best = None
         best_distance = None
         for point in self._visible_points:
             distance = abs(self.x_for_time(point.time) - x)
-            if distance <= radius_px and (best_distance is None or distance < best_distance):
+            if distance <= radius_px and (best_distance is None or distance <= best_distance):
                 best = point
                 best_distance = distance
         return best
@@ -3789,6 +3841,10 @@ class SVEditorView(TimeAxisMixin, QWidget):
     def _begin_point_drag(self, point: TimingPoint, axis: str) -> None:
         self._drag_point = point
         self._drag_axis = axis
+        # See mouseMoveEvent: what the last emitted value-drag step was, so a
+        # fresh drag does not inherit the previous one's and skip its own
+        # first, genuinely-new step.
+        self._last_drag_value = None
         self.selected_uids = {point.uid}
         self.grabMouse()
         self.update()
@@ -3923,11 +3979,22 @@ class SVEditorView(TimeAxisMixin, QWidget):
                 value = self._y_to_sv(event.position().y(), self._graph_top(), self._graph_bottom())
                 if self.volume_mode:
                     # _y_to_sv is linear 0-100 here (see update_scale), so the
-                    # number already is a volume percentage.
-                    self.point_volume_edit_requested.emit(
-                        self._drag_point.uid, int(round(value)))
+                    # number already is a volume percentage -- already coarse
+                    # enough (100 steps) that the SV_DRAG_STEP problem below
+                    # barely reaches it, but the same skip is free to apply.
+                    value = round(value)
                 else:
-                    self.point_sv_edit_requested.emit(self._drag_point.uid, value)
+                    value = round(value / SV_DRAG_STEP) * SV_DRAG_STEP
+                # A mouse delivers far more move events than this many steps
+                # actually exist across a typical drag range -- most of them
+                # would otherwise ask for the exact value already in force.
+                # See SV_DRAG_STEP for what skipping that costs elsewhere.
+                if value != self._last_drag_value:
+                    self._last_drag_value = value
+                    if self.volume_mode:
+                        self.point_volume_edit_requested.emit(self._drag_point.uid, int(value))
+                    else:
+                        self.point_sv_edit_requested.emit(self._drag_point.uid, value)
             else:
                 # Same rule as placement: in a layer keyed to its own objects,
                 # a line dragged between them would vanish from the layer that
@@ -4753,17 +4820,18 @@ class GameplayViewerView(QWidget):
         first = bisect_left(self.note_times, start_time - self._max_extend_ms)
         after_last = bisect_right(self.note_times, end_time)
 
-        # Three layers, bottom to top: real drumrolls and spinners, then fake
-        # sliders, then the hittable notes.
+        # Three layers, bottom to top: real drumrolls and spinners, then the
+        # hittable notes, then fake sliders.
         #
         # * **anything with a body goes under everything**, barlines included.
         #   One is a band tens of seconds wide, so drawn in with the notes it
         #   covered every barline and every object stacked on top of it.
-        # * **fake sliders sit above those but below the notes.** A fake slider
-        #   is what a mapper stacks around a note -- a shiny note is several of
-        #   them on one millisecond -- and the note is the thing being played,
-        #   so the note stays readable and the decoration sits behind it.
-        # * hittable notes on top.
+        # * **fake sliders go on top of the notes and the barlines**, which is
+        #   what the game does -- a fake slider is a hit object like any other
+        #   and nothing puts it behind one. Drawn under the notes, a shiny
+        #   note's stack was hidden by the very note it is decorating, so the
+        #   shine only showed where it stuck out past the circle.
+        # * hittable notes between the two.
         painter.setRenderHint(QPainter.Antialiasing, True)
         bodies, fakes, plain = [], [], []
         for note in self.notes[first:after_last]:
@@ -4807,9 +4875,9 @@ class GameplayViewerView(QWidget):
         # Back to front within each layer: the note nearest the hit position is
         # the one being played, so it belongs on top -- osu!taiko draws them the
         # same way. Bodies are already down, under the barlines.
-        for note in reversed(fakes):
-            self._draw_note(painter, note, center_y, normal_radius, big_radius)
         for note in reversed(plain):
+            self._draw_note(painter, note, center_y, normal_radius, big_radius)
+        for note in reversed(fakes):
             self._draw_note(painter, note, center_y, normal_radius, big_radius)
 
         # Second pass, so stacked objects compound: a note drawn on top of an
@@ -5881,6 +5949,15 @@ class GimmickConfigDialog(QDialog):
         self.shiny_bpm_spin.setDecimals(3)
         self.shiny_bpm_spin.setValue(config.shiny_bpm_multiplier)
 
+        # Same trade as fake_red_line_check, for a shiny's own line. Free to
+        # turn off when the shiny decorates a note already in the chart --
+        # the note alone still identifies it. A shiny with no note of its own
+        # loses the only thing that told it apart from a plain fake slider.
+        self.shiny_red_line_check = QCheckBox(
+            tr("MainWindow", "Write a red line for shiny notes")
+        )
+        self.shiny_red_line_check.setChecked(config.shiny_red_line)
+
         self.fake_slider_bpm_spin = QDoubleSpinBox()
         self.fake_slider_bpm_spin.setRange(0.001, 1000.0)
         self.fake_slider_bpm_spin.setDecimals(3)
@@ -5973,6 +6050,7 @@ class GimmickConfigDialog(QDialog):
             layout.addRow(tr("MainWindow", "Shiny offset (ms)"), self.shiny_offset_spin)
             layout.addRow(tr("MainWindow", "Shiny note count"), self.shiny_count_spin)
             layout.addRow(tr("MainWindow", "Shiny redline BPM"), self.shiny_bpm_spin)
+            layout.addRow("", self.shiny_red_line_check)
 
         self.caution = QLabel()
         self.caution.setWordWrap(True)
@@ -6072,6 +6150,7 @@ class GimmickConfigDialog(QDialog):
             shiny_offset_ms=self.shiny_offset_spin.value(),
             shiny_count=self.shiny_count_spin.value(),
             shiny_bpm_multiplier=self.shiny_bpm_spin.value(),
+            shiny_red_line=self.shiny_red_line_check.isChecked(),
             fake_slider_bpm_multiplier=self.fake_slider_bpm_spin.value(),
         )
 
@@ -6514,10 +6593,25 @@ class BarlineFunctionDialog(QDialog):
         self.snap_combo.setCurrentIndex(found if found >= 0 else self.snap_combo.findData(4))
         layout.addRow(tr("MainWindow", "Snap"), self.snap_combo)
 
-        self.offset_spin = QSpinBox()
-        self.offset_spin.setRange(-10000, 10000)
-        self.offset_spin.setValue(0)
-        layout.addRow(tr("MainWindow", "Offset m (ms)"), self.offset_spin)
+        # Shifts where the walk itself begins -- the first "every n (ms)" line,
+        # or (in snap mode) the anchor `_snap_times` snaps to before it starts
+        # counting divisions. That anchor is what "every n snaps" counts from,
+        # so this is a phase shift of *which* grid lines get chosen, not a
+        # shift of where the chosen ones land.
+        self.start_offset_spin = QSpinBox()
+        self.start_offset_spin.setRange(-10000, 10000)
+        self.start_offset_spin.setValue(0)
+        layout.addRow(tr("MainWindow", "Starting offset (ms)"), self.start_offset_spin)
+
+        # Shifts every already-selected line by a fixed amount, after the walk
+        # (or the note filter) has picked which milliseconds those are. A
+        # snap-mode run wants this far more often than a starting offset: it
+        # is what puts a red line consistently early or late of the beat
+        # itself rather than of wherever the range happened to start.
+        self.snap_offset_spin = QSpinBox()
+        self.snap_offset_spin.setRange(-10000, 10000)
+        self.snap_offset_spin.setValue(0)
+        layout.addRow(tr("MainWindow", "Snap offset (ms)"), self.snap_offset_spin)
 
         # A run of red lines at the chart's own BPM is scenery standing still.
         # Ramping it across the range is what makes the bars accelerate, and the
@@ -6581,7 +6675,10 @@ class BarlineFunctionDialog(QDialog):
         self.count_label.setStyleSheet("color:#ffb347;border:0;")
         layout.addRow(self.count_label)
         self._form_layout = layout
-        for widget in (self.spacing_spin, self.snap_count_spin, self.offset_spin):
+        for widget in (
+            self.spacing_spin, self.snap_count_spin,
+            self.start_offset_spin, self.snap_offset_spin,
+        ):
             widget.valueChanged.connect(self._update_count)
         self.snap_combo.currentIndexChanged.connect(self._update_count)
         self.mode_combo.currentIndexChanged.connect(self._update_mode)
@@ -6607,6 +6704,13 @@ class BarlineFunctionDialog(QDialog):
         set_row_visible(self._form_layout, self.spacing_spin, mode == "ms")
         set_row_visible(self._form_layout, self.snap_count_spin, snaps)
         set_row_visible(self._form_layout, self.snap_combo, snaps)
+        # Starting offset shifts an anchor "notes" mode does not have -- the
+        # chart's own notes are picked by their fixed positions in range, not
+        # walked from one. Snap offset shifts each already-picked line, which
+        # a flat "every n (ms)" run has no separate use for: sliding every
+        # line by the same amount there is just a different starting offset.
+        set_row_visible(self._form_layout, self.start_offset_spin, mode != "notes")
+        set_row_visible(self._form_layout, self.snap_offset_spin, mode != "ms")
         ramping = str(self.bpm_curve_combo.currentData()) != "none"
         set_row_visible(self._form_layout, self.start_bpm_spin, ramping)
         set_row_visible(self._form_layout, self.end_bpm_spin, ramping)
@@ -6639,22 +6743,36 @@ class BarlineFunctionDialog(QDialog):
         Bounded by the dragged range rather than by a typed cap: how many lines
         a gimmick wants is the mapper's call, and the selection is where they
         already said how far it goes.
+
+        Two offsets, not one, because they answer different questions.
+        Starting offset moves the anchor the walk counts *from* -- in snap
+        mode that is a phase shift, changing which grid lines "every n snaps"
+        picks, not just where the picked ones land. Snap offset moves each
+        already-picked line by a fixed amount afterward, which is what puts a
+        run consistently early or late of the beat rather than of wherever
+        the range started.
         """
-        offset = self.offset_spin.value()
+        start_offset = self.start_offset_spin.value()
+        snap_offset = self.snap_offset_spin.value()
         last = round(self.end_ms)
         mode = str(self.mode_combo.currentData())
         if mode == "notes":
             # The chart's own notes inside the range. Offered only where a
             # subclass adds the option (FakeSliderFunctionDialog): a run of red
             # lines has no reason to land on notes, and refuses to by default.
+            # Fixed positions, not a walk -- there is no anchor for a starting
+            # offset to shift, so only the snap offset reaches this mode.
             return sorted(
-                at + offset for at in self.note_times
+                at + snap_offset for at in self.note_times
                 if round(self.start_ms) <= at <= last
             )
         if mode == "snaps":
-            times = [at + offset for at in self._snap_times() if at + offset <= last]
+            times = [
+                at + snap_offset for at in self._snap_times(start_offset)
+                if at + snap_offset <= last
+            ]
         else:
-            first = round(self.start_ms) + offset
+            first = osu_snap_ms(self.start_ms) + start_offset
             times = list(range(first, last + 1, self.spacing_spin.value())) if first <= last else []
         if self.allow_on_notes_check.isChecked() or not self.note_times:
             return times
@@ -6686,20 +6804,26 @@ class BarlineFunctionDialog(QDialog):
             for at in times
         ]
 
-    def _snap_times(self) -> list[int]:
+    def _snap_times(self, start_offset: int = 0) -> list[int]:
         """The beat grid across the range, every `n` divisions.
 
         Stepped one division at a time and then taken every `n`th rather than
         multiplied out, because beat length can change mid-range: a BPM section
         starting inside the selection has to re-anchor the walk, which a single
         multiplication cannot express.
+
+        `start_offset` moves the anchor the walk snaps to before counting
+        divisions -- a phase shift of which grid lines "every n" lands on,
+        not a shift of the range itself. `end_ms` stays put regardless: the
+        dragged range's own end is still the hard bound.
         """
         if not self.base_timing:
             return []
         divisor = int(self.snap_combo.currentData())
         every = self.snap_count_spin.value()
-        cursor = snap_time(self.base_timing, self.start_ms, divisor)
-        if cursor < self.start_ms - 0.001:
+        anchor = self.start_ms + start_offset
+        cursor = snap_time(self.base_timing, anchor, divisor)
+        if cursor < anchor - 0.001:
             cursor += active_uninherited_at(self.base_timing, cursor).beat_length / divisor
         times: list[int] = []
         index = 0
@@ -6707,7 +6831,15 @@ class BarlineFunctionDialog(QDialog):
         # generator caps its own walk at the same order of magnitude.
         while cursor <= self.end_ms + 0.001 and len(times) < 20001:
             if index % every == 0:
-                times.append(round(cursor))
+                # osu_snap_ms, not round: a beat position commits to a whole
+                # millisecond by truncating, same as every other snapped
+                # gridline in the app (time_axis.osu_snap_ms). round()'s
+                # banker's rounding sent adjacent grid lines up or down
+                # depending on which side of a half-millisecond they happened
+                # to fall on -- invisible on an exact-dividing beat length,
+                # but on a real one it made a fixed snap offset land 1ms off
+                # depending on which snap it was relative to.
+                times.append(osu_snap_ms(cursor))
             step = active_uninherited_at(self.base_timing, cursor + 0.001).beat_length / divisor
             if step <= 0:
                 break
@@ -6790,7 +6922,7 @@ class FakeSliderFunctionDialog(BarlineFunctionDialog):
         self.multiplier_hint.setWordWrap(True)
         self.multiplier_hint.setStyleSheet("color:#aeb8c5;border:0;")
 
-        row, _role = self._form_layout.getWidgetPosition(self.offset_spin)
+        row, _role = self._form_layout.getWidgetPosition(self.snap_offset_spin)
         insert_at = row + 1 if row >= 0 else self._form_layout.rowCount()
         for index, (label, widget) in enumerate((
             (tr("MainWindow", "Object"), self.object_combo),
@@ -7455,6 +7587,29 @@ class SVFunctionDialog(QDialog):
             layout.addRow(tr("MainWindow", "BPM to"), self.bpm_filter_max_spin)
             self.bpm_filter_check.toggled.connect(self._update_bpm_filter_row)
 
+        # Layer 5's counterpart to the BPM filter above: two fake sliders can
+        # sit on the same millisecond and read identically in the editor while
+        # differing only in `length` (-0.001 vs -0.0011), which is how a
+        # mapper encodes "these get one SV, those get another" without a
+        # second structure to tell them apart by position. Off by default,
+        # same reasoning as the BPM filter -- most sweeps want every fake
+        # slider in range, not one length family of them.
+        self.length_filter_check = QCheckBox()
+        self.length_filter_check.setChecked(False)
+        self.length_filter_spin = QDoubleSpinBox()
+        self.length_filter_spin.setRange(-100000.0, FAKE_SLIDER_MAX_LENGTH)
+        self.length_filter_spin.setDecimals(4)
+        self.length_filter_spin.setValue(-0.001)
+        self.length_filter_max_spin = QDoubleSpinBox()
+        self.length_filter_max_spin.setRange(-100000.0, FAKE_SLIDER_MAX_LENGTH)
+        self.length_filter_max_spin.setDecimals(4)
+        self.length_filter_max_spin.setValue(-0.001)
+        if gimmick_layer == "sv_fake_slider":
+            layout.addRow(tr("MainWindow", "Only fake sliders with this length"), self.length_filter_check)
+            layout.addRow(tr("MainWindow", "Length from"), self.length_filter_spin)
+            layout.addRow(tr("MainWindow", "Length to"), self.length_filter_max_spin)
+            self.length_filter_check.toggled.connect(self._update_length_filter_row)
+
         layout.addItem(QSpacerItem(0, 0, QSizePolicy.Minimum, QSizePolicy.Expanding))
 
         # Right column: function choice and what it produces.
@@ -7515,6 +7670,7 @@ class SVFunctionDialog(QDialog):
         # widget its form row is keyed on once it has been wrapped, and
         # set_row_visible only knows that from the property the wrap sets.
         self._update_bpm_filter_row()
+        self._update_length_filter_row()
 
     def selected_function(self) -> str:
         for function_id, button in self.function_buttons.items():
@@ -7577,12 +7733,23 @@ class SVFunctionDialog(QDialog):
         set_row_visible(self._form_layout, self.bpm_filter_spin, visible)
         set_row_visible(self._form_layout, self.bpm_filter_max_spin, visible)
 
+    def _update_length_filter_row(self) -> None:
+        """The length range only means anything while the filter is on --
+        same reasoning as `_update_bpm_filter_row`."""
+        if self.gimmick_layer != "sv_fake_slider":
+            return
+        visible = self.length_filter_check.isChecked()
+        set_row_visible(self._form_layout, self.length_filter_spin, visible)
+        set_row_visible(self._form_layout, self.length_filter_max_spin, visible)
+
     def _accept(self) -> None:
         # Clamped up rather than refused, same reasoning as
         # MultiFakeSliderDialog._accept: "to" below "from" is "I only meant
         # the one BPM at from", not a mistake worth bouncing back to the user.
         if self.bpm_filter_max_spin.value() < self.bpm_filter_spin.value():
             self.bpm_filter_max_spin.setValue(self.bpm_filter_spin.value())
+        if self.length_filter_max_spin.value() < self.length_filter_spin.value():
+            self.length_filter_max_spin.setValue(self.length_filter_spin.value())
         self.accept()
 
     def parameters(self) -> dict:
@@ -7607,6 +7774,10 @@ class SVFunctionDialog(QDialog):
             "only_red_line_bpm": (
                 (self.bpm_filter_spin.value(), self.bpm_filter_max_spin.value())
                 if self.bpm_filter_check.isChecked() else None
+            ),
+            "only_fake_slider_length": (
+                (self.length_filter_spin.value(), self.length_filter_max_spin.value())
+                if self.length_filter_check.isChecked() else None
             ),
         }
 
@@ -9390,19 +9561,20 @@ class MainWindow(QMainWindow):
             self.toggle_playback()
 
     def keyPressEvent(self, event) -> None:
-        """Esc anywhere outside the song list goes back to the song list.
+        """Esc goes back a step -- to the song list from anywhere else, and
+        out of the app from the song list itself, since that is as far back
+        as "back" goes.
 
         It only arrives here when the focused view did not want it: both
         editor views consume Esc to clear their own selection first, and pass
         it up untouched when they have nothing selected.
         """
         back = QKeySequence(self.shortcuts.sequence("back_to_songs"))
-        if (
-            self.page_stack.currentIndex() != PAGE_LIBRARY
-            and not back.isEmpty()
-            and QKeySequence(event.keyCombination()) == back
-        ):
-            self._back_to_library()
+        if not back.isEmpty() and QKeySequence(event.keyCombination()) == back:
+            if self.page_stack.currentIndex() != PAGE_LIBRARY:
+                self._back_to_library()
+            else:
+                self._confirm_exit_application()
             event.accept()
             return
         super().keyPressEvent(event)
@@ -9410,6 +9582,33 @@ class MainWindow(QMainWindow):
     def _back_to_library(self) -> None:
         if self._leave_editor():
             self._show_page(PAGE_LIBRARY)
+
+    def _confirm_exit_application(self) -> None:
+        """The song list is the front door, so "back" from here means "out".
+
+        A plain yes/no gate, separate from `_confirm_leaving_editor`'s save
+        prompt below: that one only fires when a difficulty actually has
+        unwritten edits, so a stray Esc with nothing at stake would close the
+        window with no way to undo it. This one asks unconditionally, and the
+        unsaved-work check still runs afterward -- confirming twice on a dirty
+        session is one click more than leaving it unguarded is worth.
+
+        Built the same way as `_confirm_leaving_editor`'s box, by role rather
+        than the static `QMessageBox.question` convenience -- so the same
+        `_fake_message_box` test double answers both.
+        """
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Question)
+        box.setWindowTitle(tr("MainWindow", "Exit"))
+        box.setText(tr("MainWindow", "Exit Taiko Fancy Arranger?"))
+        yes_button = box.addButton(tr("MainWindow", "Yes"), QMessageBox.AcceptRole)
+        box.addButton(tr("MainWindow", "No"), QMessageBox.RejectRole)
+        box.setDefaultButton(yes_button)
+        box.exec()
+        if box.clickedButton() is not yes_button:
+            return
+        if self._confirm_leaving_editor():
+            self.close()
 
     def _leave_editor(self) -> bool:
         """Confirm, then tear the open views down. False means "stay"."""
@@ -10736,7 +10935,12 @@ class MainWindow(QMainWindow):
         state = self._states.get(difficulty_path)
         if state is None or pairing is None:
             return
-        start_ms = snap_time(pairing.base_timing, start_ms, self._gimmick_snap_divisor())
+        # osu_snap_ms, not the bare fractional snap_time: everything committed
+        # to a beat position goes through it (time_axis.osu_snap_ms), and
+        # leaving this fractional was what let a downstream `round()` -- on
+        # this start, or on a grid line derived from it -- round some but not
+        # all positions up by a millisecond depending on parity.
+        start_ms = osu_snap_ms(snap_time(pairing.base_timing, start_ms, self._gimmick_snap_divisor()))
         dialog = BarlineFunctionDialog(
             start_ms, end_ms, self,
             base_timing=pairing.base_timing, snap_divisor=self._gimmick_snap_divisor(),
@@ -10868,8 +11072,18 @@ class MainWindow(QMainWindow):
         an object -- the barline layer's orphan green lines -- is a line rather
         than an object and has no offset of its own, so it stays a target as it
         is.
+
+        A shiny's own green line (`_shiny_green_line_times`) is the one thing
+        shown in `sv_fake_slider` that must NOT stay a target: it sits between
+        two of the layer's real fake sliders, and an index-mapped paste that
+        landed on it ate a clipboard slot there and shifted every fake slider
+        after the shiny by one -- four SV values copied off four fake sliders
+        landed on the first three plus the shiny, not the four fake sliders in
+        the destination range.
         """
         times = self._sv_layer_times(layer_id, document)
+        if times is not None and layer_id == "sv_fake_slider":
+            times = times - self._shiny_green_line_times(document)
         offset = self._gimmick_config(layer_id).sv_offset_ms
         if times is None or not offset:
             return times
@@ -10882,7 +11096,53 @@ class MainWindow(QMainWindow):
         if times is None:
             return None
         offset = self._gimmick_config(layer_id).sv_offset_ms
-        return times | {at + offset for at in times} if offset else times
+        owned = times | {at + offset for at in times} if offset else times
+        if layer_id == "sv_fake_slider":
+            # A shiny's own millisecond, once a green line already sits there --
+            # display-only, added after the offset shift so it stays put rather
+            # than moving with sv_offset_ms. Not part of `_sv_layer_object_times`
+            # itself: that set is what Generate sweeps and what a paste maps its
+            # clipboard onto by index, and this millisecond is not a fake
+            # slider's own -- folding it in there inserted an extra slot between
+            # two real fake sliders, so a Generate run touched it uninvited and a
+            # paste across a shiny shifted every value after it by one. See
+            # `_shiny_green_line_times`.
+            owned = owned | self._shiny_green_line_times(document)
+        return owned
+
+    def _shiny_green_line_times(self, document) -> set[int]:
+        """A shiny's own millisecond, where something already put a green line.
+
+        Not a fake slider object -- a shiny's speed is layer 4's -- but a green
+        line already sitting there has to stay visible and editable rather than
+        lost from every layer, the same reasoning `sv_barline`'s orphan lines
+        get. Kept out of `_sv_layer_object_times` and added to ownership
+        instead, so it can be seen and dragged without becoming a Generate
+        target or an index-mapped paste slot.
+
+        Measured on a placement into a gimmick map's dense timing (tens of
+        thousands of points): a set intersection here, not `any(... for p in
+        document.timing_points)` re-scanned per shiny. The scan is O(shiny
+        groups x timing points) and every placement calls this once per SV
+        layer refresh, so on a large map it dominated a single fake slider
+        placement -- multiple seconds, almost all of it inside this one
+        expression -- against a plain set build-and-intersect, which is O(shiny
+        groups + timing points).
+
+        `_cached`: called from `_sv_layer_owned_times` ("sv_fake_slider"),
+        again from `_sv_layer_times`'s "sv_barline" branch (which asks every
+        layer's owned times to find what nothing claims), and again from
+        `_sv_layer_paste_times` -- several times over per refresh, same as
+        `_shiny_times` below it.
+        """
+        return self._cached("shiny_green_lines", lambda: self._compute_shiny_green_line_times(document))
+
+    def _compute_shiny_green_line_times(self, document) -> set[int]:
+        shiny_ats = self._shiny_times(document)
+        if not shiny_ats:
+            return set()
+        inherited_ats = {round(p.time) for p in document.timing_points if p.inherited}
+        return shiny_ats & inherited_ats
 
     def _sv_layer_object_times(self, layer_id: str, document) -> set[int] | None:
         """Where an SV layer's objects actually are, before its offset.
@@ -10902,9 +11162,10 @@ class MainWindow(QMainWindow):
         * `sv_fake_slider` -- every fake slider's own millisecond (which is
           now its object's, not a separate restore line). A shiny's
           millisecond is excluded -- its speed is set from the chart layer
-          above -- except when it already carries an inherited point, which
-          stays visible so a generated or hand-written line there is editable
-          rather than invisible.
+          above. If it already carries an inherited point it still shows, via
+          `_shiny_green_line_times` in `_sv_layer_owned_times` rather than
+          here -- a line, not an object, the same distinction `sv_barline`'s
+          orphans get below.
         * `sv_barline` -- every other uninherited point's millisecond: the
           chart's own timing, barline gimmicks, hand-placed red lines. Minus
           whatever the two layers above own.
@@ -10923,11 +11184,7 @@ class MainWindow(QMainWindow):
                 round(n.time) for n in document.hit_objects if not self.is_fake_slider(n)
             } | shiny_lines
         if layer_id == "sv_fake_slider":
-            green_at_shiny = {
-                at for at in shiny_ats
-                if any(p.inherited and round(p.time) == at for p in document.timing_points)
-            }
-            return plain_ats | green_at_shiny
+            return plain_ats
         if layer_id == "sv_barline":
             reds = {round(p.time) for p in document.timing_points if p.uninherited}
             return reds - shiny_lines - plain_ats
@@ -11580,7 +11837,8 @@ class MainWindow(QMainWindow):
         if state is None or pairing is None:
             return
         config = self._gimmick_config("fake_slider")
-        start_ms = snap_time(pairing.base_timing, start_ms, self._gimmick_snap_divisor())
+        # See the identical comment in _generate_barlines.
+        start_ms = osu_snap_ms(snap_time(pairing.base_timing, start_ms, self._gimmick_snap_divisor()))
         dialog = FakeSliderFunctionDialog(
             start_ms, end_ms, self,
             base_timing=pairing.base_timing, snap_divisor=self._gimmick_snap_divisor(),
@@ -13364,6 +13622,13 @@ class MainWindow(QMainWindow):
         barline run -- or a whole family of them, "500-1000 BPM" -- and leave
         the chart's own timing lines, which share the layer, untouched. An
         exact single BPM is simply low == high.
+
+        `params["only_fake_slider_length"]` (layer 5 only, None when off) is
+        the same shape for `length`: a mapper who wants two structures reading
+        the same millisecond in the editor to take different SV encodes the
+        difference in a `length` too small to render differently (`-0.001` vs
+        `-0.0011`), and this is how a sweep tells them apart. Defaults to
+        `(-0.001, -0.001)`, the canonical fake slider length.
         """
         if layer_id is not None:
             # The objects themselves, unshifted: `_generate_sv` applies the
@@ -13377,28 +13642,49 @@ class MainWindow(QMainWindow):
                 if start_ms - 0.001 <= time_ms <= end_ms + 0.001
             )
             wanted_bpm = params.get("only_red_line_bpm")
-            if wanted_bpm is None:
-                return selected
-            low_bpm, high_bpm = wanted_bpm
-            # Layer 6's BPM filter. Keyed on the exact millisecond first: these
-            # times *are* red-line milliseconds, rounded, and a line at 1234.6
-            # rounds to 1235, where active_uninherited_at would answer with the
-            # line before it instead. The walk-back is the fallback for a
-            # position that is not itself a red line, where the governing one
-            # is the only sensible answer.
-            reds = {
-                round(point.time): point.bpm
-                for point in sorted_by_time(state.document.timing_points)
-                if point.uninherited
-            }
-            return [
-                at for at in selected
-                if bpm_in_range(
-                    reds[round(at)] if round(at) in reds
-                    else active_uninherited_at(state.document.timing_points, at).bpm,
-                    low_bpm, high_bpm,
-                )
-            ]
+            if wanted_bpm is not None:
+                low_bpm, high_bpm = wanted_bpm
+                # Layer 6's BPM filter. Keyed on the exact millisecond first: these
+                # times *are* red-line milliseconds, rounded, and a line at 1234.6
+                # rounds to 1235, where active_uninherited_at would answer with the
+                # line before it instead. The walk-back is the fallback for a
+                # position that is not itself a red line, where the governing one
+                # is the only sensible answer.
+                reds = {
+                    round(point.time): point.bpm
+                    for point in sorted_by_time(state.document.timing_points)
+                    if point.uninherited
+                }
+                selected = [
+                    at for at in selected
+                    if bpm_in_range(
+                        reds[round(at)] if round(at) in reds
+                        else active_uninherited_at(state.document.timing_points, at).bpm,
+                        low_bpm, high_bpm,
+                    )
+                ]
+            wanted_length = params.get("only_fake_slider_length")
+            if wanted_length is not None:
+                low_length, high_length = wanted_length
+                # Layer 5's length filter: two fake sliders can occupy the exact
+                # same millisecond (a Don/Kat's squash, a plain slider offset the
+                # same amount) and look identical in the editor while encoding two
+                # different things through `length` alone -- see
+                # gimmick_session.FAKE_SLIDER_MAX_LENGTH on why the sign and
+                # magnitude of a near-zero length is meaningful rather than noise.
+                # Keyed on the millisecond the same way the BPM filter is; unlike a
+                # red line's BPM a fake slider's length has no formula to drift
+                # from, so the range check itself needs no tolerance.
+                lengths = {
+                    round(note.time): note.length
+                    for note in state.document.hit_objects
+                    if self.is_fake_slider(note) and note.length is not None
+                }
+                selected = [
+                    at for at in selected
+                    if round(at) in lengths and low_length <= lengths[round(at)] <= high_length
+                ]
+            return selected
         placement = params.get("placement", "notes")
         if placement == "snaps":
             divisor = max(1, int(params.get("snap_divisor", 4)))

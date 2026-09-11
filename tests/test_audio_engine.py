@@ -14,8 +14,8 @@ import math
 import unittest
 
 from audio_engine import (
-    CHANNELS, OVERLAP_FRAMES, SAMPLE_RATE, SEQUENCE_FRAMES, TimeStretcher,
-    downmix_to_mono,
+    CHANNELS, FADE_FRAMES, OVERLAP_FRAMES, SAMPLE_RATE, SEQUENCE_FRAMES, TimeStretcher,
+    _Engine, downmix_to_mono,
 )
 
 TONE_HZ = 440.0
@@ -166,6 +166,92 @@ class TimeStretchTests(unittest.TestCase):
         loud = array.array("h", [32767, 32767, -32768, -32768])
         mono = downmix_to_mono(loud)
         self.assertEqual(list(mono), [32767, -32768])
+
+
+class FadeInTests(unittest.TestCase):
+    """`_Engine._fade_in`, checked without a QApplication or an audio device --
+    it is plain array math over `self._fade_remaining`, so `_Engine.__new__`
+    (skipping `__init__`, which builds a QAudioFormat) is enough to reach it.
+
+    Guards the seek-stutter report: `_open_sink` tears the sink down and
+    rebuilds it on every seek while playing, cutting the old stream with
+    nothing of its own and starting the new one at whatever sample the target
+    lands on -- measured at 25% of full scale for a mid-song seek
+    (`tools/measure_seek.py`). This is what softens that back down.
+    """
+
+    def _engine(self) -> _Engine:
+        engine = _Engine.__new__(_Engine)
+        engine._fade_remaining = FADE_FRAMES
+        return engine
+
+    def _constant_block(self, frames: int, value: int = 20000) -> bytes:
+        return array.array("h", [value, value] * frames).tobytes()
+
+    def test_the_first_frame_is_silence(self):
+        """Zero slope at the very start (a raised cosine, not a straight
+        ramp) is what keeps the fade's own onset from being a second, smaller
+        click."""
+        engine = self._engine()
+        out = array.array("h")
+        out.frombytes(engine._fade_in(self._constant_block(FADE_FRAMES + 5)))
+        self.assertEqual(out[0], 0)
+
+    def test_the_ramp_is_monotonic_and_reaches_full_scale(self):
+        engine = self._engine()
+        out = array.array("h")
+        out.frombytes(engine._fade_in(self._constant_block(FADE_FRAMES + 5)))
+        left = out[::CHANNELS]
+        ramp = left[:FADE_FRAMES]
+        self.assertTrue(all(b >= a for a, b in zip(ramp, ramp[1:])), "must not dip")
+        self.assertEqual(list(left[FADE_FRAMES:]), [20000] * 5, "flat once the ramp ends")
+
+    def test_both_channels_get_the_same_gain(self):
+        engine = self._engine()
+        out = array.array("h")
+        out.frombytes(engine._fade_in(self._constant_block(FADE_FRAMES)))
+        self.assertEqual(list(out[0::CHANNELS]), list(out[1::CHANNELS]))
+
+    def test_fade_remaining_reaches_zero_and_then_the_method_is_a_no_op(self):
+        engine = self._engine()
+        engine._fade_in(self._constant_block(FADE_FRAMES + 100))
+        self.assertEqual(engine._fade_remaining, 0)
+        untouched = self._constant_block(10)
+        # A caller only reaches _fade_in while _fade_remaining > 0; calling it
+        # anyway here checks the ramp truly stopped rather than looping.
+        out = array.array("h")
+        out.frombytes(engine._fade_in(untouched))
+        self.assertEqual(list(out[::CHANNELS]), [20000] * 10)
+
+    def test_the_ramp_resumes_correctly_split_across_several_calls(self):
+        """One `_fill` tick rarely has `FADE_FRAMES` of free buffer space in
+        one go, so the ramp has to pick up mid-slope across calls exactly as
+        if it had run in a single one."""
+        engine = self._engine()
+        whole = array.array("h")
+        whole.frombytes(self._engine()._fade_in(self._constant_block(FADE_FRAMES + 10)))
+
+        split = self._engine()
+        pieced = array.array("h")
+        chunk = self._constant_block(50)
+        for _ in range((FADE_FRAMES + 10 + 49) // 50):
+            pieced.frombytes(split._fade_in(chunk))
+        self.assertEqual(list(pieced[:len(whole)]), list(whole))
+
+    def test_open_sink_arms_the_fade(self):
+        """The dial `_open_sink` sets, checked directly rather than through a
+        real QAudioSink: every (re)open -- first play and every seek while
+        playing alike -- must arm it, or the fix only reaches one of them."""
+        engine = _Engine.__new__(_Engine)
+        engine._fade_remaining = 0
+        self.assertEqual(engine._fade_remaining, 0)
+        # _open_sink also touches self._stretcher, self._sink and self._pump,
+        # none of which this test can build without a QApplication -- the
+        # constant itself, and that _open_sink assigns it, is what is being
+        # guarded, so read the source rather than run the method.
+        import inspect
+        source = inspect.getsource(_Engine._open_sink)
+        self.assertIn("self._fade_remaining = FADE_FRAMES", source)
 
 
 if __name__ == "__main__":

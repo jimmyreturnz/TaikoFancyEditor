@@ -164,6 +164,31 @@ class SVVisualMappingTests(unittest.TestCase):
             back = view._y_to_sv(y, top, bottom)
             self.assertAlmostEqual(back, sv, places=3)
 
+    def test_dragging_past_the_graph_reaches_the_real_sv_limits(self):
+        """The drawn axis floors at SV_VISUAL_MIN so a slow section does not
+        squash the map, but a green line may hold 0.01x. Clamped to the graph,
+        the bottom pixel was 0.1x and everything under it was unreachable by
+        drag -- and the autoscaling ceiling put anything faster than the map's
+        own maximum out of reach the same way."""
+        view = gui.SVEditorView()
+        view.scale_min, view.scale_max = gui.SV_VISUAL_MIN, gui.SV_VISUAL_MAX
+        top, bottom = 20.0, 160.0
+        self.assertAlmostEqual(view._y_to_sv(10_000.0, top, bottom), gui.SV_SCALE_FLOOR)
+        self.assertAlmostEqual(view._y_to_sv(-10_000.0, top, bottom), gui.SV_SCALE_CEILING)
+        # A drag a little below the graph lands between the two floors, not on
+        # either -- the scale carries on rather than snapping to the limit.
+        just_below = view._y_to_sv(bottom + 20.0, top, bottom)
+        self.assertLess(just_below, gui.SV_VISUAL_MIN)
+        self.assertGreater(just_below, gui.SV_SCALE_FLOOR)
+
+    def test_volume_stays_clamped_to_its_own_axis(self):
+        """0-100% is the whole range, not a window on one."""
+        view = gui.SVEditorView()
+        view.volume_mode = True
+        view.scale_min, view.scale_max = 0.0, 100.0
+        self.assertEqual(view._y_to_sv(10_000.0, 20.0, 160.0), 0.0)
+        self.assertEqual(view._y_to_sv(-10_000.0, 20.0, 160.0), 100.0)
+
     def test_higher_sv_is_higher_on_screen(self):
         view = gui.SVEditorView()
         top, bottom = 20.0, 160.0
@@ -337,6 +362,66 @@ class SVEditorIntegrationTests(unittest.TestCase):
 
         self.assertAlmostEqual(inherited.time, original_time, places=2)
         self.assertGreater(inherited.sv_multiplier, original_sv)
+
+    def test_a_drag_quantizes_to_the_step_and_skips_unchanged_moves(self):
+        """The lag report: a vertical drag used to emit a new float on every
+        mouse-move pixel (8 decimals of it), so `_edit_sv_point`'s full
+        refresh ran once per pixel too. Quantizing to SV_DRAG_STEP and
+        skipping a move whose quantized value did not change is what lets
+        most of those moves cost nothing -- checked here by counting
+        emissions, not by re-measuring wall time.
+        """
+        view = self._sv_view()
+        view.resize(800, 200)
+        view.window_ms = 4000.0
+        inherited = next(p for p in self.state.document.timing_points if not p.uninherited)
+        view.current_time = inherited.time
+        view.tool = "select"
+
+        x = view.x_for_time(inherited.time)
+        dot_y = view._sv_to_y(inherited.sv_multiplier, view._graph_top(), view._graph_bottom())
+
+        emitted = []
+        view.point_sv_edit_requested.connect(lambda uid, sv: emitted.append(sv))
+
+        _press(view, x, y=dot_y)
+        # A run of one-pixel moves inside the same SV_DRAG_STEP bucket: real
+        # mouse hardware delivers far more of these than there are distinct
+        # 0.01 steps across a typical drag.
+        for offset in range(1, 6):
+            _move(view, x, y=dot_y - 0.001 * offset)
+        _release(view, x, y=dot_y)
+
+        self.assertLessEqual(len(emitted), 1, "no move here crosses a 0.01 step")
+        self.assertTrue(
+            all(abs(v - round(v, 2)) < 1e-9 for v in emitted), "quantized to 0.01",
+        )
+
+    def test_a_genuine_move_still_reaches_the_handler_every_step(self):
+        """The dedup above must not eat real movement -- only ones that quantize
+        to the same value."""
+        view = self._sv_view()
+        view.resize(800, 200)
+        view.window_ms = 4000.0
+        inherited = next(p for p in self.state.document.timing_points if not p.uninherited)
+        view.current_time = inherited.time
+        view.tool = "select"
+
+        x = view.x_for_time(inherited.time)
+        dot_y = view._sv_to_y(inherited.sv_multiplier, view._graph_top(), view._graph_bottom())
+
+        emitted = []
+        view.point_sv_edit_requested.connect(lambda uid, sv: emitted.append(sv))
+
+        _press(view, x, y=dot_y)
+        for step in range(1, 11):
+            _move(view, x, y=dot_y - step * 5.0)  # five real pixels each step
+        _release(view, x, y=dot_y - 50.0)
+
+        self.assertGreater(len(emitted), 1)
+        self.assertGreater(len(set(emitted)), 1, "at least some genuine changes got through")
+        # Dragging up the screen only ever raises SV -- never decreases.
+        self.assertEqual(emitted, sorted(emitted))
 
     def test_real_click_away_from_the_value_dot_retimes_instead(self):
         """A click on the same line but far from its dot is a horizontal

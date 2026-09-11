@@ -58,6 +58,15 @@ CHANNELS = 2
 SINK_BUFFER_MS = 40
 PUMP_INTERVAL_MS = 10
 
+# How long a fade-in runs on every (re)opened sink -- the first play and every
+# seek while playing alike. A seek's restart cuts the old stream with nothing
+# of its own (`seek`'s docstring: no way to discard the buffered old position
+# but a restart) and the new one starts at whatever sample the target happens
+# to land on -- measured at 25% of full scale for a mid-song seek
+# (`tools/measure_seek.py`), which is a click, not a timing stutter. Long
+# enough to flatten that; short enough that a fade is not what it sounds like.
+FADE_FRAMES = int(SAMPLE_RATE * 0.005)  # 5ms
+
 # WSOLA, in frames.
 #
 # SEQUENCE is how much output one grain contributes and OVERLAP is how much of
@@ -278,6 +287,7 @@ class _Engine(QObject):
         self._volume = 1.0
         self._written = 0
         self._segments = []
+        self._fade_remaining = 0
         self._state = QMediaPlayer.StoppedState
         self._duration_ms = 0
 
@@ -408,6 +418,7 @@ class _Engine(QObject):
         self._device = self._sink.start()
         self._written = 0
         self._segments = [(0, song_ms, self._rate)]
+        self._fade_remaining = FADE_FRAMES
         self._pump = QTimer(self)
         self._pump.setTimerType(Qt.PreciseTimer)
         self._pump.timeout.connect(self._fill)
@@ -475,12 +486,35 @@ class _Engine(QObject):
                 block = self._stretcher.pull(
                     self._pcm, self._mono, free_frames, self._rate)
                 if block:
+                    if self._fade_remaining > 0:
+                        block = self._fade_in(block)
                     self._device.write(block)
                     self._written += len(block) // (CHANNELS * 2)
                 elif self._decoder is None or not self._decoder.isDecoding():
                     self.stop()
                     return
         self.position_changed.emit(self._position_ms())
+
+    def _fade_in(self, block: bytes) -> bytes:
+        """Ramp the leading frames up from silence -- what softens the splice
+        a sink restart otherwise leaves at full volume (see `FADE_FRAMES`).
+
+        A raised cosine rather than a straight ramp for the same reason
+        `_crossfade_window` is one: gentler at the very start, which is
+        where a residual click would otherwise hide.
+        """
+        samples = array.array("h")
+        samples.frombytes(block)
+        frames = len(samples) // CHANNELS
+        ramp = min(self._fade_remaining, frames)
+        done = FADE_FRAMES - self._fade_remaining
+        for i in range(ramp):
+            gain = 0.5 - 0.5 * math.cos(math.pi * (done + i) / FADE_FRAMES)
+            for channel in range(CHANNELS):
+                index = i * CHANNELS + channel
+                samples[index] = int(samples[index] * gain)
+        self._fade_remaining -= ramp
+        return samples.tobytes()
 
     def _position_ms(self) -> float:
         """Song time of the sample leaving the device right now.
