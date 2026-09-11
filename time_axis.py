@@ -234,6 +234,18 @@ class TimeAxisMixin:
     # the other `_for` hooks, and None everywhere it is not wired.
     kiai_bands_for = None
 
+    # Same shape, same reason, for the two lists every view rebuilds from the
+    # document on every refresh regardless of what it actually shows: the
+    # whole point list stable-sorted by time, and that list's uninherited
+    # (red-line) points alone. A gimmick placement refreshes every open view,
+    # and each one sorting the same tens-of-thousands-of-points list -- twice,
+    # since a chart view and an SV view both derive their own copy -- was
+    # measurable. `MainWindow._share_kiai_bands` wires both when a view is a
+    # gimmick or Editor-page view; None (compute locally) everywhere else,
+    # including a view under test with no host to share a cache with.
+    sorted_points_for = None
+    uninherited_points_for = None
+
     def set_kiai_from(self, points: list[TimingPoint]) -> None:
         """Recompute the kiai bands from a document's *full* point list.
 

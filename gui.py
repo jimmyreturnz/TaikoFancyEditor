@@ -2028,9 +2028,20 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
             self.kiai_bands = self.kiai_bands_for(document)
         else:
             self.set_kiai_from(document.timing_points)
-        self.timing_points = extract_timing_points(document)
+        # Shared per-refresh cache when a host wires it (MainWindow._share_kiai_bands)
+        # -- both lists are the same sort of the same document every other
+        # open view also just derived, and a gimmick map's timing list is tens
+        # of thousands of points. `extract_timing_points` is this same
+        # composition (uninherited_points(sorted_by_time(...))) done locally.
+        self._sv_points = (
+            self.sorted_points_for(document) if self.sorted_points_for is not None
+            else sorted_by_time(document.timing_points)
+        )
+        self.timing_points = (
+            self.uninherited_points_for(self._sv_points) if self.uninherited_points_for is not None
+            else uninherited_points(self._sv_points)
+        )
         self._timing_times = [point.time for point in self.timing_points]
-        self._sv_points = sorted_by_time(document.timing_points)
         self.slider_multiplier = document.slider_multiplier
         # Lines deleted elsewhere must not stay "selected" forever -- the same
         # rule SVEditorView.refresh_points applies to its own selection.
@@ -3531,7 +3542,10 @@ class SVEditorView(TimeAxisMixin, QWidget):
 
     def set_timing_points(self, points) -> None:
         """Adopt a point list (any order) and rebuild the paint caches."""
-        self.timing_points = sorted_by_time(points)
+        self.timing_points = (
+            self.sorted_points_for(points) if self.sorted_points_for is not None
+            else sorted_by_time(points)
+        )
         if self.kiai_bands_for is not None:
             self.kiai_bands = self.kiai_bands_for(self.timing_points)
         else:
@@ -3554,26 +3568,38 @@ class SVEditorView(TimeAxisMixin, QWidget):
                 if not point.uninherited and round(point.time) in self.point_times
             ]
         )
-        by_time: dict[float, float] = {}
+        # Only one of these two series is ever read -- `_draw_sv_curve` picks
+        # `_volume_series` in volume_mode and `_series` otherwise, and
+        # `volume_mode` is set once at construction and never toggled, so the
+        # other one is dead weight on every refresh. Same reasoning as
+        # `_bpm_at` below: built only where it is read. `sv_series()` (test
+        # only) returns `[]` on a volume_mode view as a result -- it was never
+        # meaningful there anyway.
         kinds: dict[float, set[bool]] = {}
-        for point in self._visible_points:
-            kinds.setdefault(point.time, set()).add(point.uninherited)
-            if point.uninherited and point.time in by_time:
-                # An inherited point already claimed this millisecond; a red
-                # line stacked with a green one does not reset it back to 1.0x.
-                continue
-            by_time[point.time] = point.sv_multiplier
-        self._series = sorted(by_time.items())
-        self._series_times = [time_ms for time_ms, _sv in self._series]
-        # Effective volume: unlike SV, every point (red or green) carries its
-        # own value and none of them reset it, so this is a plain
-        # last-in-file-order-wins fold over the same points, iterated in
-        # `self.timing_points`' sorted (stable) order.
-        by_time_volume: dict[float, float] = {}
-        for point in self._visible_points:
-            by_time_volume[point.time] = float(point.volume)
-        self._volume_series = sorted(by_time_volume.items())
-        self._volume_series_times = [time_ms for time_ms, _volume in self._volume_series]
+        if self.volume_mode:
+            self._series, self._series_times = [], []
+            # Effective volume: unlike SV, every point (red or green) carries
+            # its own value and none of them reset it, so this is a plain
+            # last-in-file-order-wins fold over the same points, iterated in
+            # `self.timing_points`' sorted (stable) order.
+            by_time_volume: dict[float, float] = {}
+            for point in self._visible_points:
+                kinds.setdefault(point.time, set()).add(point.uninherited)
+                by_time_volume[point.time] = float(point.volume)
+            self._volume_series = sorted(by_time_volume.items())
+            self._volume_series_times = [time_ms for time_ms, _volume in self._volume_series]
+        else:
+            self._volume_series, self._volume_series_times = [], []
+            by_time: dict[float, float] = {}
+            for point in self._visible_points:
+                kinds.setdefault(point.time, set()).add(point.uninherited)
+                if point.uninherited and point.time in by_time:
+                    # An inherited point already claimed this millisecond; a red
+                    # line stacked with a green one does not reset it back to 1.0x.
+                    continue
+                by_time[point.time] = point.sv_multiplier
+            self._series = sorted(by_time.items())
+            self._series_times = [time_ms for time_ms, _sv in self._series]
         # Keyed by the point's exact time, not by a rounded millisecond: this
         # is where the line is *drawn*, and a point at 4845.4 rounded to 4845
         # drew half a millisecond away from the note it belongs to -- invisible
@@ -3603,7 +3629,10 @@ class SVEditorView(TimeAxisMixin, QWidget):
         # is maps with thousands of them between two red lines -- asking it
         # against the full list, once per curve segment per frame, was the SV
         # editor's entire paint cost.
-        self._beat_points = uninherited_points(self.timing_points)
+        self._beat_points = (
+            self.uninherited_points_for(self.timing_points) if self.uninherited_points_for is not None
+            else uninherited_points(self.timing_points)
+        )
         # Their times alone, so _draw_sv_curve can tell when its walk leaves
         # the current section with one C-level bisect instead of asking
         # active_timing again for every segment.
@@ -10526,11 +10555,9 @@ class MainWindow(QMainWindow):
             round(note.time) for note in document.hit_objects
             if not self.is_fake_slider(note)
         }
-        reds = {
-            round(point.time) for point in document.timing_points if point.uninherited
-        }
+        reds = self._red_line_times(document)
         shiny = set()
-        for at in (round(n.time) for n in document.hit_objects if self.is_fake_slider(n)):
+        for at in self._fake_slider_times(document):
             if at - shiny_offset in notes:
                 shiny.add(at)
             elif at - slider_offset in notes:
@@ -10566,7 +10593,7 @@ class MainWindow(QMainWindow):
             if point.uninherited:
                 reds_by_time.setdefault(round(point.time), []).append(point)
         shiny_ats = self._shiny_times(document)
-        fake_slider_ats = {round(n.time) for n in document.hit_objects if self.is_fake_slider(n)}
+        fake_slider_ats = self._fake_slider_times(document)
 
         heads: set[int] = set()
         all_lines: set[int] = set()
@@ -11034,6 +11061,11 @@ class MainWindow(QMainWindow):
         it. Owning only `note - 5` would have hidden every green line a mapper
         had ever put on a note, in the layer whose whole job is to show them.
         """
+        return self._cached(
+            f"sv_layer_times:{layer_id}", lambda: self._compute_sv_layer_times(layer_id, document),
+        )
+
+    def _compute_sv_layer_times(self, layer_id: str, document) -> set[int] | None:
         times = self._sv_layer_owned_times(layer_id, document)
         if times is None or layer_id != "sv_barline":
             return times
@@ -11092,6 +11124,12 @@ class MainWindow(QMainWindow):
 
     def _sv_layer_owned_times(self, layer_id: str, document) -> set[int] | None:
         """A layer's objects, and those times shifted by its `sv_offset_ms`."""
+        return self._cached(
+            f"sv_layer_owned_times:{layer_id}",
+            lambda: self._compute_sv_layer_owned_times(layer_id, document),
+        )
+
+    def _compute_sv_layer_owned_times(self, layer_id: str, document) -> set[int] | None:
         times = self._sv_layer_object_times(layer_id, document)
         if times is None:
             return None
@@ -11173,8 +11211,14 @@ class MainWindow(QMainWindow):
         Nothing here is stored: the sets are recomputed from the document on
         every refresh, so a line placed in a layer shows up in it immediately.
         """
+        return self._cached(
+            f"sv_layer_object_times:{layer_id}",
+            lambda: self._compute_sv_layer_object_times(layer_id, document),
+        )
+
+    def _compute_sv_layer_object_times(self, layer_id: str, document) -> set[int] | None:
         config = self._gimmick_config("fake_slider")
-        fake_slider_ats = {round(n.time) for n in document.hit_objects if self.is_fake_slider(n)}
+        fake_slider_ats = self._fake_slider_times(document)
         shiny_ats = self._shiny_times(document)
         plain_ats = fake_slider_ats - shiny_ats
         shiny_lines = {at - config.shiny_offset_ms for at in shiny_ats}
@@ -11186,9 +11230,25 @@ class MainWindow(QMainWindow):
         if layer_id == "sv_fake_slider":
             return plain_ats
         if layer_id == "sv_barline":
-            reds = {round(p.time) for p in document.timing_points if p.uninherited}
-            return reds - shiny_lines - plain_ats
+            return self._red_line_times(document) - shiny_lines - plain_ats
         return None
+
+    def _fake_slider_times(self, document) -> set[int]:
+        """Every fake slider's own millisecond. Shared, `_cached`: rebuilt by
+        `_shiny_times`, `_fake_slider_lines` and this layer family alike, each
+        of them a full pass over `document.hit_objects`."""
+        return self._cached(
+            "fake_slider_ats",
+            lambda: {round(n.time) for n in document.hit_objects if self.is_fake_slider(n)},
+        )
+
+    def _red_line_times(self, document) -> set[int]:
+        """Every uninherited point's millisecond. Shared, `_cached`, same
+        reasoning as `_fake_slider_times`."""
+        return self._cached(
+            "red_line_ats",
+            lambda: {round(p.time) for p in document.timing_points if p.uninherited},
+        )
 
     def _open_gimmick_layers(self) -> None:
         """(Re)build the gimmick layers for the current pairing.
@@ -12176,18 +12236,35 @@ class MainWindow(QMainWindow):
                 view.set_snap_divisor(divisor)
 
     def _share_kiai_bands(self, view, sv: bool) -> None:
-        """Let `view` take its kiai bands from the shared per-refresh cache.
+        """Let `view` take its kiai bands, sorted points and beat-only points
+        from the shared per-refresh cache.
 
-        Without this every view runs `kiai_spans` itself, which sorts the whole
-        timing point list -- six layers doing that on every placement was a
-        measurable part of the 162ms it used to take to place one note. A chart
-        view is handed the document and an SV view its point list, matching
-        what each already passes to `set_kiai_from`.
+        Without this every view runs `kiai_spans` and `sorted_by_time` (and,
+        for the beat-only list, `uninherited_points` on top) itself -- six
+        layers each sorting the whole timing point list, twice over, on every
+        placement was a measurable part of the 162ms it used to take to place
+        one note. A chart view is handed the document and an SV view its point
+        list, matching what each already passes to `set_kiai_from`.
         """
         if sv:
             view.kiai_bands_for = lambda points: self._kiai_bands(points)
+            view.sorted_points_for = lambda points: self._sorted_points(points)
         else:
             view.kiai_bands_for = lambda document: self._kiai_bands(document.timing_points)
+            view.sorted_points_for = lambda document: self._sorted_points(document.timing_points)
+        view.uninherited_points_for = lambda ordered: self._uninherited_points_cached(ordered)
+
+    def _sorted_points(self, points) -> list:
+        """`sorted_by_time(points)`, shared for the length of one refresh
+        cycle. See `_share_kiai_bands`."""
+        return self._cached("sorted_points", lambda: sorted_by_time(points))
+
+    def _uninherited_points_cached(self, ordered) -> list:
+        """`uninherited_points(ordered)`, shared the same way. `ordered` must
+        already be the cycle's shared sorted list -- passing anything else
+        would seem to work (the cache key ignores the argument) but silently
+        serve the wrong list back."""
+        return self._cached("uninherited_points", lambda: uninherited_points(ordered))
 
     def _cached(self, key: str, compute):
         """Memoize a document-derived set for the length of one refresh cycle.
@@ -13354,6 +13431,23 @@ class MainWindow(QMainWindow):
                 selected.clear()
         self._refresh_difficulty_views(difficulty_path)
 
+    def _reschedule_hitsounds(self, state) -> None:
+        """`self.hitsounds.set_schedule`, once per refresh cycle.
+
+        A placement runs both `_refresh_difficulty_views` and
+        `_refresh_difficulty_sv_views` inside one `_refresh_cycle()`, and each
+        calls this with identical arguments when the playing difficulty is the
+        one being edited -- `hitsound_schedule` sorts both the hit object and
+        timing point lists, so a gimmick map paid for that twice per edit.
+        Guarded the same way `_cached` scopes its own memoization: keyed in
+        `_doc_cache` when a cycle is open, unconditional outside one.
+        """
+        if self._doc_cache is not None:
+            if self._doc_cache.get("hitsounds_scheduled"):
+                return
+            self._doc_cache["hitsounds_scheduled"] = True
+        self.hitsounds.set_schedule(state.document.hit_objects, state.document.timing_points)
+
     def _refresh_difficulty_views(self, difficulty_path: Path) -> None:
         """Re-read hit objects into every open view of this difficulty after an edit.
 
@@ -13373,8 +13467,7 @@ class MainWindow(QMainWindow):
             # map, but only the difficulty actually being played is scheduled --
             # editing a sibling in another view changes nothing you can hear.
             if self.state is state:
-                self.hitsounds.set_schedule(
-                    state.document.hit_objects, state.document.timing_points)
+                self._reschedule_hitsounds(state)
             for frame in self._editor_views:
                 if getattr(frame, "difficulty_path", None) != difficulty_path:
                     continue
@@ -13905,8 +13998,7 @@ class MainWindow(QMainWindow):
                 # runs -- but it is exactly the edit that has to become audible
                 # at once, since hearing it is how you tell you have set it
                 # right.
-                self.hitsounds.set_schedule(
-                    state.document.hit_objects, state.document.timing_points)
+                self._reschedule_hitsounds(state)
                 self._reload_timing_bars(state)
 
     def _close_editor_view(self, frame: EditorViewFrame) -> None:
