@@ -36,11 +36,16 @@ from PySide6.QtCore import QCoreApplication, QElapsedTimer, QTimer  # noqa: E402
 
 import audio_engine  # noqa: E402
 
-# For sweeping the buffer size against the numbers below without editing the
-# module: TAIKO_SINK_BUFFER_MS_OVERRIDE=<ms> python tools/measure_slow_rate_playback.py ...
+# For sweeping tunables against the numbers below without editing the module:
+# TAIKO_SINK_BUFFER_MS_OVERRIDE=<ms> TAIKO_CORRELATION_STEP=<n> TAIKO_SEARCH_STEP=<n>
+#   python tools/measure_slow_rate_playback.py ...
 _buffer_override = os.environ.get("TAIKO_SINK_BUFFER_MS_OVERRIDE")
 if _buffer_override:
     audio_engine.SINK_BUFFER_MS = float(_buffer_override)
+if os.environ.get("TAIKO_CORRELATION_STEP"):
+    audio_engine.CORRELATION_STEP = int(os.environ["TAIKO_CORRELATION_STEP"])
+if os.environ.get("TAIKO_SEARCH_STEP"):
+    audio_engine.SEARCH_STEP = int(os.environ["TAIKO_SEARCH_STEP"])
 
 
 def _make_test_wav(path: str, seconds: float = 30.0) -> None:
@@ -84,19 +89,27 @@ def _timed_fill(self):
 
 audio_engine._Engine._fill = _timed_fill
 
-written = []  # (wall_ms, frame_count)
+written = []  # (wall_ms, frame_count, bytes_free_before, buffer_bytes)
 _orig_open_sink = audio_engine._Engine._open_sink
 
 
 def _open_sink_and_tap(self):
     _orig_open_sink(self)
+    sink = self._sink
     device = self._device
     real_write = device.write
+    buffer_bytes = sink.bufferSize()
 
     def tapped(data):
         n = len(bytes(data)) // (2 * audio_engine.CHANNELS)
         if n:
-            written.append((wall.elapsed(), n))
+            # bytesFree() *before* this write is what the hardware ring
+            # buffer had already drained to since the last write -- if it
+            # reads as the full buffer size, the ring was completely empty
+            # (real silence already reached the speaker) before this write
+            # topped it back up, which a write-to-write timing gap alone
+            # cannot tell apart from "the buffer merely got a bit thin".
+            written.append((wall.elapsed(), n, sink.bytesFree(), buffer_bytes))
         return real_write(data)
 
     device.write = tapped
@@ -131,7 +144,7 @@ print(f"_fill() calls: {len(fill_timings)}  writes: {len(written)}")
 # wall-elapsed 1:1 (minus the FADE_FRAMES/startup latency) at ANY rate. A
 # growing deficit here is an underrun, independent of what caused it.
 if written:
-    total_frames = sum(n for _t, n in written)
+    total_frames = sum(n for _t, n, _bf, _buf in written)
     delivered_ms = total_frames / audio_engine.SAMPLE_RATE * 1000.0
     elapsed_ms = written[-1][0] - written[0][0] + (
         # first write's own duration, so the window covers what it produced too
@@ -139,8 +152,12 @@ if written:
     print(f"audio delivered: {delivered_ms:.0f}ms over {elapsed_ms:.0f}ms of wall clock "
           f"covered by writes ({delivered_ms - elapsed_ms:+.0f}ms)")
 
-# Q2: gaps between writes bigger than one pump tick -- the device fed nothing
-# for that long, a real stall regardless of why.
+# Q2: gaps between writes bigger than one pump tick -- our own feeding
+# cadence. This alone conflates "the hardware buffer got a bit thin" with
+# "the hardware buffer ran fully dry" -- both show the same write-to-write
+# gap, because the gap is dominated by how long the slow _fill() call itself
+# took, not by how much slack the buffer had. See the bytesFree() check below
+# for which one actually happened.
 if len(written) > 1:
     gaps = [(a[0], b[0] - a[0]) for a, b in zip(written, written[1:])]
     over_pump = [(t, g) for t, g in gaps if g > audio_engine.PUMP_INTERVAL_MS + 2]
@@ -150,6 +167,18 @@ if len(written) > 1:
         worst = max(over_pump, key=lambda x: x[1])
         print(f"  worst gap: {worst[1]}ms at wall={worst[0]}ms "
               f"({(worst[0] - wall.elapsed() + SECONDS * 1000) / 1000.0:.2f}s into playback)")
+
+# The number that actually answers "did the speaker go silent": bytesFree()
+# read right before each write. If it ever equals the full buffer size, the
+# hardware ring had nothing left to play at that moment -- true silence,
+# not just a thin buffer -- independent of how long the gap to get there was.
+if written:
+    full_drains = [(t, bf, buf) for t, _n, bf, buf in written if bf >= buf]
+    print(f"writes where the hardware buffer had fully drained first: "
+          f"{len(full_drains)} / {len(written)}  (buffer={written[0][3]} bytes = "
+          f"{written[0][3] / (audio_engine.CHANNELS * 2) / audio_engine.SAMPLE_RATE * 1000:.0f}ms)")
+    if full_drains:
+        print(f"  first at wall={full_drains[0][0]}ms")
 
 # Q3: is any single _fill() call itself slow enough to blow the pump budget?
 if fill_timings:

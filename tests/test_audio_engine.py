@@ -14,8 +14,8 @@ import math
 import unittest
 
 from audio_engine import (
-    CHANNELS, FADE_FRAMES, OVERLAP_FRAMES, SAMPLE_RATE, SEQUENCE_FRAMES, TimeStretcher,
-    _Engine, downmix_to_mono,
+    CHANNELS, CORRELATION_STEP, FADE_FRAMES, OVERLAP_FRAMES, SAMPLE_RATE, SEEK_COALESCE_MS,
+    SEQUENCE_FRAMES, TimeStretcher, _Engine, downmix_to_mono,
 )
 
 TONE_HZ = 440.0
@@ -252,6 +252,167 @@ class FadeInTests(unittest.TestCase):
         import inspect
         source = inspect.getsource(_Engine._open_sink)
         self.assertIn("self._fade_remaining = FADE_FRAMES", source)
+
+
+class SeekCoalesceTests(unittest.TestCase):
+    """`_Engine.seek`'s coalescing, exercised on a real `_Engine` (needed for
+    the QTimer it arms) with the sink/pump/decoder replaced by stand-ins so no
+    audio device is touched.
+
+    Guards the scrub-stutter report: a drag fires one `seek_requested` per
+    mouse-move (gui.py's `mouseMoveEvent`), and each used to tear the sink
+    down and rebuild it before the last rebuild had produced a sample --
+    `tools/measure_scrub.py` measured up to 549ms of the device getting
+    nothing at all across a ~1s burst 8ms apart. `seek` now parks a target
+    arriving within `SEEK_COALESCE_MS` of the last landed one instead of
+    rebuilding again immediately.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        from PySide6.QtCore import QCoreApplication
+        # QTimer(self) inside seek() needs a real QObject parent and, to be
+        # started at all safely, an application instance -- shared with
+        # whatever else in this process already created one, same pattern as
+        # tests/test_gimmick_editor.py.
+        cls._app = QCoreApplication.instance() or QCoreApplication([])
+
+    def _playing_engine(self):
+        """An `_Engine` in PlayingState with a live-looking sink, and a
+        `rebuilds` log standing in for `_open_sink` -- which would otherwise
+        open a real `QAudioSink`. It restores `_sink`/`_pump` the way a real
+        rebuild would, since `_land_seek` itself only tears them down.
+        """
+        from PySide6.QtMultimedia import QMediaPlayer
+        from types import SimpleNamespace
+
+        engine = _Engine()
+        engine._state = QMediaPlayer.PlayingState
+        rebuilds = []
+
+        def fake_open_sink():
+            rebuilds.append(engine._stretcher.source_frame)
+            engine._sink = SimpleNamespace(stop=lambda: None)
+            engine._pump = SimpleNamespace(stop=lambda: None)
+
+        engine._open_sink = fake_open_sink
+        fake_open_sink()  # as play() would: land already "hot"
+        rebuilds.clear()
+        return engine, rebuilds
+
+    def test_an_isolated_seek_lands_immediately(self):
+        engine, rebuilds = self._playing_engine()
+        engine.seek(5000.0)
+        self.assertEqual(len(rebuilds), 1)
+        self.assertIsNone(engine._pending_seek_ms)
+
+    def test_a_burst_of_seeks_lands_only_once(self):
+        engine, rebuilds = self._playing_engine()
+        engine.seek(1000.0)  # first of the burst: lands immediately
+        for ms in (1010.0, 1020.0, 1030.0, 1040.0):
+            engine.seek(ms)  # inside SEEK_COALESCE_MS of the last landing: parked
+        self.assertEqual(len(rebuilds), 1,
+                          "only the first seek of a burst should rebuild the sink")
+        self.assertEqual(engine._pending_seek_ms, 1040.0,
+                          "the timer must land the LAST requested position")
+        self.assertTrue(engine._seek_timer.isActive())
+
+    def test_the_parked_target_lands_once_the_burst_settles(self):
+        engine, rebuilds = self._playing_engine()
+        engine.seek(1000.0)
+        engine.seek(1010.0)
+        engine.seek(1020.0)  # parked; not landed yet
+        self.assertEqual(len(rebuilds), 1)
+        engine._land_pending_seek()  # what the timer's own timeout does
+        self.assertEqual(len(rebuilds), 2)
+        self.assertAlmostEqual(
+            rebuilds[-1], 1020.0 / 1000.0 * SAMPLE_RATE, delta=1)
+        self.assertIsNone(engine._pending_seek_ms)
+
+    def test_seeks_spaced_apart_are_not_a_burst(self):
+        """A single click well after the last one must not pick up latency
+        meant for a drag."""
+        engine, rebuilds = self._playing_engine()
+        engine.seek(1000.0)
+        engine._last_seek_wall -= SEEK_COALESCE_MS + 5  # simulate time passing
+        engine.seek(2000.0)
+        self.assertEqual(len(rebuilds), 2)
+        self.assertIsNone(engine._pending_seek_ms)
+
+    def test_a_paused_seek_is_never_parked(self):
+        """Nothing is audible while paused, so there is no burst to protect
+        against -- a paused seek must keep dropping the sink immediately,
+        exactly as before this change."""
+        from PySide6.QtMultimedia import QMediaPlayer
+        engine, rebuilds = self._playing_engine()
+        engine._state = QMediaPlayer.PausedState
+        engine.seek(1000.0)
+        engine.seek(1010.0)
+        self.assertEqual(len(rebuilds), 0, "paused: the sink is dropped, not rebuilt")
+        self.assertIsNone(engine._sink)
+        self.assertIsNone(engine._pending_seek_ms)
+
+    def test_stop_cancels_a_parked_seek(self):
+        """Otherwise a stale target could land later against a sink or track
+        that has since moved on (load() calls stop() first for this reason)."""
+        engine, rebuilds = self._playing_engine()
+        engine.seek(1000.0)
+        engine.seek(1010.0)  # parked
+        engine.stop()
+        self.assertIsNone(engine._pending_seek_ms)
+        self.assertFalse(engine._seek_timer.isActive())
+
+
+class SearchCostTests(unittest.TestCase):
+    """`CORRELATION_STEP`'s effect on a grain's wall-clock cost, measured
+    rather than assumed -- and measured as a *ratio* on whatever machine runs
+    it rather than an absolute threshold, which would be flaky across CI
+    hardware.
+
+    Guards the sustained-slow-rate-playback stutter report: one grain
+    (`SEQUENCE_FRAMES` of output, produced once every ~82ms of playback at any
+    rate) ran its correlation search at every frame with `CORRELATION_STEP=1`,
+    costing 20-28ms against the pump's 10ms budget
+    (`tools/measure_slow_rate_playback.py`: ~12% of `_fill()` calls over
+    budget at 0.25/0.5/0.75x). Subsampling the correlation input halved that
+    with no change in `tools/measure_stretch_quality.py`'s tonality/warble/
+    click numbers.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.source = _sine(3.0)
+        cls.mono = downmix_to_mono(cls.source)
+
+    def _grain_cost(self, correlation_step: int, seconds: float = 2.0) -> float:
+        import time
+        import audio_engine as ae
+        saved = ae.CORRELATION_STEP
+        ae.CORRELATION_STEP = correlation_step
+        try:
+            stretcher = TimeStretcher()
+            stretcher.reset(0.0)
+            started = time.perf_counter()
+            _pull_seconds(stretcher, self.source, self.mono, seconds, 0.5)
+            return time.perf_counter() - started
+        finally:
+            ae.CORRELATION_STEP = saved
+
+    def test_correlation_step_two_is_meaningfully_cheaper_than_one(self):
+        cost_1 = self._grain_cost(1)
+        cost_2 = self._grain_cost(2)
+        self.assertLess(
+            cost_2, cost_1 * 0.8,
+            "subsampling the correlation should cost noticeably less than "
+            "not subsampling it, on the same machine in the same run -- if "
+            "not, the pump-budget fix this constant exists for has regressed")
+
+    def test_the_shipped_default_actually_subsamples(self):
+        self.assertGreater(
+            CORRELATION_STEP, 1,
+            "CORRELATION_STEP=1 measured 20-28ms/grain against a 10ms pump "
+            "budget (tools/measure_slow_rate_playback.py) -- this guards "
+            "against silently reverting to it")
 
 
 if __name__ == "__main__":

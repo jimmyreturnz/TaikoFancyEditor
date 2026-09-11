@@ -30,8 +30,17 @@ from PySide6.QtCore import QUrl, QTimer  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 from PySide6.QtMultimedia import QAudioDecoder, QAudioFormat  # noqa: E402
 
+import os  # noqa: E402
+
 import audio_engine  # noqa: E402
 from audio_engine import CHANNELS, SAMPLE_RATE, TimeStretcher, downmix_to_mono  # noqa: E402
+
+# For sweeping the search cost against these numbers without editing the
+# module: TAIKO_CORRELATION_STEP=2 TAIKO_SEARCH_STEP=4 python tools/measure_stretch_quality.py ...
+if os.environ.get("TAIKO_CORRELATION_STEP"):
+    audio_engine.CORRELATION_STEP = int(os.environ["TAIKO_CORRELATION_STEP"])
+if os.environ.get("TAIKO_SEARCH_STEP"):
+    audio_engine.SEARCH_STEP = int(os.environ["TAIKO_SEARCH_STEP"])
 
 
 def decode(path: str, app: QApplication) -> array.array:

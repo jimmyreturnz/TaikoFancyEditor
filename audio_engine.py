@@ -40,7 +40,7 @@ import math
 from operator import mul
 
 from PySide6.QtCore import (
-    QMetaObject, QObject, Qt, QThread, QTimer, QUrl, Signal, Slot,
+    QElapsedTimer, QMetaObject, QObject, Qt, QThread, QTimer, QUrl, Signal, Slot,
 )
 from PySide6.QtMultimedia import (
     QAudioDecoder, QAudioFormat, QAudioSink, QMediaDevices, QMediaPlayer,
@@ -57,6 +57,16 @@ CHANNELS = 2
 # underrun, given the pump runs every 10ms.
 SINK_BUFFER_MS = 40
 PUMP_INTERVAL_MS = 10
+
+# A single seek rebuilds the sink (`_land_seek`) in ~10-40ms, measured
+# (`tools/measure_seek.py`'s `_open_sink` timings). A *drag* fires one seek per
+# mouse-move, faster than that -- `tools/measure_scrub.py` measured 549ms of
+# the device getting nothing at all across a ~1s burst 8ms apart, because each
+# seek tore the previous rebuild down before it produced a single sample.
+# `_Engine.seek` coalesces any seek arriving within this many ms of the last
+# landed one; comfortably above the worst rebuild cost measured so a burst
+# never outruns its own landing.
+SEEK_COALESCE_MS = 50
 
 # How long a fade-in runs on every (re)opened sink -- the first play and every
 # seek while playing alike. A seek's restart cuts the old stream with nothing
@@ -89,7 +99,19 @@ GRAIN_FRAMES = SEQUENCE_FRAMES + OVERLAP_FRAMES
 SEARCH_FRAMES = 882         # +-20ms
 # BASS_FX takes the same shortcut behind BASS_ATTRIB_TEMPO_OPTION_USE_QUICKALGO.
 SEARCH_STEP = 2
-CORRELATION_STEP = 1
+# One grain (SEQUENCE_FRAMES of output) is produced synchronously inside
+# `_Engine._fill`, once every ~82ms of playback regardless of rate -- the
+# grain size, not the rate, sets how often the search runs. At
+# CORRELATION_STEP=1 that search cost 20-28ms against the pump's 10ms budget
+# (`tools/measure_slow_rate_playback.py` at 0.25/0.5/0.75x: ~12% of `_fill()`
+# calls over budget, max 28ms), which is most of SINK_BUFFER_MS's 40ms of
+# slack on a single grain and was the sustained-slow-rate stutter report.
+# Subsampling the correlation input -- every other frame of the dot product,
+# same trick as SEARCH_STEP but on the other axis of the search -- halved that
+# cost (max 15-16ms, calls over budget ~0.6%, no run since produced a real
+# hardware-buffer drain) with no measured change in
+# `tools/measure_stretch_quality.py`'s tonality/warble/click numbers.
+CORRELATION_STEP = 2
 # Fixed point for the window, so the overlap-add stays in integer arithmetic.
 WINDOW_BITS = 12
 WINDOW_ONE = 1 << WINDOW_BITS
@@ -290,6 +312,13 @@ class _Engine(QObject):
         self._fade_remaining = 0
         self._state = QMediaPlayer.StoppedState
         self._duration_ms = 0
+        # Seek coalescing (SEEK_COALESCE_MS): the timer that lands a parked
+        # target, the target itself, and when the last real rebuild landed.
+        self._seek_timer = None
+        self._pending_seek_ms = None
+        self._last_seek_wall = None
+        self._seek_clock = QElapsedTimer()
+        self._seek_clock.start()
 
     # -- loading --------------------------------------------------------------
 
@@ -407,6 +436,13 @@ class _Engine(QObject):
         self._device = None
         self._written = 0
         self._segments = []
+        # A seek parked by SEEK_COALESCE_MS is a promise to land later; stop()
+        # (and load(), which calls it first) means that later never comes --
+        # otherwise a stale target could land against a sink or track that has
+        # since moved on.
+        if self._seek_timer is not None:
+            self._seek_timer.stop()
+        self._pending_seek_ms = None
         self._set_state(QMediaPlayer.StoppedState)
 
     def _open_sink(self) -> None:
@@ -426,10 +462,47 @@ class _Engine(QObject):
 
     @Slot(float)
     def seek(self, position_ms: float) -> None:
+        """Move the playhead, landing the rebuild immediately unless one just
+        happened.
+
+        A single click lands with no added latency. A *drag* is a
+        `seek_requested` per mouse-move (gui.py's `mouseMoveEvent` on the
+        timeline bar) -- `tools/measure_scrub.py` fired 20 of these 15ms
+        apart and measured 341ms of the device getting nothing at all, because
+        each one tore the sink down before the previous rebuild (`_open_sink`,
+        itself ~10-40ms) had produced a single sample; an 8ms-apart burst
+        measured 549ms silent out of about a second. `_land_seek` is the
+        actual rebuild; a seek arriving inside `SEEK_COALESCE_MS` of the last
+        one only parks its target and (re)arms a trailing timer, so a burst
+        collapses into the one rebuild the burst ends on, and the sink already
+        playing keeps playing right up to that landing instead of going quiet.
+        """
+        self.position_changed.emit(position_ms)
+        if self._sink is not None and self._state == QMediaPlayer.PlayingState:
+            now = self._seek_clock.elapsed()
+            if self._last_seek_wall is not None and now - self._last_seek_wall < SEEK_COALESCE_MS:
+                self._pending_seek_ms = position_ms
+                if self._seek_timer is None:
+                    self._seek_timer = QTimer(self)
+                    self._seek_timer.setSingleShot(True)
+                    self._seek_timer.timeout.connect(self._land_pending_seek)
+                self._seek_timer.start(SEEK_COALESCE_MS)
+                return
+            self._last_seek_wall = now
+        self._land_seek(position_ms)
+
+    @Slot()
+    def _land_pending_seek(self) -> None:
+        if self._pending_seek_ms is None:
+            return
+        position_ms, self._pending_seek_ms = self._pending_seek_ms, None
+        self._last_seek_wall = self._seek_clock.elapsed()
+        self._land_seek(position_ms)
+
+    def _land_seek(self, position_ms: float) -> None:
         frame = max(0.0, position_ms) / 1000.0 * SAMPLE_RATE
         self._stretcher.reset(frame)
         if self._sink is None:
-            self.position_changed.emit(position_ms)
             return
         # The sink is holding up to SINK_BUFFER_MS of the *old* position and
         # offers no way to discard it but a restart. Playing it out would be the
@@ -442,7 +515,6 @@ class _Engine(QObject):
         self._device = None
         if playing:
             self._open_sink()
-        self.position_changed.emit(position_ms)
 
     @Slot(float)
     def set_rate(self, rate: float) -> None:
