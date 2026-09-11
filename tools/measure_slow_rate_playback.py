@@ -1,0 +1,163 @@
+"""What *sustained* slow-rate playback delivers to the device, continuously,
+as opposed to `measure_rate_change.py` (a one-time rate change) or
+`bench_timestretch.py` (a standalone re-implementation with different grain
+sizes than `TimeStretcher`'s real `SEQUENCE_FRAMES`/`OVERLAP_FRAMES`/
+`SEARCH_FRAMES` -- so it measures a different amount of work per second of
+output than the real code, and cannot answer this question by itself).
+
+    python tools/measure_slow_rate_playback.py [audio file] [rate] [seconds]
+
+Built for report #2: "the speed is ok but the stuttering really affects the
+quality" at slower-than-1.0x. Plays continuously at `rate` (default 0.5) with
+no seeks, and taps `_device.write()` and `_Engine._fill()` directly on the
+real production classes -- the same technique `measure_seek.py` uses -- to
+answer three separable questions rather than assuming one:
+
+  1. Does output fall behind wall-clock (an underrun -- WSOLA or the decoder
+     not producing fast enough)?
+  2. Are there gaps between writes bigger than the pump interval (the device
+     starved for one tick or more)?
+  3. Is any single `_fill()` call itself slow enough to blow the 10ms pump
+     budget (the search costing more than the budget on this machine)?
+
+No audio file lying around is fine: like `measure_seek.py`, the question here
+is about the pipeline's timing, not what the file happens to sound like, so a
+generated tone is reused if none is given.
+"""
+import os
+import sys
+import wave
+import array
+import math
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from PySide6.QtCore import QCoreApplication, QElapsedTimer, QTimer  # noqa: E402
+
+import audio_engine  # noqa: E402
+
+# For sweeping the buffer size against the numbers below without editing the
+# module: TAIKO_SINK_BUFFER_MS_OVERRIDE=<ms> python tools/measure_slow_rate_playback.py ...
+_buffer_override = os.environ.get("TAIKO_SINK_BUFFER_MS_OVERRIDE")
+if _buffer_override:
+    audio_engine.SINK_BUFFER_MS = float(_buffer_override)
+
+
+def _make_test_wav(path: str, seconds: float = 30.0) -> None:
+    rate = 44100
+    frames = int(rate * seconds)
+    samples = array.array("h", (
+        int(12000 * math.sin(2 * math.pi * 220.0 * i / rate)) for i in range(frames)
+    ))
+    with wave.open(path, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(rate)
+        wav.writeframes(samples.tobytes())
+
+
+raw = sys.argv[1:]
+if raw and os.path.exists(raw[0]):
+    PATH, raw = raw[0], raw[1:]
+else:
+    PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_measure_seek_tone.wav")
+    if not os.path.exists(PATH):
+        _make_test_wav(PATH)
+
+RATE = float(raw[0]) if len(raw) > 0 else 0.5
+SECONDS = float(raw[1]) if len(raw) > 1 else 8.0
+
+app = QCoreApplication([])
+
+# Tap _fill() itself (wall cost per pump tick -- did the search blow the
+# budget?) and every device write (what actually reached the sink).
+fill_timings = []  # (wall_ms, elapsed_ms)
+_orig_fill = audio_engine._Engine._fill
+
+
+def _timed_fill(self):
+    t = QElapsedTimer()
+    t.start()
+    _orig_fill(self)
+    fill_timings.append((wall.elapsed(), t.elapsed()))
+
+
+audio_engine._Engine._fill = _timed_fill
+
+written = []  # (wall_ms, frame_count)
+_orig_open_sink = audio_engine._Engine._open_sink
+
+
+def _open_sink_and_tap(self):
+    _orig_open_sink(self)
+    device = self._device
+    real_write = device.write
+
+    def tapped(data):
+        n = len(bytes(data)) // (2 * audio_engine.CHANNELS)
+        if n:
+            written.append((wall.elapsed(), n))
+        return real_write(data)
+
+    device.write = tapped
+
+
+audio_engine._Engine._open_sink = _open_sink_and_tap
+
+player = audio_engine.TrackPlayer()
+player.setSource(PATH)
+
+wall = QElapsedTimer()
+
+
+def start_playback():
+    wall.start()
+    player.setPlaybackRate(RATE)
+    player.play()
+
+
+QTimer.singleShot(300, start_playback)
+QTimer.singleShot(int(300 + SECONDS * 1000), app.quit)
+app.exec()
+
+player.shutdown()
+
+print(f"{os.path.basename(PATH)}  sustained playback at rate={RATE} for {SECONDS:.1f}s")
+print(f"_fill() calls: {len(fill_timings)}  writes: {len(written)}")
+
+# Q1: does delivered audio-time keep pace with wall-clock? Output plays at
+# real (44100Hz) speed regardless of rate -- the rate only changes how much
+# *source* one output frame consumes -- so total frames written should track
+# wall-elapsed 1:1 (minus the FADE_FRAMES/startup latency) at ANY rate. A
+# growing deficit here is an underrun, independent of what caused it.
+if written:
+    total_frames = sum(n for _t, n in written)
+    delivered_ms = total_frames / audio_engine.SAMPLE_RATE * 1000.0
+    elapsed_ms = written[-1][0] - written[0][0] + (
+        # first write's own duration, so the window covers what it produced too
+        written[0][1] / audio_engine.SAMPLE_RATE * 1000.0)
+    print(f"audio delivered: {delivered_ms:.0f}ms over {elapsed_ms:.0f}ms of wall clock "
+          f"covered by writes ({delivered_ms - elapsed_ms:+.0f}ms)")
+
+# Q2: gaps between writes bigger than one pump tick -- the device fed nothing
+# for that long, a real stall regardless of why.
+if len(written) > 1:
+    gaps = [(a[0], b[0] - a[0]) for a, b in zip(written, written[1:])]
+    over_pump = [(t, g) for t, g in gaps if g > audio_engine.PUMP_INTERVAL_MS + 2]
+    total_over = sum(g for _t, g in over_pump)
+    print(f"write gaps > pump interval + 2ms: {len(over_pump)}, totalling {total_over}ms")
+    if over_pump:
+        worst = max(over_pump, key=lambda x: x[1])
+        print(f"  worst gap: {worst[1]}ms at wall={worst[0]}ms "
+              f"({(worst[0] - wall.elapsed() + SECONDS * 1000) / 1000.0:.2f}s into playback)")
+
+# Q3: is any single _fill() call itself slow enough to blow the pump budget?
+if fill_timings:
+    costs = [c for _t, c in fill_timings]
+    costs_sorted = sorted(costs)
+    p50 = costs_sorted[len(costs_sorted) // 2]
+    p99 = costs_sorted[int(len(costs_sorted) * 0.99)]
+    over_budget = [c for c in costs if c > audio_engine.PUMP_INTERVAL_MS]
+    print(f"_fill() cost: median={p50}ms p99={p99}ms max={max(costs)}ms  "
+          f"(budget is {audio_engine.PUMP_INTERVAL_MS}ms)")
+    print(f"_fill() calls over budget: {len(over_budget)} / {len(costs)}")

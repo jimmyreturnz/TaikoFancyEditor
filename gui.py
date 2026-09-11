@@ -2028,20 +2028,18 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
             self.kiai_bands = self.kiai_bands_for(document)
         else:
             self.set_kiai_from(document.timing_points)
-        # Shared per-refresh cache when a host wires it (MainWindow._share_kiai_bands)
-        # -- both lists are the same sort of the same document every other
-        # open view also just derived, and a gimmick map's timing list is tens
-        # of thousands of points. `extract_timing_points` is this same
-        # composition (uninherited_points(sorted_by_time(...))) done locally.
-        self._sv_points = (
-            self.sorted_points_for(document) if self.sorted_points_for is not None
-            else sorted_by_time(document.timing_points)
-        )
-        self.timing_points = (
-            self.uninherited_points_for(self._sv_points) if self.uninherited_points_for is not None
-            else uninherited_points(self._sv_points)
-        )
+        # NOT shared with MainWindow._sorted_points/_uninherited_points_cached
+        # (unlike SVEditorView's own timing_points/_beat_points) -- reverted
+        # after a report that the regular Editor page's snap grid started
+        # shifting position right after this sharing landed. Independent
+        # investigation and repeated stress tests of the shared path found no
+        # provable defect, but the report pointed at this exact view and this
+        # exact change, and a wrong snap grid is worse than the sort it saves.
+        # `extract_timing_points` is the same composition
+        # (uninherited_points(sorted_by_time(...))), done locally again.
+        self.timing_points = extract_timing_points(document)
         self._timing_times = [point.time for point in self.timing_points]
+        self._sv_points = sorted_by_time(document.timing_points)
         self.slider_multiplier = document.slider_multiplier
         # Lines deleted elsewhere must not stay "selected" forever -- the same
         # rule SVEditorView.refresh_points applies to its own selection.
