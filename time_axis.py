@@ -148,6 +148,12 @@ class TimeAxisMixin:
     ZOOM_IN_FACTOR = 0.86
     ZOOM_OUT_FACTOR = 1.16
 
+    # Whether the song is running, kept in step by MainWindow.toggle_playback.
+    # A class attribute so every view that mixes this in has one without each
+    # constructor having to remember; `TimelineGameplay` sets its own instance
+    # copy for the playhead it draws.
+    is_playing = False
+
     # Set by the gimmick editor to the base timing snapshot. Empty everywhere
     # else, so the view snaps against the document it is showing.
     base_timing: list[TimingPoint] = []
@@ -403,7 +409,16 @@ class TimeAxisMixin:
         steps = int(self.wheel_accumulator / threshold)
         if steps:
             self.wheel_accumulator -= steps * threshold
-            divisor = 1 if modifiers & Qt.ShiftModifier else self.snap_divisor
+            # A whole beat per notch while the song is running. Scrolling
+            # during playback is looking around, not placing anything, and at a
+            # fine snap a notch moves the view a few milliseconds -- so getting
+            # anywhere means spinning the wheel while the music keeps going,
+            # which is the opposite of following along. The snap divisor is
+            # what you edit on, so it governs again the moment playback stops.
+            # Shift is the same step, kept because it is the one that works
+            # while paused.
+            divisor = 1 if (modifiers & Qt.ShiftModifier or self.is_playing) \
+                else self.snap_divisor
             # One movement per wheelEvent that crosses the threshold, not one
             # per multiple of it: a notched mouse can report a delta several
             # times a single "line" in one event (Windows' lines-per-notch

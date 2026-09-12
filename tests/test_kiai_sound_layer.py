@@ -361,15 +361,21 @@ class VolumeReachesTheHitsoundsTests(RangeToolTests):
         note = min(self.state.document.hit_objects, key=lambda n: n.time)
         self.window._edit_volume_point(self.state.source_path, point.uid, 30)
         self.assertEqual(point.volume, 30)
-        index = self.window.hitsounds._times.index(float(note.time))
-        self.assertAlmostEqual(self.window.hitsounds._volumes[index], 0.3)
+        # Through the forwarder's own schedule rather than a fresh call to
+        # `hitsound_schedule`: what has to hold is that the *window* re-sent
+        # after the edit, not merely that the pure function can resolve a
+        # volume. The sound itself is mixed into the music stream from these
+        # three lists (`audio_engine.HitsoundMixer`).
+        times, _keys, volumes = self.window.hitsounds.schedule
+        index = times.index(float(note.time))
+        self.assertAlmostEqual(volumes[index], 0.3)
 
     def test_zero_is_obeyed_rather_than_treated_as_a_floor(self):
         """Mappers silence a section deliberately -- a swell under a fade, a
         section the audio already covers."""
         point = self._point_at(0, uninherited=True)
         self.window._edit_volume_point(self.state.source_path, point.uid, 0)
-        self.assertEqual(self.window.hitsounds._volumes[0], 0.0)
+        self.assertEqual(self.window.hitsounds.schedule[2][0], 0.0)
 
     def test_out_of_range_is_clamped_rather_than_written(self):
         point = self._point_at(0, uninherited=True)

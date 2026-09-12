@@ -36,7 +36,9 @@ on the thread that has 8.33ms to paint a frame in.
 from __future__ import annotations
 
 import array
+import audioop
 import math
+from bisect import bisect_left
 from operator import mul
 
 from PySide6.QtCore import (
@@ -284,6 +286,23 @@ def grain_offset_ms(rate: float) -> float:
     return lead / 2.0 / SAMPLE_RATE * 1000.0
 
 
+def frame_for_ms(time_ms: float) -> int:
+    """Source frame for a chart millisecond. Halves up.
+
+    Not `round`, which is half-to-*even* in Python: 5ms is 220.5 frames and
+    rounds down to 220 while 15ms is 661.5 and rounds up to 662. Half a frame
+    is 11us and nobody can hear it, but a conversion that goes two different
+    ways on the same fraction is the kind of thing that costs an afternoon when
+    a test disagrees with the code by one sample.
+
+    Halves up like gui.py's `osu_round`, and deliberately not like
+    `osu_snap_ms`, which truncates because osu!stable truncates a *beat*
+    position. A note's millisecond is not a beat position -- it is already the
+    integer the file gave us.
+    """
+    return math.floor(time_ms * SAMPLE_RATE / 1000.0 + 0.5)
+
+
 def downmix_to_mono(source: array.array) -> array.array:
     """The correlation input, built once per track rather than per grain.
 
@@ -304,14 +323,183 @@ def _clip(value: int) -> int:
     return value
 
 
+class HitsoundMixer:
+    """Note samples, placed in the output at the source frame they belong to.
+
+    **Anchored to the source, not to the reported position.** The old path fired
+    a `QSoundEffect` when the interpolated playhead crossed a note, which put
+    every note one rendered frame of quantisation plus that path's own
+    uncalibrated device latency away from the music -- and on top of both, the
+    whole of `grain_offset_ms`'s residual, because the playhead is a linear map
+    over content that arrives a grain at a time. Mixed in here instead, a note
+    lands on its own millisecond of the song to the sample at every rate, and
+    inherits the music's latency because it *is* the music's buffer.
+
+    Deliberately free of Qt and of any I/O, like `TimeStretcher`: it takes
+    already-decoded samples and already-sorted times, so every placement rule
+    below is testable without an audio device.
+    """
+
+    def __init__(self) -> None:
+        self.enabled = True
+        # The user's own hitsound level, applied at mix time rather than baked
+        # into the schedule, so the settings slider does not need a reschedule.
+        self.volume = 1.0
+        # The music level, applied here rather than on the sink -- see `mix`.
+        self.music_gain = 1.0
+        # Source frame per note, ascending, with the key and the section volume
+        # `hitsound_schedule` resolved for it.
+        self._frames: list[int] = []
+        self._keys: list[str] = []
+        self._gains: list[float] = []
+        self._samples: dict[str, bytes] = {}
+        # Sounding notes: [pcm, byte offset reached, gain]. Bounded by
+        # MAX_VOICES.
+        self._voices: list[list] = []
+        # Highest source frame already considered. See `mix`: this is the whole
+        # of the dedupe, and without it a note plays 1/rate times.
+        self._voiced_through = -1
+
+    # A stack of notes on one millisecond is a real thing in this editor (a
+    # shiny note is a pile of objects), and a barline gimmick can put thousands
+    # of lines in a second. The bound is the pool size the QSoundEffect path
+    # used, which was measured against a 200 BPM 1/4 stream -- around twenty
+    # samples overlap there, and nobody can hear the twenty-first.
+    MAX_VOICES = 24
+
+    def set_samples(self, samples: dict) -> None:
+        """`{key: decoded 16-bit stereo PCM at SAMPLE_RATE}`.
+
+        Sounding voices are left alone: they are already-mixed bytes from the
+        old sample and cutting them off mid-hit to change skins would be more
+        audible than letting them finish.
+        """
+        self._samples = dict(samples)
+
+    def set_schedule(self, frames, keys, gains) -> None:
+        """Three parallel lists, ascending by frame.
+
+        Taken pre-sorted because `hitsound_schedule` in gui.py already sorts
+        them to resolve each note's section volume in one forward merge, and
+        sorting again per edit on a gimmick difficulty is a second pass over
+        thousands of objects for nothing.
+        """
+        self._frames, self._keys, self._gains = frames, keys, gains
+
+    def reset(self, source_frame: float) -> None:
+        """Every seek and every stop. Drops the sounding voices and moves the
+        dedupe watermark absolutely, so a backwards seek replays the notes it
+        lands before rather than skipping them for having been played once."""
+        self._voices = []
+        self._voiced_through = int(source_frame) - 1
+
+    def mix(self, out: array.array, source_start: int, frames: int) -> None:
+        """Mix into `out`, which is `frames` frames of source from
+        `source_start`.
+
+        Called once per grain, from `TimeStretcher._produce`, with the grain's
+        *real* source position -- wherever the splice search landed, not where
+        the read head nominally is.
+
+        **The music level is applied here too**, which is not where it used to
+        be. `QAudioSink.setVolume` attenuates everything written to it, so with
+        the notes in the same buffer it scaled them as well -- and, worse, it
+        happens *after* the sum, so it cannot make room for anything. Measured
+        on a 0dBFS master with the default 65% music and 70% hitsounds, moving
+        the attenuation to here takes saturated samples from 71 per note to
+        9.6: the music has to be turned down before the notes are added, or the
+        addition is the thing that clips. It also gives the two volume sliders
+        back their independence, which they had when hitsounds left through
+        `QSoundEffect` and briefly lost when they did not.
+
+        The cost is that a volume change is heard a grain plus the sink buffer
+        later (about 100ms) rather than instantly. Nobody can hear the
+        difference on a slider drag, and the alternative is clipping.
+
+        **The watermark is the dedupe, and it is not an optimisation.** At rate
+        < 1 the read head advances `sequence * rate` while each grain covers
+        `sequence`, so consecutive grains overlap in source and a note's frame
+        falls inside roughly 1/rate of them -- four grains at 0.25x. Voicing it
+        every time plays every note four times, 5ms apart, which is a flam and
+        not a hit.
+        """
+        if self.music_gain != 1.0:
+            # Before the notes, and over the music alone: that ordering is the
+            # whole point of doing it here.
+            scaled = array.array("h")
+            scaled.frombytes(audioop.mul(out.tobytes(), 2, self.music_gain))
+            out[:] = scaled
+        if self._voices:
+            self._sound(out, frames)
+        if not self.enabled or not self._samples:
+            # Still advance: a note passed over while hitsounds are off has
+            # been passed over, and turning them on mid-playback should start
+            # from the playhead rather than replay the section behind it.
+            self._voiced_through = max(self._voiced_through,
+                                       source_start + frames - 1)
+            return
+        first = bisect_left(self._frames, max(source_start,
+                                              self._voiced_through + 1))
+        index = first
+        end = source_start + frames
+        while index < len(self._frames) and self._frames[index] < end:
+            pcm = self._samples.get(self._keys[index])
+            gain = self._gains[index] * self.volume
+            # Zero is a volume mappers set deliberately (see the Kiai and Sound
+            # Volume layer), so it is obeyed rather than floored.
+            if pcm and gain > 0.0 and len(self._voices) < self.MAX_VOICES:
+                offset = self._frames[index] - source_start
+                self._voices.append([pcm, 0, gain])
+                self._sound(out, frames, start_frame=offset,
+                            voice=self._voices[-1])
+            index += 1
+        self._voiced_through = max(self._voiced_through, end - 1)
+
+    def _sound(self, out: array.array, frames: int, start_frame: int = 0,
+               voice=None) -> None:
+        """Add one voice (or every continuing voice) into `out`.
+
+        `audioop.add` saturates at 16-bit, and that saturation *is* the mixing
+        policy: osu! sums its hitsounds over the track the same way, and a note
+        quietly ducking the music would be a worse surprise than a loud stack
+        clipping. Measured on a near-0dBFS master, the stretch output saturates
+        at 0.68x the rate the source does, so there is headroom for the notes
+        in practice rather than in theory.
+        """
+        voices = [voice] if voice is not None else list(self._voices)
+        for entry in voices:
+            pcm, position, gain = entry
+            take = min(frames - start_frame,
+                       (len(pcm) - position) // (CHANNELS * 2))
+            if take <= 0:
+                if voice is None:
+                    self._voices.remove(entry)
+                continue
+            segment = pcm[position:position + take * CHANNELS * 2]
+            if gain != 1.0:
+                segment = audioop.mul(segment, 2, gain)
+            low = start_frame * CHANNELS
+            high = low + take * CHANNELS
+            mixed = array.array("h")
+            mixed.frombytes(audioop.add(out[low:high].tobytes(), segment, 2))
+            out[low:high] = mixed
+            entry[1] = position + take * CHANNELS * 2
+            if entry[1] >= len(pcm) and voice is None:
+                self._voices.remove(entry)
+
+
 class TimeStretcher:
     """Pitch-preserving time-stretch: WSOLA over interleaved 16-bit stereo.
 
     Deliberately free of Qt and of any I/O, so the interesting half is testable
-    without an audio device -- the same reason `HitsoundPlayer.pending` is.
+    without an audio device.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, mixer: "HitsoundMixer | None" = None) -> None:
+        # The notes, if anyone wants them. A collaborator rather than something
+        # this class does itself, because where a grain came from is the only
+        # thing the placement needs and this is the only place that knows it.
+        self.mixer = mixer
         self._window = _crossfade_window(OVERLAP_FRAMES)
         # Rebuilt whenever the search width changes, which is whenever the rate
         # does; one array per rate, not per grain.
@@ -329,6 +517,8 @@ class TimeStretcher:
         somewhere else.
         """
         self._read = float(source_frame)
+        if self.mixer is not None:
+            self.mixer.reset(source_frame)
         self._tail = array.array("h", bytes(2 * CHANNELS * OVERLAP_FRAMES))
         self._tail_mono = array.array("h", bytes(2 * OVERLAP_FRAMES))
         self._pending = bytearray()
@@ -397,7 +587,10 @@ class TimeStretcher:
             end = min(available, start + SEQUENCE_FRAMES)
             if end <= start:
                 return False
-            self._pending += source[start * CHANNELS:end * CHANNELS].tobytes()
+            out = source[start * CHANNELS:end * CHANNELS]
+            if self.mixer is not None:
+                self.mixer.mix(out, start, end - start)
+            self._pending += out.tobytes()
             self._pending_rate = 1.0
             self._read = float(end)
             return True
@@ -465,6 +658,12 @@ class TimeStretcher:
         # grain is looked for against a real continuation of the song.
         self._tail = grain[sequence * CHANNELS:]
         self._tail_mono = mono[best_offset + sequence:best_offset + grain_len]
+        # After the tail is taken, and into `out` rather than `grain`: a note
+        # mixed before that would be carried into the next grain's crossfade
+        # and into what the correlation searches against, so the search would
+        # start matching hitsounds instead of music.
+        if self.mixer is not None:
+            self.mixer.mix(out, best_offset, sequence)
         self._pending += out.tobytes()
         self._pending_rate = rate
         # The read head advances by sequence * rate: that ratio, and only it, is
@@ -501,7 +700,18 @@ class _Engine(QObject):
         self._sink = None
         self._device = None
         self._pump = None
-        self._stretcher = TimeStretcher()
+        self._mixer = HitsoundMixer()
+        self._stretcher = TimeStretcher(self._mixer)
+        # Not optional for the engine: the music level is applied inside the
+        # mixer, so the engine always has one even with no chart loaded. The
+        # harnesses construct a bare `TimeStretcher`, which then applies no
+        # gain at all -- which is what a measurement wants.
+        # {key: decoded PCM}, and the decoders building it. Held on the engine
+        # rather than in the mixer because decoding is Qt's and the mixer is
+        # deliberately free of it.
+        self._samples: dict[str, bytes] = {}
+        self._sample_decoders: list = []
+        self._hitsound_offset_ms = 0.0
         # ponytail: the whole track is decoded into memory -- 50MB for a 4:43
         # song, measured. Streaming would halve that at the cost of making every
         # backwards seek a re-decode, and backwards seeks are what an editor does.
@@ -537,6 +747,10 @@ class _Engine(QObject):
         """
         self.stop()
         self._release_decoder()
+        for decoder in self._sample_decoders:
+            decoder.stop()
+            decoder.deleteLater()
+        self._sample_decoders = []
 
     def _release_decoder(self) -> None:
         """Stop the decoder and unhook it before dropping the reference.
@@ -654,7 +868,8 @@ class _Engine(QObject):
         self._sink = QAudioSink(QMediaDevices.defaultAudioOutput(), self._format)
         self._sink.setBufferSize(
             int(SINK_BUFFER_MS / 1000.0 * SAMPLE_RATE) * CHANNELS * 2)
-        self._sink.setVolume(self._volume)
+        # Unity, deliberately: the music level is applied in the buffer by
+        # `HitsoundMixer.mix`, where it can still make headroom for the notes.
         self._device = self._sink.start()
         self._written = 0
         self._segments = [(0, song_ms, self._rate)]
@@ -754,14 +969,90 @@ class _Engine(QObject):
 
     @Slot(float)
     def set_volume(self, volume: float) -> None:
+        """The music level, which is applied in the buffer and not on the sink.
+
+        See `HitsoundMixer.mix`: the sink attenuates everything written to it,
+        including the notes, and it does so after they have been summed -- so
+        the one thing it cannot do is leave room for them.
+        """
         self._volume = max(0.0, min(1.0, float(volume)))
-        if self._sink is not None:
-            self._sink.setVolume(self._volume)
+        self._mixer.music_gain = self._volume
 
     def _set_state(self, state) -> None:
         if state != self._state:
             self._state = state
             self.state_changed.emit(state)
+
+
+    # -- hitsounds ------------------------------------------------------------
+
+    @Slot(object)
+    def set_hitsound_samples(self, paths) -> None:
+        """Decode each note sample once, through the decoder the song uses.
+
+        That conversion is the whole reason not to read WAV headers here: the
+        decoder is handed the engine's own format, so a skin's 48kHz mono .ogg
+        arrives as 44100 stereo like everything else, and `.wav`/`.ogg`/`.mp3`
+        all work because Qt's FFmpeg decoder handles all three (which is what
+        `skin.SOUND_EXTENSIONS` allows).
+
+        Asynchronous, and deliberately not waited for: a note whose sample has
+        not arrived yet is simply not voiced, the same graceful nothing the
+        `QSoundEffect` pools gave while they were loading.
+        """
+        for decoder in self._sample_decoders:
+            decoder.stop()
+            decoder.deleteLater()
+        self._sample_decoders = []
+        self._samples = {}
+        self._mixer.set_samples({})
+        for key, path in dict(paths).items():
+            chunks = bytearray()
+            decoder = QAudioDecoder(self)
+            decoder.setAudioFormat(self._format)
+            decoder.bufferReady.connect(
+                lambda d=decoder, c=chunks: self._take_sample_buffer(d, c))
+            decoder.finished.connect(
+                lambda k=key, c=chunks: self._sample_decoded(k, c))
+            decoder.setSource(QUrl.fromLocalFile(str(path)))
+            decoder.start()
+            self._sample_decoders.append(decoder)
+
+    def _take_sample_buffer(self, decoder, chunks: bytearray) -> None:
+        buffer = decoder.read()
+        if buffer.isValid():
+            chunks.extend(bytes(buffer.constData()))
+
+    def _sample_decoded(self, key: str, chunks: bytearray) -> None:
+        """Published as a whole new dict rather than mutated in place, so the
+        mixer never reads a half-built one between grains."""
+        self._samples[key] = bytes(chunks)
+        self._mixer.set_samples(self._samples)
+
+    @Slot(object, object, object)
+    def set_hitsound_schedule(self, times_ms, keys, volumes) -> None:
+        """The three parallel lists `gui.hitsound_schedule` produces, converted
+        to source frames once here rather than per grain."""
+        self._mixer.set_schedule(
+            [frame_for_ms(time_ms + self._hitsound_offset_ms)
+             for time_ms in times_ms],
+            list(keys), list(volumes))
+
+    @Slot(float)
+    def set_hitsound_volume(self, volume: float) -> None:
+        self._mixer.volume = max(0.0, min(1.0, float(volume)))
+
+    @Slot(bool)
+    def set_hitsounds_enabled(self, enabled: bool) -> None:
+        self._mixer.enabled = bool(enabled)
+
+    @Slot(float)
+    def set_hitsound_offset_ms(self, offset_ms: float) -> None:
+        """Held here rather than applied at mix time because it shifts the
+        *schedule*, and the schedule is integers in source frames. Changing it
+        rebuilds nothing on its own -- the next `set_hitsound_schedule` picks
+        it up, and gui.py sends one whenever a setting changes."""
+        self._hitsound_offset_ms = float(offset_ms)
 
     # -- the pump -------------------------------------------------------------
 
@@ -851,6 +1142,11 @@ class TrackPlayer(QObject):
     _seek = Signal(float)
     _rate = Signal(float)
     _volume = Signal(float)
+    _hitsound_schedule = Signal(object, object, object)
+    _hitsound_samples = Signal(object)
+    _hitsound_volume = Signal(float)
+    _hitsounds_enabled = Signal(bool)
+    _hitsound_offset = Signal(float)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -867,6 +1163,11 @@ class TrackPlayer(QObject):
         self._seek.connect(self._engine.seek)
         self._rate.connect(self._engine.set_rate)
         self._volume.connect(self._engine.set_volume)
+        self._hitsound_schedule.connect(self._engine.set_hitsound_schedule)
+        self._hitsound_samples.connect(self._engine.set_hitsound_samples)
+        self._hitsound_volume.connect(self._engine.set_hitsound_volume)
+        self._hitsounds_enabled.connect(self._engine.set_hitsounds_enabled)
+        self._hitsound_offset.connect(self._engine.set_hitsound_offset_ms)
 
         self._engine.position_changed.connect(self._on_position)
         self._engine.duration_changed.connect(self._on_duration)
@@ -946,6 +1247,29 @@ class TrackPlayer(QObject):
 
     def setVolume(self, volume) -> None:
         self._volume.emit(float(volume))
+
+    # -- hitsounds, which leave through this player and not beside it ---------
+    #
+    # snake_case rather than camelCase on purpose: everything above is
+    # `QMediaPlayer`'s shape so the window's calls keep working, and none of
+    # this is `QMediaPlayer`'s.
+
+    def set_hitsound_schedule(self, times_ms, keys, volumes) -> None:
+        self._hitsound_schedule.emit(list(times_ms), list(keys), list(volumes))
+
+    def set_hitsound_samples(self, paths) -> None:
+        self._hitsound_samples.emit(dict(paths))
+
+    def set_hitsound_volume(self, volume) -> None:
+        self._hitsound_volume.emit(float(volume))
+
+    def set_hitsounds_enabled(self, enabled) -> None:
+        self._hitsounds_enabled.emit(bool(enabled))
+
+    def set_hitsound_offset_ms(self, offset_ms) -> None:
+        """Takes effect on the next schedule, which is what the offset shifts.
+        gui.py sends both together."""
+        self._hitsound_offset.emit(float(offset_ms))
 
     def shutdown(self) -> None:
         """Stop the audio thread. Called from the window's closeEvent: an engine

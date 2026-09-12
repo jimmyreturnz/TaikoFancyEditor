@@ -92,6 +92,40 @@ class ClickToSeekTests(unittest.TestCase):
 
         self.assertEqual(len(seeks), 1, "Fancy Arranger click-to-seek must be unchanged")
 
+    def test_the_overview_bars_emit_one_seek_per_click(self):
+        """The click-stutter report. Both bars used to emit on press *and* on
+        release at the same pixel; the audio engine coalesces a burst, so the
+        duplicate was not dropped but parked, landing 50ms later as a second
+        sink teardown and rebuild -- one hiccup just after every click.
+        """
+        for bar in (gui.TimingOverviewBar(), gui.DensityOverview()):
+            with self.subTest(bar=type(bar).__name__):
+                bar.resize(400, bar.height())
+                bar.duration_ms = 60000
+                seeks: list[int] = []
+                bar.seek_requested.connect(seeks.append)
+
+                _click(bar, 200.0)
+                self.assertEqual(len(seeks), 1, "press and release are one click")
+
+                # A second click on the same pixel is a real request: playback
+                # has moved on since, so it must not be swallowed as a repeat.
+                _click(bar, 200.0)
+                self.assertEqual(len(seeks), 2)
+
+                # A drag that actually moves still seeks per new millisecond.
+                bar.mousePressEvent(QMouseEvent(
+                    QMouseEvent.Type.MouseButtonPress, QPointF(100.0, 10.0),
+                    Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
+                    Qt.KeyboardModifier.NoModifier))
+                before = len(seeks)
+                for x in (120.0, 140.0, 160.0):
+                    bar.mouseMoveEvent(QMouseEvent(
+                        QMouseEvent.Type.MouseMove, QPointF(x, 10.0),
+                        Qt.MouseButton.NoButton, Qt.MouseButton.LeftButton,
+                        Qt.KeyboardModifier.NoModifier))
+                self.assertEqual(len(seeks) - before, 3, "a real drag still seeks")
+
 
 class SliderSpinnerRenderingTests(unittest.TestCase):
     def test_slider_brush_is_distinct_from_don_and_kat(self):

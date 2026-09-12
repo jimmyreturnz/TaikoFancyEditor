@@ -20,7 +20,7 @@ from PySide6.QtCore import (
     QUrl, Signal,
 )
 from PySide6.QtGui import QImageReader, QColor, QFont, QFontDatabase, QFontMetrics, QKeySequence, QPainter, QPen, QPixmap, QPolygonF, QShortcut, QIcon
-from PySide6.QtMultimedia import QMediaPlayer, QSoundEffect
+from PySide6.QtMultimedia import QMediaPlayer
 from PySide6.QtWidgets import (
     QAbstractSlider, QAbstractSpinBox, QApplication, QButtonGroup, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
     QBoxLayout, QGraphicsOpacityEffect, QGridLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem,
@@ -523,28 +523,6 @@ HITSOUND_SAMPLES = {
     "whistle": "taiko-normal-hitwhistle.wav", # big kat
 }
 
-# One QSoundEffect plays one thing at a time: calling play() again restarts it,
-# cutting off the hit still sounding. The samples run from 354ms to 1.5s and a
-# 200 BPM 1/4 stream puts a note every 75ms, so around twenty of them overlap
-# at once -- hence a pool per sample, played round robin, rather than one
-# effect each.
-HITSOUND_POOL_SIZE = 8
-
-# The largest window `advance` will sound, in **wall** milliseconds.
-#
-# One rendered frame covers about 8ms of wall time. A window far larger than
-# that is not playback: it is a seek that arrived as an advance, or the clock
-# catching up after a stall. Sounding every note such a window crossed fires
-# dozens of samples on the same instant, and simultaneous samples *sum* -- the
-# result is far louder than any single hit, loud enough to hurt, and it is not
-# information either, because nobody can hear thirty notes played at once.
-#
-# So a jump is treated as a jump: move the cursor, sound nothing. 200ms is
-# roughly 24 frames, wide enough that ordinary jitter still plays normally and
-# narrow enough that no burst survives it.
-HITSOUND_MAX_WINDOW_MS = 200.0
-
-
 def hitsound_key(note) -> str | None:
     """Which sample `note` asks for, or None when it is silent."""
     if not note.is_circle:
@@ -592,194 +570,120 @@ def hitsound_schedule(
     return times, keys, volumes
 
 
-class HitsoundPlayer(QObject):
-    """Sounds each note as the playhead crosses it, during playback only.
+class HitsoundPlayer:
+    """The chart half of hitsounds: which note wants which sample, how loud,
+    and where its file is. The sound itself is mixed into the music stream by
+    `audio_engine.HitsoundMixer`.
 
-    Deliberately not tied to the audio pipeline: it follows the *song position*
-    the frame loop already computes, so the 25/50/75% playback rates work with
-    no extra arithmetic and without pitch-shifting the samples.
+    **It used to make the sound too**, out of a pool of `QSoundEffect` per
+    sample, played when the interpolated playhead crossed a note in
+    `_render_gameplay_frame`. Three errors stacked in that: placement quantised
+    to a rendered frame, `QSoundEffect`'s own device latency (which is why
+    there is a second offset setting at all), and -- largest at slow rates --
+    the whole residual of `grain_offset_ms`, because the playhead is a linear
+    map over audio that arrives one grain at a time. Mixed into the music
+    instead, a note sits on its own millisecond of the song to the sample at
+    every playback rate, and shares the music's latency because it is in the
+    music's buffer.
 
-    `pending()` is kept free of any audio call so the interesting half -- which
-    notes a window crosses, and what each one wants -- is testable without a
-    media device.
+    What went with the pools:
+
+    - **The pools themselves.** Four samples times eight effects was 32
+      QObjects per window, built lazily because building them eagerly made each
+      MainWindow cost more than the last and turned the test suite quadratic.
+    - **`pending`/`advance` and their window.** There is no window now: a grain
+      voices the notes inside its own 20ms of source and nothing else.
+    - **`HITSOUND_MAX_WINDOW_MS`.** The scroll-burst guard -- the one failure
+      mode in this program that could injure somebody, a seek firing thirty
+      samples on one instant. It is not guarded now, it is impossible:
+      `HitsoundMixer.mix` cannot reach outside the grain it was handed.
+    - **`playback_rate`.** It existed to scale a wall-time offset into song
+      time. The offset is source time now, so the rate has nothing to do.
     """
 
-    def __init__(self, parent=None) -> None:
-        super().__init__(parent)
-        self.enabled = True
-        # Shifts when a sound fires relative to the playhead; negative fires
-        # earlier. Output latency is real and device-dependent, so without this
-        # every hitsound sits late and the user has no recourse.
-        #
-        # **Wall** milliseconds, converted to song milliseconds at the point of
-        # use by multiplying by `playback_rate` -- the same distinction
-        # POSITION_ALLOWABLE_ERROR_MS draws. What it compensates is the time
-        # the sound spends in the output device, which is real time and does
-        # not care how fast the song is being read. Held as a song-time
-        # constant (as it was) an offset tuned at 100% was four times too large
-        # at 25%: the error is offset * (1 - rate), which is exactly zero at
-        # 100% and worst at the slowest speed. That is why every rate except
-        # the one nobody ever changes away from sounded misaligned.
-        self.offset_ms = 0
-        # Kept in step by MainWindow._change_playback_speed. Not read from the
-        # player: `pending()` is deliberately free of any audio call so the
-        # interesting half stays testable without a media device.
-        self.playback_rate = 1.0
-        self._times: list[float] = []
-        self._keys: list[str] = []
-        # Per-note hitsound volume, 0.0-1.0, from the timing point in force at
-        # that note. Parallel to _times, so one window indexes both.
-        self._volumes: list[float] = []
-        self._cursor = 0.0
-        self._pools: dict[str, list[QSoundEffect]] = {}
-        self._next: dict[str, int] = {}
-        # Applied to each effect as it is built, since the volume is usually
-        # set from the settings long before the first sound is ever played.
-        self._volume = 1.0
-        self._built = False
-        # {key: Path} from the chosen skin, or empty for the built-in samples.
+    def __init__(self, player) -> None:
+        self._player = player
+        self._enabled = True
+        self._offset_ms = 0
+        # Remembered so an offset change can re-send without the caller having
+        # to know the offset is baked into the schedule -- it is, because the
+        # schedule is integer source frames and that is where it belongs.
+        self._objects = ()
+        self._points = ()
         self._skin_sounds: dict[str, object] = {}
+        self._sent_paths: dict | None = None
+        self._resolve_samples()
 
-    def _build_pools(self) -> None:
-        """Build every pool, once, the first time a sound is actually wanted.
+    @property
+    def enabled(self) -> bool:
+        return self._enabled
 
-        **Lazily**, which is not an optimisation but a correctness fix. Four
-        samples times `HITSOUND_POOL_SIZE` is 32 QSoundEffect objects, and they
-        outlive the window that owns them until Qt gets round to deleting it --
-        so building them in the constructor made every MainWindow cost more
-        than the last (0.18s at the fifth, 1.37s at the fortieth), which across
-        a test suite that builds hundreds of them is quadratic and turned an
-        82-minute run into hours. Nothing plays a sound in a test, so nothing
-        is built there.
+    @enabled.setter
+    def enabled(self, value) -> None:
+        self._enabled = bool(value)
+        self._player.set_hitsounds_enabled(self._enabled)
 
-        Loading is asynchronous (Loading -> Ready), so this does not block; a
-        note arriving before its sample is ready simply does not play rather
-        than stalling the frame loop.
-        """
-        if self._built:
+    @property
+    def offset_ms(self) -> int:
+        return self._offset_ms
+
+    @offset_ms.setter
+    def offset_ms(self, value) -> None:
+        self._offset_ms = int(value)
+        self._player.set_hitsound_offset_ms(self._offset_ms)
+        # The offset shifts the schedule, so the schedule has to be re-sent.
+        self._send_schedule()
+
+    def set_volume(self, fraction: float) -> None:
+        self._player.set_hitsound_volume(max(0.0, min(1.0, float(fraction))))
+
+    def set_skin_sounds(self, sounds) -> None:
+        if dict(sounds) == self._skin_sounds:
             return
-        self._built = True
+        self._skin_sounds = dict(sounds)
+        self._resolve_samples()
+
+    def _resolve_samples(self) -> None:
+        """Which file each key plays, resolved per key rather than per skin: a
+        skin shipping only a don keeps the built-in kat rather than falling
+        silent."""
+        paths = {}
         for key, filename in HITSOUND_SAMPLES.items():
-            # The skin's sample when it has one, per key: a skin that ships
-            # only a don keeps the built-in kat rather than falling silent.
             path = self._skin_sounds.get(key)
             if path is None:
                 path = next(
                     (
                         candidate for candidate in
-                        (root / "assets" / "se" / filename for root in resource_roots())
+                        (root / "assets" / "se" / filename
+                         for root in resource_roots())
                         if candidate.is_file()
                     ),
                     None,
                 )
-            if path is None:
-                continue
-            pool = []
-            for _ in range(HITSOUND_POOL_SIZE):
-                effect = QSoundEffect(self)
-                effect.setSource(QUrl.fromLocalFile(str(path)))
-                effect.setVolume(self._volume)
-                pool.append(effect)
-            self._pools[key] = pool
-            self._next[key] = 0
-
-    def set_skin_sounds(self, sounds) -> None:
-        """Play a skin's samples instead of the built-in ones.
-
-        Tears the pools down rather than editing them: a QSoundEffect's source
-        is set once when it is built, and a pool half on the old skin would
-        play whichever effect the round robin happened to reach.
-        """
-        if dict(sounds) == self._skin_sounds:
+            if path is not None:
+                paths[key] = str(path)
+        if paths == self._sent_paths:
             return
-        self._skin_sounds = dict(sounds)
-        for pool in self._pools.values():
-            for effect in pool:
-                effect.stop()
-                effect.deleteLater()
-        self._pools.clear()
-        self._next.clear()
-        self._built = False
-
-    def set_volume(self, fraction: float) -> None:
-        """Remembered as well as applied: the settings are read at startup,
-        long before any pool exists, and `_build_pools` reads it back."""
-        self._volume = max(0.0, min(1.0, float(fraction)))
-        for pool in self._pools.values():
-            for effect in pool:
-                effect.setVolume(self._volume)
+        self._sent_paths = paths
+        self._player.set_hitsound_samples(paths)
 
     def set_schedule(self, hit_objects, timing_points=()) -> None:
-        self._times, self._keys, self._volumes = hitsound_schedule(
-            hit_objects, timing_points)
+        self._objects = hit_objects
+        self._points = timing_points
+        self._send_schedule()
 
-    def reset_to(self, position_ms: float) -> None:
-        """Move the firing cursor without sounding anything.
+    @property
+    def schedule(self):
+        """(times, keys, volumes) exactly as the last send computed them.
 
-        Every seek comes through here. Without it, jumping forward would fire
-        every note between the old position and the new one in a single frame,
-        and jumping backwards would replay the section you just left.
-        """
-        self._cursor = float(position_ms)
+        Recomputed rather than stored: it is only read to check that an edit
+        reached the samples (`test_kiai_sound_layer`), and a stored copy would
+        be a second few-thousand-entry list per refresh on a gimmick
+        difficulty for the benefit of nothing that plays."""
+        return hitsound_schedule(self._objects, self._points)
 
-    def pending(self, previous_ms: float, current_ms: float) -> list[str]:
-        """Sample keys for every note the playhead crossed in this window.
-
-        Half-open on purpose -- `(previous, current]` -- so consecutive frames
-        tile the timeline exactly: a note on a window boundary fires in one
-        frame and never in both.
-        """
-        first, last = self._window(previous_ms, current_ms)
-        return self._keys[first:last]
-
-    def _window(self, previous_ms: float, current_ms: float) -> tuple[int, int]:
-        """Schedule bounds for `(previous, current]`, or an empty range.
-
-        Separate from `pending` so `advance` can read the *volumes* over the
-        same window without `pending` having to return pairs -- which notes a
-        window crosses is the interesting half, and it stays a list of keys.
-        """
-        if not self.enabled or current_ms <= previous_ms:
-            return 0, 0
-        # See `offset_ms`: wall milliseconds, so the window it shifts has to be
-        # scaled into song time by whatever rate the song is playing at.
-        offset = self.offset_ms * abs(self.playback_rate)
-        return (bisect_right(self._times, previous_ms - offset),
-                bisect_right(self._times, current_ms - offset))
-
-    def advance(self, current_ms: float) -> None:
-        """Sound whatever the playhead crossed, unless it did not cross it.
-
-        The guard is on the window rather than on the number of samples: what
-        makes a burst dangerous is that the notes land together, and a count
-        limit would still let thirty of them start on the same millisecond.
-        Scaled by the rate for the same reason `offset_ms` is -- the cap is
-        about what reaches the ear, which does not care how fast the song is
-        being read.
-        """
-        if current_ms - self._cursor > HITSOUND_MAX_WINDOW_MS * max(0.01, abs(self.playback_rate)):
-            self.reset_to(current_ms)
-            return
-        first, last = self._window(self._cursor, current_ms)
-        for index in range(first, last):
-            self._play(self._keys[index], self._volumes[index])
-        self._cursor = float(current_ms)
-
-    def _play(self, key: str, volume: float = 1.0) -> None:
-        """`volume` is the section's hitsound volume as a fraction of the
-        user's own hitsound level. Zero is silent, which is a thing mappers set
-        deliberately, so it is obeyed rather than treated as a floor.
-        """
-        self._build_pools()
-        pool = self._pools.get(key)
-        if not pool:
-            return
-        index = self._next[key]
-        self._next[key] = (index + 1) % len(pool)
-        effect = pool[index]
-        if effect.isLoaded():
-            effect.setVolume(self._volume * volume)
-            effect.play()
+    def _send_schedule(self) -> None:
+        self._player.set_hitsound_schedule(*self.schedule)
 
 
 def extract_timing_points(document) -> list[TimingPoint]:
@@ -5321,7 +5225,7 @@ class TimingOverviewBar(QWidget):
         super().__init__()
         self.duration_ms=1; self.current_time=0; self.viewport_start=0; self.viewport_end=0
         self.kiai=[]; self.timing_markers=[]; self._marker_kinds=[]; self.bookmarks=[]; self.preview_time=None; self.dragging=False
-        self._marker_cache_key=None; self._marker_lines=[]
+        self._marker_cache_key=None; self._marker_lines=[]; self._last_seek_ms=None
         # Everything but the playhead, the viewport box and the preview line is
         # fixed for the life of a document, so it is painted once into a pixmap
         # rather than 120 times a second. Same idiom as DensityOverview below.
@@ -5353,7 +5257,19 @@ class TimingOverviewBar(QWidget):
     def set_time(self,value:int)->None:self.current_time=max(0,min(value,self.duration_ms));self.update()
     def set_viewport(self,center:int,window_ms:float)->None:
         self.viewport_start=max(0,center-window_ms/2);self.viewport_end=min(self.duration_ms,center+window_ms/2);self.update()
-    def _seek(self,x:float)->None:self.seek_requested.emit(round(max(0,min(1,x/max(1,self.width())))*self.duration_ms))
+    def _seek(self,x:float)->None:
+        """Emit a seek, but only for a millisecond that is not already in force.
+
+        One plain click is a press *and* a release at the same pixel, and both
+        used to emit. The audio engine coalesces a burst (`SEEK_COALESCE_MS`),
+        so the duplicate was not dropped but *parked*: it landed 50ms later as
+        a second full sink teardown and rebuild, which is the one hiccup heard
+        just after every click on the bar. A slow drag that stays inside one
+        millisecond was paying the same way.
+        """
+        value=round(max(0,min(1,x/max(1,self.width())))*self.duration_ms)
+        if value==self._last_seek_ms:return
+        self._last_seek_ms=value;self.seek_requested.emit(value)
     def _marker_line_positions(self):
         """(x, kind) per pixel column, cached until the bar or the map changes.
 
@@ -5376,7 +5292,9 @@ class TimingOverviewBar(QWidget):
             self._marker_cache_key=key;self._marker_lines=sorted(columns.items())
         return self._marker_lines
     def mousePressEvent(self,event)->None:
-        if event.button()==Qt.LeftButton:self.dragging=True;self._seek(event.position().x())
+        # Cleared first so a second click on the same pixel still seeks:
+        # playback has moved on since, so it is a real request to go back.
+        if event.button()==Qt.LeftButton:self.dragging=True;self._last_seek_ms=None;self._seek(event.position().x())
     def mouseMoveEvent(self,event)->None:
         if self.dragging:self._seek(event.position().x())
     def mouseReleaseEvent(self,event)->None:
@@ -5437,6 +5355,7 @@ class DensityOverview(QWidget):
     seek_requested = Signal(int)
     def __init__(self) -> None:
         super().__init__(); self.duration_ms=1; self.current_time=0; self.viewport_start=0; self.viewport_end=0; self.windows=[]; self.dragging=False
+        self._last_seek_ms=None
         self.static_layer = QPixmap()
         self.static_layer_dirty = True
         self.setFixedHeight(58); self.setCursor(Qt.PointingHandCursor)
@@ -5464,9 +5383,16 @@ class DensityOverview(QWidget):
     def set_time(self,value:int)->None:self.current_time=max(0,min(value,self.duration_ms));self.update()
     def set_viewport(self,center:int,window_ms:float)->None:
         self.viewport_start=max(0,center-window_ms/2); self.viewport_end=min(self.duration_ms,center+window_ms/2); self.update()
-    def _seek(self,x:float)->None:self.seek_requested.emit(round(max(0,min(1,x/max(1,self.width())))*self.duration_ms))
+    def _seek(self,x:float)->None:
+        """See `TimingOverviewBar._seek`: a press and a release at the same
+        pixel are one click, and the duplicate became a delayed sink rebuild."""
+        value=round(max(0,min(1,x/max(1,self.width())))*self.duration_ms)
+        if value==self._last_seek_ms:return
+        self._last_seek_ms=value;self.seek_requested.emit(value)
     def mousePressEvent(self,event)->None:
-        if event.button()==Qt.LeftButton:self.dragging=True;self._seek(event.position().x())
+        # Cleared first so a second click on the same pixel still seeks:
+        # playback has moved on since, so it is a real request to go back.
+        if event.button()==Qt.LeftButton:self.dragging=True;self._last_seek_ms=None;self._seek(event.position().x())
     def mouseMoveEvent(self,event)->None:
         if self.dragging:self._seek(event.position().x())
     def mouseReleaseEvent(self,event)->None:
@@ -8671,7 +8597,7 @@ class MainWindow(QMainWindow):
         # a rate change that does not stall all live below the level Qt's
         # player exposes.
         self.player = TrackPlayer(self)
-        self.hitsounds = HitsoundPlayer(self)
+        self.hitsounds = HitsoundPlayer(self.player)
         # Music volume was hardcoded here until it had a settings page; both it
         # and the hitsound values are read in one place so the Settings dialog
         # can re-apply them without a restart.
@@ -14883,8 +14809,6 @@ class MainWindow(QMainWindow):
         # which is the speed-button jump this scheme exists to remove. Rebase
         # it on the old rate first, then let the new one run from there.
         rate=float(rate)
-        # Hitsound offset is wall time; the window it shifts is song time.
-        self.hitsounds.playback_rate=rate
         self.latest_audio_position=self._source_clock_position()
         self._source_report_clock.restart()
         self.audio_anchor_position=self._predicted_audio_position();self.audio_anchor_clock.restart()
@@ -14902,13 +14826,24 @@ class MainWindow(QMainWindow):
             active=abs(float(button.property("playbackRate"))-rate)<0.0001
             button.blockSignals(True);button.setChecked(active);button.blockSignals(False)
 
+    def _set_views_playing(self, playing: bool) -> None:
+        """Tell every time-axis view whether the song is running.
+
+        The wheel steps a whole beat while playing (`TimeAxisMixin.wheelEvent`),
+        so this cannot be the main timeline alone the way the playhead flag once
+        was -- the Editor and gimmick pages scroll their own views.
+        """
+        self.timeline.is_playing = playing
+        for view in (self._chart_views + self._sv_views + self._gameplay_views):
+            view.is_playing = playing
+
     def toggle_playback(self) -> None:
         if (
             self.player.playbackState()
             == QMediaPlayer.PlayingState
         ):
             self.player.pause()
-            self.timeline.is_playing=False
+            self._set_views_playing(False)
             self.play_button.setText(tr("MainWindow", "Play"))
             if hasattr(self,"timeline_play_button"):self.timeline_play_button.setText("▶")
             if hasattr(self,"editor_play_button"):self.editor_play_button.setText("▶")
@@ -14922,7 +14857,7 @@ class MainWindow(QMainWindow):
             # audio while play() is still setting itself up and counting that
             # setup as elapsed song time is what put the playhead ahead of the
             # music for the first second of every resume.
-            self.timeline.is_playing=True
+            self._set_views_playing(True)
             self.player.play()
             self.audio_anchor_clock.restart()
             self._source_report_clock.restart()
@@ -14945,9 +14880,9 @@ class MainWindow(QMainWindow):
         position=max(0.0,float(position)); self.audio_anchor_position=position; self.latest_audio_position=position
         self.audio_anchor_clock.restart(); self._source_report_clock.restart(); self._last_predicted_position=position
         self._awaiting_rate_report=False
-        # Before anything else: a jump forward would otherwise fire every note
-        # it skipped in one frame, and a jump backwards would replay them.
-        self.hitsounds.reset_to(position)
+        # No hitsound cursor to move: `TimeStretcher.reset` drops the mixer's
+        # voices and watermark with the overlap tail, so the seek below is the
+        # whole of it.
         self.player.setPosition(round(position))
         # Every chart view, not just the shared deck timeline: on the gimmick
         # page the six layers are chart views, and a seek that reached only
@@ -15173,23 +15108,20 @@ class MainWindow(QMainWindow):
         # their own paths (seek_audio, refresh_notes), never through this one.
         if position==self._last_broadcast_position:return
         self._last_broadcast_position=position
-        # Sound whatever the playhead just crossed. Only while actually
-        # playing: scrubbing and editing move the position too, and firing
-        # there would machine-gun the whole section under the cursor.
-        if self.player.playbackState() == QMediaPlayer.PlayingState:
-            self.hitsounds.advance(position)
-        else:
-            self.hitsounds.reset_to(position)
+        # Nothing here makes a sound any more. The notes are mixed into the
+        # music stream a grain at a time (`audio_engine.HitsoundMixer`), so a
+        # frame that renders late, early or not at all cannot move them.
         # What the backend reports is the sample it handed to the device, not
         # the one reaching the ears -- the difference is the output latency,
         # which is a constant number of *real* milliseconds. Song time is what
         # the views are drawn against, so it converts by the playback rate,
-        # exactly as HitsoundPlayer.offset_ms does for the sample path. Left in
-        # real time it would be four times too large at 0.25x.
+        # Left in real time it would be four times too large at 0.25x.
         #
-        # The hitsounds above deliberately do not get this: they leave through
-        # QSoundEffect rather than through the music player, and that path has
-        # its own latency and its own offset setting.
+        # The hitsounds do not need this and must not have it: they are in the
+        # same buffer as the music now, so they already carry exactly this
+        # latency, and applying it to them as well would move them off the
+        # music by it. `audio/hitsound_offset_ms` survives as a *trim* against
+        # the music, which is a different thing and much smaller.
         #
         # **Only while actually playing.** What the offset compensates is the
         # lag between the backend handing a sample to the device and that sample

@@ -1,10 +1,11 @@
-"""Hitsounds: which notes sound, and when each one fires.
+"""Hitsounds: which notes sound, how loud, and which file each one plays.
 
-The audio itself is not exercised -- there is no point asserting that Qt can
-play a wav. What matters, and what has somewhere to go wrong, is the selection
-("circles only, and which of the four samples") and the scheduling ("each note
-exactly once, never twice, never on a seek"), both of which `HitsoundPlayer`
-keeps free of any audio call so they can be tested without a media device.
+The *placement* half of the question lives in `test_hitsound_mixing.py` now,
+because that is where the sound is made: `HitsoundPlayer` hands a schedule to
+the engine, and `audio_engine.HitsoundMixer` mixes it into the music stream.
+What is left here is the chart half -- "circles only, and which of the four
+samples", the section volume, and the forwarding -- none of which needs an
+audio device.
 """
 from __future__ import annotations
 
@@ -139,174 +140,110 @@ class SectionVolumeTests(unittest.TestCase):
         self.assertEqual(volumes, [1.0, 0.5])
 
 
-class FiringWindowTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.player = gui.HitsoundPlayer()
-        self.player.set_schedule([
-            circle(1000), circle(1100, HITSOUND_CLAP), circle(1200, HITSOUND_FINISH),
-        ])
+class _FakePlayer:
+    """Records what the forwarder sends, so the chart half can be tested with
+    no audio thread and no device."""
 
-    def test_a_window_fires_the_notes_it_crosses(self):
-        self.assertEqual(self.player.pending(950, 1150), ["normal", "clap"])
+    def __init__(self) -> None:
+        self.schedules: list[tuple] = []
+        self.samples: list[dict] = []
+        self.volumes: list[float] = []
+        self.enabled: list[bool] = []
+        self.offsets: list[float] = []
 
-    def test_consecutive_windows_fire_each_note_exactly_once(self):
-        """The windows have to tile the timeline: a note landing on a boundary
-        must fire in one frame and not in both."""
-        fired = []
-        for start in range(900, 1300, 100):
-            fired += self.player.pending(start, start + 100)
-        self.assertEqual(fired, ["normal", "clap", "finish"])
+    def set_hitsound_schedule(self, times, keys, volumes) -> None:
+        self.schedules.append((list(times), list(keys), list(volumes)))
 
-    def test_a_note_exactly_on_the_boundary_is_not_doubled(self):
-        self.assertEqual(self.player.pending(900, 1000), ["normal"])
-        self.assertEqual(self.player.pending(1000, 1050), [])
+    def set_hitsound_samples(self, paths) -> None:
+        self.samples.append(dict(paths))
 
-    def test_going_backwards_fires_nothing(self):
-        self.assertEqual(self.player.pending(1300, 1000), [])
+    def set_hitsound_volume(self, volume) -> None:
+        self.volumes.append(volume)
 
-    def test_a_seek_moves_the_cursor_without_firing(self):
-        self.player.reset_to(900)
-        self.player.reset_to(1300)
-        # Everything between was skipped over, so the next real frame from
-        # 1300 has nothing left behind it to catch up on.
-        self.assertEqual(self.player.pending(self.player._cursor, 1350), [])
+    def set_hitsounds_enabled(self, enabled) -> None:
+        self.enabled.append(enabled)
 
-    def test_a_negative_offset_fires_earlier(self):
-        """The latency knob: -40 means the sound is triggered while the
-        playhead is still 40ms short of the note."""
-        self.player.offset_ms = -40
-        self.assertEqual(self.player.pending(950, 965), ["normal"])
-        self.player.offset_ms = 0
-        self.assertEqual(self.player.pending(950, 965), [])
-
-    def test_a_positive_offset_fires_later(self):
-        self.player.offset_ms = 40
-        self.assertEqual(self.player.pending(1000, 1020), [])
-        self.assertEqual(self.player.pending(1020, 1045), ["normal"])
-
-    def test_the_offset_is_wall_time_so_it_scales_with_the_rate(self):
-        """The knob compensates output latency, which is real time.
-
-        Held as song time it was right only at 1.0x -- the error is
-        offset * (1 - rate), zero at 100% and worst at the slowest speed,
-        which is why every rate except the default sounded misaligned.
-        At 0.5x, 40ms of real latency is 20ms of song.
-        """
-        self.player.offset_ms = -40
-
-        self.player.playback_rate = 1.0
-        self.assertEqual(self.player.pending(950, 965), ["normal"])
-
-        self.player.playback_rate = 0.5
-        # The note is now only 20ms of song early, so the same window that
-        # caught it at 1.0x is past it before it is due.
-        self.assertEqual(self.player.pending(950, 965), [])
-        self.assertEqual(self.player.pending(975, 985), ["normal"])
-
-    def test_the_offset_scales_by_magnitude_not_sign(self):
-        self.player.offset_ms = -40
-        self.player.playback_rate = -0.5
-        self.assertEqual(self.player.pending(975, 985), ["normal"])
-
-    def test_no_offset_means_the_rate_changes_nothing(self):
-        for rate in (1.0, 0.75, 0.5, 0.25):
-            self.player.playback_rate = rate
-            self.assertEqual(self.player.pending(950, 1050), ["normal"], rate)
-
-    def test_disabled_fires_nothing(self):
-        self.player.enabled = False
-        self.assertEqual(self.player.pending(0, 100000), [])
-
-    def test_advance_leaves_the_cursor_where_it_arrived(self):
-        self.player.reset_to(900)
-        self.player.advance(1150)
-        self.assertEqual(self.player._cursor, 1150.0)
-        self.assertEqual(self.player.pending(1150, 1250), ["finish"])
+    def set_hitsound_offset_ms(self, offset_ms) -> None:
+        self.offsets.append(offset_ms)
 
 
-class PoolTests(unittest.TestCase):
-    def test_no_pool_is_built_until_a_sound_is_actually_wanted(self):
-        """Four samples times the pool size is 32 QSoundEffect objects, and
-        they outlive the window that owns them -- building them in the
-        constructor made every MainWindow cost more than the last, which
-        across a suite that builds hundreds of them is quadratic."""
-        player = gui.HitsoundPlayer()
-        self.assertEqual(player._pools, {})
+class ForwardingTests(unittest.TestCase):
+    """`HitsoundPlayer` no longer makes a sound -- it decides which sample each
+    note wants and hands the schedule to the engine, which mixes it into the
+    music stream.
 
-    def test_the_first_sound_builds_every_pool(self):
-        """The samples run to 1.5s and a dense stream overlaps ~20 deep, so a
-        single effect per sample would cut off each previous hit."""
-        player = gui.HitsoundPlayer()
-        player._play("normal")
-        self.assertEqual(set(player._pools), set(gui.HITSOUND_SAMPLES))
-        for key, pool in player._pools.items():
-            self.assertEqual(len(pool), gui.HITSOUND_POOL_SIZE, key)
+    The invariants the pool and firing-window tests used to pin have not gone
+    away, they have moved to where the sound is now made:
 
-    def test_a_volume_set_before_any_pool_exists_still_applies(self):
-        """The settings are read at startup, long before the first sound."""
-        player = gui.HitsoundPlayer()
-        player.set_volume(0.25)
-        player._play("normal")
-        self.assertAlmostEqual(player._pools["normal"][0].volume(), 0.25, places=3)
-
-    def test_playing_walks_round_the_pool(self):
-        player = gui.HitsoundPlayer()
-        for step in range(gui.HITSOUND_POOL_SIZE + 2):
-            expected = (step + 1) % gui.HITSOUND_POOL_SIZE
-            player._play("normal")
-            self.assertEqual(player._next["normal"], expected)
-
-
-
-
-class BurstGuardTests(unittest.TestCase):
-    """A jump must not sound every note it skipped.
-
-    Reported from the editor: scrolling fast during playback produced a burst
-    loud enough to hurt. Simultaneous samples sum, so thirty notes starting on
-    one instant is far louder than any single hit -- and conveys nothing, since
-    nobody can hear thirty notes at once.
+    - each note exactly once, never twice -> `test_hitsound_mixing.DedupeTests`
+    - nothing fired by a seek -> `test_hitsound_mixing.SeekTests`
+    - a note on a boundary counted once -> `PlacementTests`
+    - overlapping samples not cutting each other off, which is what the pool of
+      eight existed for -> `LongSampleTests` and `PlacementTests`
     """
 
     def setUp(self) -> None:
-        self.player = gui.HitsoundPlayer()
-        self.played: list[str] = []
-        self.player._play = lambda key, volume=1.0: self.played.append(key)
-        # A dense stream long enough to jump around inside: one note every
-        # 20ms for twenty seconds. Built by hand rather than from a thousand
-        # hit objects -- the three lists are parallel by contract, so they are
-        # set together.
-        self.player._times = [float(i * 20) for i in range(1000)]
-        self.player._keys = ["normal"] * 1000
-        self.player._volumes = [1.0] * 1000
-        self.player.reset_to(0.0)
+        self.fake = _FakePlayer()
+        self.player = gui.HitsoundPlayer(self.fake)
 
-    def test_an_ordinary_frame_still_sounds_its_notes(self):
-        # (0, 50] crosses the notes at 20 and 40 -- `pending` is half-open on
-        # the left so consecutive frames tile the timeline exactly.
-        self.player.advance(50.0)
-        self.assertEqual(len(self.played), 2)
+    def test_every_sample_is_resolved_at_construction(self):
+        """Not lazily, and this is now safe to do eagerly: the old pools were
+        32 QSoundEffect objects per window, which made every MainWindow cost
+        more than the last. This is four paths in a dict."""
+        self.assertEqual(len(self.fake.samples), 1)
+        self.assertEqual(set(self.fake.samples[0]), set(gui.HITSOUND_SAMPLES))
 
-    def test_a_jump_sounds_nothing_and_still_moves_the_cursor(self):
-        self.player.advance(4000.0)
-        self.assertEqual(self.played, [], "a 4-second jump is not 200 hits")
-        self.assertEqual(self.player._cursor, 4000.0)
+    def test_the_schedule_is_forwarded_as_three_parallel_lists(self):
+        self.player.set_schedule([circle(1000), circle(1100, HITSOUND_CLAP)])
+        times, keys, volumes = self.fake.schedules[-1]
+        self.assertEqual(times, [1000.0, 1100.0])
+        self.assertEqual(keys, ["normal", "clap"])
+        self.assertEqual(volumes, [1.0, 1.0])
 
-    def test_playing_resumes_normally_after_a_jump(self):
-        self.player.advance(4000.0)
-        self.player.advance(4050.0)
-        self.assertEqual(len(self.played), 2)
+    def test_enabling_and_disabling_reaches_the_engine(self):
+        self.player.enabled = False
+        self.assertEqual(self.fake.enabled[-1], False)
+        self.assertFalse(self.player.enabled)
+        self.player.enabled = True
+        self.assertEqual(self.fake.enabled[-1], True)
 
-    def test_the_window_is_wall_time_so_it_scales_with_the_rate(self):
-        """At 0.25x the same wall-clock stall spans a quarter of the song time,
-        so a fixed song-time cap would be four times too generous."""
-        self.player.playback_rate = 0.25
-        allowed = gui.HITSOUND_MAX_WINDOW_MS * 0.25
-        self.player.advance(allowed - 5.0)
-        self.assertGreater(len(self.played), 0)
-        self.played.clear()
-        self.player.advance(self.player._cursor + allowed + 50.0)
-        self.assertEqual(self.played, [])
+    def test_the_volume_is_clamped_before_it_is_sent(self):
+        self.player.set_volume(1.5)
+        self.player.set_volume(-0.2)
+        self.assertEqual(self.fake.volumes, [1.0, 0.0])
+
+    def test_an_offset_change_re_sends_the_schedule(self):
+        """The offset is baked into the schedule, because the schedule is
+        integer source frames and that is where a shift belongs. Changing it
+        without re-sending would leave it with no effect until the next edit."""
+        self.player.set_schedule([circle(1000)])
+        before = len(self.fake.schedules)
+        self.player.offset_ms = -15
+        self.assertEqual(self.fake.offsets[-1], -15)
+        self.assertGreater(len(self.fake.schedules), before)
+
+    def test_an_offset_set_before_any_schedule_is_still_applied(self):
+        """The settings are read at startup, before a document is open."""
+        self.player.offset_ms = 20
+        self.player.set_schedule([circle(1000)])
+        self.assertEqual(self.fake.offsets[-1], 20)
+        self.assertEqual(self.fake.schedules[-1][0], [1000.0])
+
+    def test_a_skin_sample_replaces_only_its_own_key(self):
+        """A skin shipping only a don keeps the built-in kat rather than
+        falling silent."""
+        self.player.set_skin_sounds({"normal": "C:/skin/don.wav"})
+        sent = self.fake.samples[-1]
+        self.assertEqual(sent["normal"], "C:/skin/don.wav")
+        self.assertIn("clap", sent)
+        self.assertNotEqual(sent["clap"], "C:/skin/don.wav")
+
+    def test_the_same_skin_twice_sends_nothing_new(self):
+        """Every send tears down four decoders and rebuilds them, and
+        `_apply_audio_settings` runs on every settings save."""
+        before = len(self.fake.samples)
+        self.player.set_skin_sounds({})
+        self.assertEqual(len(self.fake.samples), before)
 
 
 if __name__ == "__main__":
