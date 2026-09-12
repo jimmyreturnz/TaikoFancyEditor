@@ -839,10 +839,27 @@ scope ("left click places, right click deletes," not "and then resize").
   only at `POSITION_HARD_RESYNC_THRESHOLD_MS` (200ms, a real discontinuity). `tests/test_playback_timing.py`
   covers both paths plus convergence under a simulated steady bias.
 
-  **Known limitation, not fully fixable from here:** some of the residual inaccuracy is plausibly
+  ~~**Known limitation, not fully fixable from here:** some of the residual inaccuracy is plausibly
   Qt Multimedia's own FFmpeg-backed rate-changing, not this app's tracking code — osu!'s own engine
   (historically BASS/BASS_FX) does higher-quality time-stretching. Swapping the audio backend
-  entirely is a much larger undertaking than tuning the estimator and wasn't attempted here.
+  entirely is a much larger undertaking than tuning the estimator and wasn't attempted here.~~
+
+  **Superseded, and it was not Qt.** The backend was replaced (`audio_engine.TrackPlayer`) and the
+  inaccuracy stayed, because it was never in the backend: it is in the stretch's own geometry. A
+  cycle emits one grain of *unstretched* source, so inside a grain the audio advances at 1.0x while
+  the reported position advances at `rate` — an error that ramps `0 → sequence × (1 - rate)` and
+  resets at every splice. It matched the closed-form prediction to within 1 ms at all three rates
+  (predicted 43.9 / 29.2 / 13.0 ms worst at 0.25 / 0.5 / 0.75x, measured 45.1 / 30.0 / 13.0), which
+  is what made it fixable: the only lever is grain length, and shortening the grain from 117 ms to
+  20 ms took it to 7.9 / 2.9 / 3.0 ms. `tools/measure_stretch_timing.py` is the harness.
+
+  Two things worth keeping from how that went. **Copying upstream is not the same as being right
+  for this app** — SoundTouch's `calcSeqParameters` asks for a *longer* grain at slow rates because
+  it is optimising for sound and has no opinion about position reporting, and shipping it made a
+  kick drum come apart on a real master while every synthetic metric rated it 0.987 and fine. And
+  **the reach has to scale with the grain**: left at upstream's 25 ms against a 20 ms grain it is
+  wider than the grain itself, and tonality at 0.75x collapsed to 0.457 — caught by the harness at
+  the one rate nobody had listened to.
 - **Paint performance.** `TimelineGameplay._draw_snap_grid` constructed a new `QColor`/`QPen` per
   tick per frame; at fine snap divisors with several chart views open at once (now the default,
   since M2 auto-opens chart + SV per difficulty) that allocation churn was a real stutter

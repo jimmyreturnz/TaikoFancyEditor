@@ -29,13 +29,57 @@ It also removes the Ogg problem outright. `QAudioDecoder` decodes through Qt's
 FFmpeg decoder whatever the platform backend is, so there is no format the app
 must fall back for, and no deprecated Windows backend to depend on.
 
-The engine runs on its own thread. The stretch costs about 22% of a core at
-0.25x (`tools/bench_timestretch.py`) -- affordable, but nowhere near affordable
-on the thread that has 8.33ms to paint a frame in.
+The engine runs on its own thread. The stretch costs about 15% of a core at
+0.25x (`tools/measure_stretch_quality.py`) -- affordable, but nowhere near
+affordable on the thread that has 8.33ms to paint a frame in.
+
+Four clocks, and which one is in charge
+---------------------------------------
+
+Most of the timing bugs this file has had were two of these being treated as
+one, so they are named here.
+
+1. **Chart time** -- the milliseconds in the `.osu`: note times, timing points,
+   SV points, everything the editor draws and writes. Integers as the file
+   gives them, and **nothing here ever changes one**. `frame_for_ms` is the
+   only conversion out of it.
+
+2. **Source time** -- the position in the decoded PCM, in frames. The same
+   thing as chart time to within the audio's own offset, and the one the notes
+   are placed against (`HitsoundMixer.mix`), because it is the only clock that
+   says where a *sample of music* is rather than where the playhead thinks it
+   is. Integer frames throughout.
+
+3. **Device output time** -- when a sample reaches the ear. Sink buffer
+   (`SINK_BUFFER_MS`, 80ms), driver, hardware, and on Bluetooth a great deal
+   more. **Not knowable from in here**, only measurable: `offset_calibration`
+   asks the user to tap along and writes `audio/output_offset_ms`, and gui.py
+   subtracts it from what it draws.
+
+4. **UI time** -- what the views are drawn against. gui.py's port of osu!'s
+   `InterpolatingFramedClock` advances this once per rendered frame and eases
+   it toward clock 2, so a frame arriving late does not make the playhead jump.
+
+**Clock 2 is authoritative.** `_position_ms` reads `QAudioSink.processedUSecs`
+-- the play cursor, measured, not the write cursor -- and maps it back through
+`_segments` and `grain_offset_ms`. Clock 4 follows it and never leads it; clock
+3 is a constant the user calibrates; clock 1 is data.
+
+The one thing that is *not* derived from clock 4 any more is sound. Notes used
+to be fired from the render loop, which made them a function of when a frame
+happened to run; they are mixed against clock 2 now, so a dropped frame cannot
+move a hitsound.
 """
 from __future__ import annotations
 
 import array
+# ponytail: `audioop` is deprecated and gone in Python 3.13. It is here for one
+# thing -- `add` is the only saturating 16-bit mix in the standard library, and
+# `mul` the only gain, both in C -- and the frozen build is 3.11. When it does
+# go, `HitsoundMixer._sound` is the only caller: a plain loop over `array`
+# slices costs about ten times as much per sample but runs over one grain's
+# 882 frames, so measure `tools/measure_slow_rate_playback.py` rather than
+# assume it is too slow.
 import audioop
 import math
 from bisect import bisect_left

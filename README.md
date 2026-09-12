@@ -121,19 +121,34 @@ Language is chosen on first start and can be changed in **Settings**. Changing i
 
 ## Audio settings
 
-Notes make sound during playback, using hitsound samples shipped in `assets/se/`: don, kat, big don and big kat each have their own sample. Only circles are voiced — fake sliders and barline gimmicks stay silent.
+Notes make sound during playback, using hitsound samples shipped in `assets/se/`: don, kat, big don and big kat each have their own sample. Only circles are voiced — fake sliders and barline gimmicks stay silent. A skin's own samples are used when it ships them, per sample, so a skin with only a don keeps the built-in kat.
 
-The **Audio** settings page carries hitsound enable and volume, a latency offset in milliseconds, and music volume, which previously had no UI at all.
+The **Audio** settings page carries hitsound enable and volume, a hitsound trim in milliseconds, music volume, and the music offset with its calibration wizard.
+
+**Notes are mixed into the song itself**, at the exact sample the music they belong to is at. They used to be played as separate one-shot sounds triggered when the playhead reached them, which put each note a rendered frame plus your sound card's own latency away from the drum it was meant to land on. Now there is one stream, so a note cannot drift from the music at any speed — and a fast scroll can no longer stack a section's notes into one loud burst, because nothing outside the twenty milliseconds being mixed can make a sound.
 
 ### Slow playback
 
 25%, 50% and 75% **keep the original pitch**. The song is time-stretched rather than slowed like a record, so a quarter-speed stream still sounds like the instruments it was played on — the same thing osu!'s own editor does, and the reason it is worth practising against.
 
+**The playhead holds its place against the music to within a few milliseconds.** Measured against a click track, worst-case disagreement between what you see and what you hear:
+
+| speed | before | now |
+| --- | --- | --- |
+| 100% | 0.0 ms | 0.0 ms |
+| 75% | 13.0 ms | 3.0 ms |
+| 50% | 30.0 ms | 2.9 ms |
+| 25% | 45.1 ms | 7.9 ms |
+
+That came from making the stretch work in 20 ms pieces rather than the 117 ms a reference implementation asks for. A shorter piece also sounds better here, not worse: on a loud mastered track at 25% the long one visibly took a kick drum apart. It costs less processor time as well, so slow playback is now steadier than full speed used to be — no dropouts measured in eight-second runs at any speed.
+
 Changing speed does not interrupt anything. Audio already on its way to the speakers finishes at the old speed and everything after it runs at the new one, so there is no gap, no jump, and no drift introduced by the switch.
 
-The playhead is positioned from the sample actually leaving the audio device, not from a progress signal, so it holds its place against the music at every speed.
+**Music offset (ms)** shifts the playhead to match when sound reaches your ears. It ships at zero, because the right value depends on your device and drivers rather than on anything the app can know. **Positive means later**: raise it if the notes look early against what you hear. It is measured in real time, so one value stays correct at every speed, and **Calibrate…** finds it by having you tap along to a click track.
 
-**Music offset (ms)** on the Audio settings page shifts the playhead to match when sound reaches your ears. It ships at zero, because the right value depends on your device and drivers rather than on anything the app can know. Raise it if the notes look early against what you hear; it is measured in real time, so one value stays correct at every speed.
+**Hitsound offset (ms)** is a trim between the notes and the music, and nothing else. Your device's latency is already covered by the music offset above, because the notes now leave through the same output as the song. Positive means later, like the music offset. Leave it at zero unless you want the notes deliberately ahead of or behind the beat.
+
+Both offsets are properties of your machine and your taste, not of anybody's chart — neither one is ever written into a `.osu` file.
 
 ---
 

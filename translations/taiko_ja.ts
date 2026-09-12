@@ -2113,8 +2113,8 @@ Taiko Fancy Arranger を閉じて、そのフォルダーの TaikoFancyArranger.
             <translation>音楽が実際に耳に届くタイミングに再生位置を合わせます。聞こえる音より譜面が早く見える場合は値を上げてください。実時間で測るため、どの再生速度でも同じ値が有効です。</translation>
         </message>
         <message>
-            <source>Shift hitsounds earlier or later to compensate for your audio device's latency.</source>
-            <translation>オーディオデバイスの遅延を補正するため、ヒットサウンドを前後にずらします。</translation>
+            <source>Nudge hitsounds earlier or later against the music. Your device's latency is already covered by Music offset below, because the notes leave through the same output as the song.</source>
+            <translation>音楽に対してヒットサウンドを前後に微調整します。ノーツは曲と同じ出力を通るため、デバイスの遅延は下の「音楽オフセット」で既に補正されています。</translation>
         </message>
         <message>
             <source>Advanced</source>

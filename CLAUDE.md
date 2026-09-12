@@ -75,7 +75,22 @@ recovery -- two real bugs inherited from reading a stale copy.
   silhouette caches doing their job.
 - `tools/bench_timestretch.py [rate] [seconds]` — whether the WSOLA inner loop
   keeps up. It prints the distinct splice offsets actually chosen, because a
-  search that quietly degenerates looks fast for the wrong reason.
+  search that quietly degenerates looks fast for the wrong reason. **Its grain
+  sizes are its own**, not `audio_engine`'s, so it measures a different amount
+  of work per second of output than the real code does.
+- `tools/measure_stretch_timing.py [rate ...]` — whether a transient comes out
+  where the playhead says it does, which is the whole reason an editor slows
+  down. The `snaps` column must be 0: a correction can place every transient
+  perfectly and still arrive as a step at each grain boundary, which on screen
+  is the playhead teleporting.
+- `tools/measure_stretch_quality.py <real map audio> [rate]` — tonality,
+  warble, clicks and cost. **Needs a real track**; every signal it generates
+  itself is synthetic, and that is exactly how a geometry that took a kick
+  drum apart scored 0.987 and shipped.
+- `tools/play_with_hitsounds.py <map.osu> [rate] [seconds] [start_ms]` — the
+  whole path, audibly: parse, schedule, decode, stretch, mix, sink. `voiced`
+  and `offered` must be equal, or the 1/rate dedupe has leaked and every note
+  is playing two to four times.
 
 Two traps both harnesses were caught by, worth repeating:
 
@@ -264,8 +279,9 @@ The number it writes is `TimingPoint.volume`, which is osu!'s **hitsound**
 volume for the section — so it has to reach the samples or the layer is a graph
 of nothing. `hitsound_schedule` resolves it per note in one forward merge over
 the sorted points (`active_point_at` walks backwards a point at a time, which on
-a gimmick difficulty is thousands of steps a lookup), and `advance` applies it
-per sample. 0 is silent and is obeyed: mappers set it deliberately.
+a gimmick difficulty is thousands of steps a lookup), and it rides the schedule
+into `HitsoundMixer`, which applies it per voice. 0 is silent and is obeyed:
+mappers set it deliberately.
 
 **A fake slider is a drumroll too short to derive a duration** — canonically
 `256,192,54692,2,12,L|624:192,643,-0.0001`, but the positive side of zero is

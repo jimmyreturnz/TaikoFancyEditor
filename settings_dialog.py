@@ -163,22 +163,30 @@ class SettingsDialog(QDialog):
         self.hitsound_volume.setSuffix("%")
         form.addRow(self.tr("Hitsound volume"), self.hitsound_volume)
         self.hitsound_offset_ms = QSpinBox()
-        # QSoundEffect has real, device-dependent output latency on Windows,
-        # so without a negative-capable offset every hitsound sits late and
-        # the user has no way to compensate.
+        # A trim against the music, not a latency any more. The notes are mixed
+        # into the music stream (`audio_engine.HitsoundMixer`), so they already
+        # carry exactly the device latency the music does and Music offset
+        # below covers both. Kept, and kept negative-capable, because this is
+        # the physical world and somebody will want to nudge it.
         self.hitsound_offset_ms.setRange(-500, 500)
         form.addRow(self.tr("Hitsound offset (ms)"), self.hitsound_offset_ms)
-        offset_note = QLabel(self.tr("Shift hitsounds earlier or later to compensate for your audio device's latency."))
+        offset_note = QLabel(self.tr(
+            "Nudge hitsounds earlier or later against the music. Your device's "
+            "latency is already covered by Music offset below, because the "
+            "notes leave through the same output as the song."
+        ))
         offset_note.setWordWrap(True)
         form.addRow("", offset_note)
         self.music_volume = QSpinBox()
         self.music_volume.setRange(0, 100)
         self.music_volume.setSuffix("%")
         form.addRow(self.tr("Music volume"), self.music_volume)
-        # Separate from the hitsound offset above on purpose: the music leaves
-        # through the media player and the hitsounds through QSoundEffect, two
-        # output paths with two different latencies. Ships at zero -- the right
-        # value is a property of the user's device, not something to guess.
+        # **This** is the device latency, and now the only setting that is.
+        # Both the music and the notes leave through one sink, so one number
+        # covers both -- the hitsound offset above is a trim between them
+        # rather than a second latency. Ships at zero: the right value is a
+        # property of the user's device, not something to guess, which is what
+        # the Calibrate button is for.
         self.output_offset_ms = QSpinBox()
         self.output_offset_ms.setRange(-500, 500)
         offset_row = QHBoxLayout()
