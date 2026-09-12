@@ -52,10 +52,20 @@ SAMPLE_RATE = 44100
 CHANNELS = 2
 
 # How much audio sits between `write()` and the speakers. Qt's default is 250ms,
-# a quarter second of latency nothing in the editor could compensate for. 40ms
-# is short enough to stop mattering and long enough that a late pump does not
-# underrun, given the pump runs every 10ms.
-SINK_BUFFER_MS = 40
+# a quarter second of latency nothing in the editor could compensate for.
+#
+# The floor is what one grain costs to build. `_fill` builds a grain inside a
+# single pump tick -- p99 20ms, max 29ms at SoundTouch's search width -- and the
+# device gets nothing while it does, so the buffer has to outlast that plus the
+# tick itself. At 40ms it did not quite: measured 5-7 runs of true silence per
+# 8s at 0.25x and 0.75x, which is a dropout, not a metric. 80ms leaves a 2x
+# margin and takes it back to the one drain every run has at startup; 120ms
+# measured no better.
+#
+# It costs command latency and nothing else -- `_position_ms` reads the *play*
+# cursor, so the reported song time is unaffected by how much is queued ahead of
+# it.
+SINK_BUFFER_MS = 80
 PUMP_INTERVAL_MS = 10
 
 # A single seek rebuilds the sink (`_land_seek`) in ~10-40ms, measured
@@ -86,19 +96,88 @@ FADE_FRAMES = int(SAMPLE_RATE * 0.005)  # 5ms
 # filtering from end to end, measured at 0.015 tonality (a 440Hz sine came out
 # with 1.5% of its energy still at 440Hz). SoundTouch, which is what BASS_FX
 # runs and therefore what osu! sounds like, uses an 82ms sequence against an
-# 8ms overlap, so roughly 90% of its output is untouched source. These are
-# tuned by `tools/measure_stretch_quality.py`, not by ear.
+# 8ms overlap, so roughly 90% of its output is untouched source.
+#
+# These are tuned by `tools/measure_stretch_quality.py` *and* by ear, and it
+# takes both: the harness is the only thing that catches a rate nobody listened
+# to, and the ear is the only thing that caught the harness scoring a broken
+# grain 0.987 because every signal it owns is synthetic.
 #
 # SEARCH is how far the read head may slide to find a splice that lines up with
 # what was already written -- the whole difference between time-stretching and
-# chopping. It has to span at least one period of the lowest frequency that
-# matters, or bass simply cannot be aligned: 20ms covers 50Hz.
-SEQUENCE_FRAMES = 3616      # 82ms
-OVERLAP_FRAMES = 353        # 8ms
+# chopping. The intuition that it must span a period of the lowest frequency
+# that matters (20ms for 50Hz) is wrong, and measurably so: what the
+# correlation has to align is one *overlap* of continuation, so the reach is
+# bounded by the grain rather than by the bass. See the table below.
+# **Neither size is upstream's any more, and that is deliberate.** SoundTouch's
+# companion line asks for a 125ms sequence at 0.25x, and shipping it made slow
+# playback audibly worse than the 82ms it replaced: on a real mastered track at
+# 0.25x a kick drum came apart, which two harnesses full of synthetic signals
+# had rated 0.987 tonality and called fine. A ladder of grain lengths played
+# through the real device at 0.25x -- 53, 40, 30, 20, 10, 5ms, A-B-A-B against
+# 117ms to rule out a cold device -- put the knee at 20ms, and every number
+# agrees with the ear once the overlap is allowed to scale with the grain:
+#
+#     grain   overlap   _fill p99/max   over 10ms budget   worst err @0.25x
+#     117ms     8.0ms      20 / 47ms        70 / 750             45.1ms
+#      53ms     6.6ms      20 / 30ms       132 / 673             21.0ms
+#      30ms     3.8ms      11 / 20ms        11 / 692             11.3ms
+#      20ms     2.5ms       7 / 19ms         1 / 793              7.5ms
+#      10ms     1.3ms       6 / 22ms         1 / 691              3.8ms
+#
+# Two things in that table are the whole reason upstream's curve is wrong here:
+#
+# - **A shorter grain is cheaper, not dearer.** The search correlates over the
+#   *overlap*, so scaling the overlap with the sequence shrinks the inner loop
+#   as well as the hop. Held at SoundTouch's fixed 8ms it does not, and then a
+#   short grain really is dearer -- which is what an earlier round of this
+#   measured (0.18x realtime at 117ms against 0.57x at 40ms) and drew exactly
+#   the wrong conclusion from.
+# - **A fixed 8ms overlap is most of a short grain.** At 10ms it is 80% of the
+#   output cross-faded, which is the comb filtering this docstring opens with
+#   -- measured at 0.699 tonality, a third of a 440Hz sine leaving its own
+#   frequency. Below about 30ms the overlap has to come down with the grain, or
+#   the grain gets blamed for the window's failure.
+#
+# So one length at every rate, and the eighth of it that upstream's own 8ms is
+# of its 82ms nominal. There is nothing left for the rate to change: this is
+# already shorter than the shortest sequence `calcSeqParameters` ever asks for.
+#
+# **And then SEARCH has to come down with it, which is the half that is easy to
+# miss.** Upstream's 25ms reach was sized against upstream's 117ms grain -- a
+# ratio of 0.21. Left at 25ms against a 20ms grain it is *wider than the whole
+# grain*, and wider than the read head's own hop (`sequence * rate`: 5ms at
+# 0.25x, 15ms at 0.75x), so a grain may be taken from source the previous grain
+# has already emitted. That is not a subtle effect. Sweeping the rule at a
+# fixed 20ms sequence, tonality (how much of a 440Hz sine is still at 440Hz;
+# the source scores 1.000) and warble (the source's own floor is 0.150):
+#
+#     reach rule          0.25x           0.5x            0.75x          cpu
+#     soundtouch 25ms     0.923 / 0.168   1.000 / 0.159   0.457 / 0.154  0.38x
+#     hop (seq * rate)    0.968 / 0.164   1.000 / 0.146   0.862 / 0.156  0.07x
+#     half the sequence   0.999 / 0.158   1.000 / 0.146   0.999 / 0.149  0.14x
+#     the overlap only    0.997 / 0.164   0.996 / 0.158   0.997 / 0.158  0.04x
+#
+# Half the sequence sits on the ceiling of both metrics at every rate, takes
+# the doubled-attack count at 0.5x from 12 to 2, and costs less than the 0.18x
+# the 117ms geometry cost. 0.75x is the row that matters most: it is the only
+# rate where upstream's reach is still nearly its full width against the short
+# grain, and it is the one that collapsed -- which no amount of listening at
+# 0.25x would have found.
+#
+# It does give up reach in absolute terms: 10ms spans a 100Hz period rather
+# than the 50Hz the 20ms above was chosen for. Measured, that costs nothing,
+# because what the correlation has to align is one overlap of continuation
+# (2.5ms) and not a whole bass period.
+SEQUENCE_MS = 20.0
+SEQUENCE_FRAMES = int(SAMPLE_RATE * SEQUENCE_MS / 1000.0)   # 882
+OVERLAP_FRAMES = SEQUENCE_FRAMES // 8                       # 110, 2.5ms
 GRAIN_FRAMES = SEQUENCE_FRAMES + OVERLAP_FRAMES
-SEARCH_FRAMES = 882         # +-20ms
-# BASS_FX takes the same shortcut behind BASS_ATTRIB_TEMPO_OPTION_USE_QUICKALGO.
-SEARCH_STEP = 2
+SEARCH_FRAMES = SEQUENCE_FRAMES // 2                        # 441, 10ms
+
+# BASS_FX takes the same shortcut behind BASS_ATTRIB_TEMPO_OPTION_USE_QUICKALGO,
+# and leaves it **off** by default -- so osu! runs the full-resolution search.
+SEARCH_STEP = 1
 # One grain (SEQUENCE_FRAMES of output) is produced synchronously inside
 # `_Engine._fill`, once every ~82ms of playback regardless of rate -- the
 # grain size, not the rate, sets how often the search runs. At
@@ -118,16 +197,91 @@ WINDOW_ONE = 1 << WINDOW_BITS
 
 
 def _crossfade_window(frames: int) -> array.array:
-    """Raised cosine rising from 0 to 1 across the overlap.
+    """Linear ramp from 0 to 1 across the overlap, as `overlapStereo` is.
 
     Over the *overlap*, not over the grain: the fade has to complete inside the
     short blend region, and a window sized to the whole grain would leave the
     two halves summing to well under one for most of it.
+
+    Linear rather than the raised cosine this used to run, because that is what
+    SoundTouch does and there is no reason here to differ from the thing being
+    matched.
     """
     return array.array("i", (
-        int(WINDOW_ONE * (0.5 - 0.5 * math.cos(math.pi * i / frames)))
-        for i in range(frames)
+        (WINDOW_ONE * i) // frames for i in range(frames)
     ))
+
+
+def _centre_bias(frames: int) -> array.array:
+    """SoundTouch's `(1.0 - 0.25 * tmp * tmp)` over the seek window.
+
+    The piece whose absence let the splice wander. Upstream scales every
+    candidate's score by a parabola that peaks in the middle of the search and
+    falls to 0.75 at either end, so an offset far from the read head has to be
+    meaningfully better correlated to win rather than merely better. Without it
+    the search takes any small improvement wherever it finds it, and the read
+    head jitters -- which is what a listener calls warping.
+    """
+    return array.array("d", (
+        1.0 - 0.25 * ((2.0 * i - frames) / frames) ** 2 for i in range(frames)
+    ))
+
+
+def grain_offset_ms(rate: float) -> float:
+    """How far ahead of the reported position the audio actually is.
+
+    `_position_ms` maps output time back to song time *linearly at `rate`*, but
+    a cycle emits a whole grain of **unstretched** source taken from wherever
+    the search landed. So inside a grain the content advances at 1.0x while the
+    map advances at `rate` -- up to `sequence * (1 - rate)` of lead by the end
+    of it -- and the forward search adds 0..`reach` on top.
+
+    Measured on a click train (`tools/measure_stretch_timing.py`), absolute
+    error mean / worst, both columns corrected by this function:
+
+        rate    117ms grain      20ms grain
+        0.25    21.15 / 45.13    7.66 / 7.92
+        0.50    15.01 / 29.96    2.91 / 2.95
+        0.75     5.43 / 12.99    1.70 / 2.99
+        1.00     0.00 /  0.00    0.00 / 0.00
+
+    The left column is the SoundTouch geometry this replaced, and is where
+    "inaccurate at 25/50/75, fine at 100%" came from -- 1.0x is the
+    straight-copy path, with no grain and no search to be wrong about, so it
+    was always exact and the other three were not.
+
+    **Worst is now barely above mean, which is not as good as it looks.** The
+    sawtooth this centres should still leave `sequence * (1 - rate)` of spread
+    (15ms at 0.25x), and the harness sees 0.26ms of it. The likely reason is
+    the signal: WSOLA's search aligns transients, so on a train of impulses it
+    snaps every click to the same phase of its grain and the spread the model
+    predicts never shows up. Read these as the bias being small, not as proof
+    that the spread is gone -- on music it will be somewhere between.
+
+    **The `SEARCH_FRAMES` half of the lead is the approximate half**, and it is
+    most of what is left. A grain is taken from somewhere in `[read, read +
+    reach)` and half the reach is the expectation only if the search lands
+    uniformly; measured, it lands much nearer the read head than that, so this
+    over- or under-corrects by a few ms depending on the material. That shows
+    up above as a one-sided bias -- at 0.5x the mean *is* the bias, so
+    essentially all of the residual is this term. Left as half rather than
+    fitted, because fitting a constant to one synthetic click train is how the
+    numbers this docstring used to quote became wrong.
+
+    Deliberately a function of the rate and **nothing else**. A correction that
+    tracks each grain's own splice is more accurate on paper and unusable in
+    practice: it steps at every grain boundary, and gui.py's interpolating
+    clock abandons interpolation and jumps whenever the source disagrees by
+    more than `POSITION_ALLOWABLE_ERROR_MS * rate` (8.3ms at 0.25x). Measured,
+    that was 146 snaps in 1199 ticks -- the playhead teleporting a dozen times
+    a second. This one changes only when the rate does, which is a moment the
+    playhead is being moved anyway, and the harness holds it to 0 snaps in
+    1199 ticks at every rate.
+    """
+    if rate == 1.0:
+        return 0.0
+    lead = SEQUENCE_FRAMES * (1.0 - rate) + SEARCH_FRAMES
+    return lead / 2.0 / SAMPLE_RATE * 1000.0
 
 
 def downmix_to_mono(source: array.array) -> array.array:
@@ -159,6 +313,9 @@ class TimeStretcher:
 
     def __init__(self) -> None:
         self._window = _crossfade_window(OVERLAP_FRAMES)
+        # Rebuilt whenever the search width changes, which is whenever the rate
+        # does; one array per rate, not per grain.
+        self._bias = array.array("d")
         self.reset(0.0)
 
     def reset(self, source_frame: float) -> None:
@@ -205,6 +362,30 @@ class TimeStretcher:
         del self._pending[:wanted]
         return block
 
+    def ensure_grain(self, source: array.array, mono: array.array,
+                     rate: float) -> None:
+        """Keep a whole grain buffered ahead of the device.
+
+        The search costs a few ms per grain and a grain is built inside one
+        10ms pump tick with only `SINK_BUFFER_MS` of slack, so built on demand
+        it lands exactly when the sink has run dry. Called *before* `pull` in
+        `_fill`, which then always finds more than a tick's worth waiting and
+        never has to produce -- so at most one grain is ever built per tick,
+        and there is a further 20ms of output between the search and silence.
+
+        20ms of slack is thinner than the 117ms the old geometry left, and it
+        is still the right trade: the same measurement that shortened the grain
+        took `_fill` calls over the 10ms budget from 132/673 to 1/793, because
+        the correlation window came down with it. The buffer absorbs a stall;
+        what it cannot absorb is one every other tick.
+
+        One grain, not two: `_pending` is also how long a rate change takes to
+        be heard, and two grains of it is a quarter second of the old speed
+        after the button says otherwise.
+        """
+        if len(self._pending) < SEQUENCE_FRAMES * CHANNELS * 2:
+            self._produce(source, mono, rate)
+
     def _produce(self, source: array.array, mono: array.array, rate: float) -> bool:
         """Append one grain's worth of output. False when the source runs out."""
         available = len(mono)
@@ -221,8 +402,15 @@ class TimeStretcher:
             self._read = float(end)
             return True
 
-        low = max(0, start - SEARCH_FRAMES)
-        high = min(available - GRAIN_FRAMES, start + SEARCH_FRAMES)
+        # Every size is a function of the rate, as `calcSeqParameters` makes
+        # them: a 125ms grain and a 25ms search at 0.25x, tightening toward
+        # 100ms and 18ms as the rate comes back to 1.
+        grain_len = GRAIN_FRAMES
+        sequence = SEQUENCE_FRAMES
+        reach = SEARCH_FRAMES
+        # Forward only, as `seekBestOverlapPositionFull` scans [0, seekLength).
+        low = start
+        high = min(available - grain_len, start + reach)
         if high <= low:
             return False
         # Which offset best continues the tail already written? Correlating
@@ -230,21 +418,35 @@ class TimeStretcher:
         # overlap cancels itself and the result warbles. `sum(map(mul, ...))`
         # runs the multiply-add in C, which is what makes this affordable in
         # Python at all -- an explicit loop is about ten times slower.
-        tail_mono = self._tail_mono
-        if CORRELATION_STEP > 1:
-            tail_mono = tail_mono[::CORRELATION_STEP]
+        #
+        # Two things upstream does that a plain dot product does not, and both
+        # matter more than any amount of tuning around them:
+        #
+        # - **Normalised** by the candidate's own energy (`calcCrossCorr`
+        #   returns `corr / sqrt(norm)`). Unnormalised, a loud candidate outbids
+        #   a well-matching one, so the splice is pulled onto every drum hit.
+        # - **Centre-biased** (`_centre_bias`), so an offset far from the read
+        #   head must be meaningfully better rather than merely better. This is
+        #   what keeps the read head still; without it the search accepts any
+        #   small improvement anywhere in its reach and the result warps.
+        tail_mono = self._tail_mono[::CORRELATION_STEP]
         span = OVERLAP_FRAMES
+        if len(self._bias) != high - low:
+            self._bias = _centre_bias(max(1, high - low))
+        bias = self._bias
         best_offset, best_score = low, None
         for candidate in range(low, high, SEARCH_STEP):
-            window = mono[candidate:candidate + span]
-            if CORRELATION_STEP > 1:
-                window = window[::CORRELATION_STEP]
-            score = sum(map(mul, tail_mono, window))
+            window = mono[candidate:candidate + span:CORRELATION_STEP]
+            energy = sum(map(mul, window, window))
+            if energy <= 0:
+                continue
+            score = sum(map(mul, tail_mono, window)) / math.sqrt(energy)
+            score = (score + 0.1) * bias[candidate - low]
             if best_score is None or score > best_score:
                 best_score, best_offset = score, candidate
 
-        grain = source[best_offset * CHANNELS:(best_offset + GRAIN_FRAMES) * CHANNELS]
-        out = array.array("h", bytes(2 * CHANNELS * SEQUENCE_FRAMES))
+        grain = source[best_offset * CHANNELS:(best_offset + grain_len) * CHANNELS]
+        out = array.array("h", bytes(2 * CHANNELS * sequence))
         window = self._window
         tail = self._tail
         # Cross-fade only the overlap; the rest of the sequence is the source
@@ -258,11 +460,11 @@ class TimeStretcher:
             out[left + 1] = _clip(
                 (grain[left + 1] * weight + tail[left + 1] * inverse) >> WINDOW_BITS)
         out[OVERLAP_FRAMES * CHANNELS:] = grain[OVERLAP_FRAMES * CHANNELS:
-                                                SEQUENCE_FRAMES * CHANNELS]
+                                                sequence * CHANNELS]
         # The tail is what naturally follows what was just emitted, so the next
         # grain is looked for against a real continuation of the song.
-        self._tail = grain[SEQUENCE_FRAMES * CHANNELS:]
-        self._tail_mono = mono[best_offset + SEQUENCE_FRAMES:best_offset + GRAIN_FRAMES]
+        self._tail = grain[sequence * CHANNELS:]
+        self._tail_mono = mono[best_offset + sequence:best_offset + grain_len]
         self._pending += out.tobytes()
         self._pending_rate = rate
         # The read head advances by sequence * rate: that ratio, and only it, is
@@ -270,7 +472,7 @@ class TimeStretcher:
         # moves where a grain is taken from, never how far the head advances,
         # which is why WSOLA changes duration without changing the mapping from
         # output time back to source time.
-        self._read += SEQUENCE_FRAMES * rate
+        self._read += sequence * rate
         return True
 
 
@@ -317,6 +519,7 @@ class _Engine(QObject):
         self._seek_timer = None
         self._pending_seek_ms = None
         self._last_seek_wall = None
+        self._last_seek_target = None
         self._seek_clock = QElapsedTimer()
         self._seek_clock.start()
 
@@ -443,6 +646,7 @@ class _Engine(QObject):
         if self._seek_timer is not None:
             self._seek_timer.stop()
         self._pending_seek_ms = None
+        self._last_seek_target = None
         self._set_state(QMediaPlayer.StoppedState)
 
     def _open_sink(self) -> None:
@@ -481,6 +685,18 @@ class _Engine(QObject):
         if self._sink is not None and self._state == QMediaPlayer.PlayingState:
             now = self._seek_clock.elapsed()
             if self._last_seek_wall is not None and now - self._last_seek_wall < SEEK_COALESCE_MS:
+                if position_ms == self._last_seek_target:
+                    # A burst that never moves is not a drag, it is one click:
+                    # the overview bars emit on press and again on release at
+                    # the same pixel. Parking that duplicate landed a *second*
+                    # teardown 50ms after the first -- the hiccup heard just
+                    # after every click. There is nowhere new to go, so there
+                    # is nothing to do.
+                    #
+                    # Bounded by the burst window on purpose: a deliberate seek
+                    # back to the same millisecond a second later is a real
+                    # request, because playback has moved on since.
+                    return
                 self._pending_seek_ms = position_ms
                 if self._seek_timer is None:
                     self._seek_timer = QTimer(self)
@@ -500,6 +716,7 @@ class _Engine(QObject):
         self._land_seek(position_ms)
 
     def _land_seek(self, position_ms: float) -> None:
+        self._last_seek_target = position_ms
         frame = max(0.0, position_ms) / 1000.0 * SAMPLE_RATE
         self._stretcher.reset(frame)
         if self._sink is None:
@@ -553,6 +770,8 @@ class _Engine(QObject):
         if self._sink is None or self._device is None:
             return
         if self._state == QMediaPlayer.PlayingState:
+            # Before the pull, so the pull never has to run the search itself.
+            self._stretcher.ensure_grain(self._pcm, self._mono, self._rate)
             free_frames = self._sink.bytesFree() // (CHANNELS * 2)
             if free_frames > 0:
                 block = self._stretcher.pull(
@@ -608,7 +827,8 @@ class _Engine(QObject):
         # A segment the play cursor has left can never be needed again.
         while len(self._segments) > 1 and self._segments[1][0] <= played:
             self._segments.pop(0)
-        return song_ms + (played - start_frame) / SAMPLE_RATE * 1000.0 * rate
+        return (song_ms + (played - start_frame) / SAMPLE_RATE * 1000.0 * rate
+                + grain_offset_ms(rate))
 
 
 class TrackPlayer(QObject):

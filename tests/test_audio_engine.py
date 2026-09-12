@@ -14,8 +14,10 @@ import math
 import unittest
 
 from audio_engine import (
-    CHANNELS, CORRELATION_STEP, FADE_FRAMES, OVERLAP_FRAMES, SAMPLE_RATE, SEEK_COALESCE_MS,
-    SEQUENCE_FRAMES, TimeStretcher, _Engine, downmix_to_mono,
+    CHANNELS, CORRELATION_STEP, FADE_FRAMES, GRAIN_FRAMES, OVERLAP_FRAMES,
+    SAMPLE_RATE, SEARCH_FRAMES, SEEK_COALESCE_MS, SEQUENCE_FRAMES,
+    SEQUENCE_MS, TimeStretcher, _Engine, _centre_bias, downmix_to_mono,
+    grain_offset_ms,
 )
 
 TONE_HZ = 440.0
@@ -352,6 +354,32 @@ class SeekCoalesceTests(unittest.TestCase):
         self.assertIsNone(engine._sink)
         self.assertIsNone(engine._pending_seek_ms)
 
+    def test_a_repeat_of_the_landed_target_is_dropped_not_parked(self):
+        """The click-stutter report. One plain click on an overview bar is a
+        press *and* a release at the same pixel, so two identical seeks arrive
+        milliseconds apart. Parked rather than dropped, the second landed
+        `SEEK_COALESCE_MS` later as a whole second sink teardown and rebuild --
+        the audio rewinding to where it already was, heard as one hiccup just
+        after every click on the bar.
+        """
+        engine, rebuilds = self._playing_engine()
+        engine.seek(4000.0)
+        self.assertEqual(len(rebuilds), 1)
+        engine.seek(4000.0)
+        self.assertEqual(len(rebuilds), 1, "the duplicate must not rebuild")
+        self.assertIsNone(engine._pending_seek_ms,
+                          "and must not be parked to rebuild later either")
+
+    def test_a_burst_that_does_move_is_still_parked(self):
+        """The guard is on the *target*, not on being in a burst: a real drag
+        still coalesces, which is the whole reason the window exists."""
+        engine, rebuilds = self._playing_engine()
+        engine.seek(4000.0)
+        engine.seek(4000.0)   # dropped
+        engine.seek(4200.0)   # a genuine move, mid-burst
+        self.assertEqual(len(rebuilds), 1)
+        self.assertEqual(engine._pending_seek_ms, 4200.0)
+
     def test_stop_cancels_a_parked_seek(self):
         """Otherwise a stale target could land later against a sink or track
         that has since moved on (load() calls stop() first for this reason)."""
@@ -370,13 +398,19 @@ class SearchCostTests(unittest.TestCase):
     hardware.
 
     Guards the sustained-slow-rate-playback stutter report: one grain
-    (`SEQUENCE_FRAMES` of output, produced once every ~82ms of playback at any
+    (`SEQUENCE_FRAMES` of output, produced once every 20ms of playback at any
     rate) ran its correlation search at every frame with `CORRELATION_STEP=1`,
-    costing 20-28ms against the pump's 10ms budget
+    costing 20-28ms against the pump's 10ms budget at the 117ms geometry
     (`tools/measure_slow_rate_playback.py`: ~12% of `_fill()` calls over
     budget at 0.25/0.5/0.75x). Subsampling the correlation input halved that
     with no change in `tools/measure_stretch_quality.py`'s tonality/warble/
     click numbers.
+
+    The 20ms grain has since taken the same measurement to 0-1 calls over
+    budget out of ~790, because the correlation window came down with the
+    grain -- so this subsampling is no longer load-bearing, and if it ever
+    costs quality it can go. It was accepted on the strength of metrics that
+    only ran on synthetic signals, which is exactly how the 117ms grain got in.
     """
 
     @classmethod
@@ -417,3 +451,163 @@ class SearchCostTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GrainGeometryTests(unittest.TestCase):
+    """One grain length, one overlap, one reach, none of them SoundTouch's.
+
+    Upstream's `calcSeqParameters` shipped here briefly and was audibly worse:
+    the 125ms grain it asks for at 0.25x took a kick drum apart on a real
+    master while every synthetic metric called it fine. A ladder of grain
+    lengths through the real device settled on 20ms, and the reach then had to
+    come down with it -- see `SEQUENCE_MS` for both tables. These pin the
+    relationships that measurement established, not upstream's numbers.
+    """
+
+    def test_the_grain_is_one_length_at_every_rate(self):
+        """Nothing left for the rate to change: 20ms is already shorter than
+        the shortest sequence `calcSeqParameters` ever asks for (50ms), so the
+        curve that used to pick between them has nothing to pick."""
+        self.assertEqual(SEQUENCE_FRAMES, int(SAMPLE_RATE * SEQUENCE_MS / 1000.0))
+        self.assertEqual(GRAIN_FRAMES, SEQUENCE_FRAMES + OVERLAP_FRAMES)
+
+    def test_the_overlap_scales_with_the_grain(self):
+        """The half that is easy to miss. A fixed 8ms overlap is 40% of a 20ms
+        grain, and at 10ms it is 80% -- which is comb filtering, measured at
+        0.699 tonality, a third of a 440Hz sine leaving its own frequency. It
+        also makes a short grain *dearer*, because the search correlates over
+        the overlap, which is how an earlier round concluded that short grains
+        cost more."""
+        self.assertEqual(OVERLAP_FRAMES, SEQUENCE_FRAMES // 8)
+        self.assertLess(OVERLAP_FRAMES * 4, SEQUENCE_FRAMES)
+
+    def test_the_reach_is_narrower_than_the_grain(self):
+        """The 0.75x regression, pinned by its cause.
+
+        Upstream's 25ms reach was sized against upstream's 117ms grain. Left at
+        25ms against a 20ms grain it is wider than the whole grain, so a grain
+        may be taken from source the previous grain already emitted: tonality
+        at 0.75x measured **0.457**, and no amount of listening at 0.25x found
+        it. Half the sequence put every rate back on the ceiling (0.999).
+        """
+        self.assertEqual(SEARCH_FRAMES, SEQUENCE_FRAMES // 2)
+        self.assertLess(SEARCH_FRAMES, SEQUENCE_FRAMES)
+
+    def test_the_search_is_forward_only(self):
+        """Not backwards: a backward search would put a grain's nominal start
+        below the read head, and the read head is what carries the mapping from
+        output time back to song time."""
+        source = _sine(6.0)
+        mono = downmix_to_mono(source)
+        stretcher = TimeStretcher()
+        stretcher.reset(0.0)
+        starts, produce = [], TimeStretcher._produce
+
+        def record(self, src, mn, rate):
+            before = int(self._read)
+            ok = produce(self, src, mn, rate)
+            if ok:
+                starts.append(before)
+            return ok
+
+        TimeStretcher._produce = record
+        try:
+            _pull_seconds(stretcher, source, mono, 2.0, 0.25)
+        finally:
+            TimeStretcher._produce = produce
+        self.assertGreater(len(starts), 3)
+        # The read head advances by exactly sequence * rate; a backward search
+        # would put a grain's nominal start below that.
+        for index, start in enumerate(starts):
+            self.assertAlmostEqual(
+                start, int(index * SEQUENCE_FRAMES * 0.25), delta=1)
+
+    def test_the_crossfade_is_linear_and_complementary(self):
+        """overlapStereo is a straight ramp, and the two halves have to sum to
+        one or the splice dips."""
+        window = TimeStretcher()._window
+        self.assertEqual(len(window), OVERLAP_FRAMES)
+        self.assertEqual(window[0], 0)
+        for i in range(1, OVERLAP_FRAMES):
+            self.assertGreaterEqual(window[i], window[i - 1])
+        self.assertAlmostEqual(
+            window[OVERLAP_FRAMES // 2] / float(1 << 12), 0.5, delta=0.02)
+
+    def test_the_centre_bias_prefers_a_splice_near_the_read_head(self):
+        """SoundTouch's (1.0 - 0.25 * tmp * tmp). Without it the search takes
+        any small improvement anywhere in its reach and the read head jitters;
+        this is the term that holds it still, and it was the piece missing when
+        playback was reported as morphing."""
+        bias = _centre_bias(100)
+        self.assertAlmostEqual(bias[50], 1.0, delta=0.01)
+        self.assertAlmostEqual(bias[0], 0.75, delta=0.01)
+        self.assertLess(bias[0], bias[50])
+        self.assertLess(bias[99], bias[50])
+
+
+class ReportedPositionTests(unittest.TestCase):
+    """Where the audio is against where the engine says it is.
+
+    `test_output_maps_back_to_source_time_at_exactly_the_rate` checks the
+    aggregate ratio, which was never wrong -- which is exactly why this went
+    unnoticed. A cycle emits a whole grain of *unstretched* source, so inside it
+    the content advances at 1.0x while the map advances at `rate`. Measured
+    uncorrected: 40.8 / 32.1 / 20.3ms at 0.25 / 0.5 / 0.75, and exactly 0 at
+    1.0x -- the shape of "slow playback is not accurate, 100% is fine".
+    """
+
+    def test_the_correction_is_zero_at_full_speed(self):
+        """1.0x takes the straight-copy path: no grain, no search, nothing to
+        correct. Anything else invents an error in the one case that never had
+        one."""
+        self.assertEqual(grain_offset_ms(1.0), 0.0)
+
+    def test_the_correction_is_half_the_lead_the_audio_can_have(self):
+        for rate in (0.75, 0.5, 0.25):
+            lead = SEQUENCE_FRAMES * (1.0 - rate) + SEARCH_FRAMES
+            self.assertAlmostEqual(
+                grain_offset_ms(rate), lead / 2.0 / SAMPLE_RATE * 1000.0, places=6)
+
+    def test_the_correction_never_moves_while_the_rate_holds(self):
+        """The regression that shipped once and must not again.
+
+        A correction tracking each grain's own splice is more accurate on paper
+        and unusable in practice: it steps at every grain boundary, and gui.py's
+        interpolating clock abandons interpolation and jumps whenever the source
+        disagrees by more than POSITION_ALLOWABLE_ERROR_MS * rate -- 8.3ms at
+        0.25x. Measured 146 snaps in 1199 ticks, and reported as the playhead
+        teleporting. A correction that is a pure function of the rate cannot do
+        that, because nothing but a rate change can move it.
+        """
+        for rate in (0.75, 0.5, 0.25):
+            with self.subTest(rate=rate):
+                self.assertEqual(
+                    len({grain_offset_ms(rate) for _ in range(50)}), 1)
+
+
+class LookAheadTests(unittest.TestCase):
+    """`ensure_grain`: the search costs ~20ms a grain and `_fill` runs on a 10ms
+    tick, so a grain built on demand lands exactly when the sink has run dry."""
+
+    def _fresh(self):
+        source = _sine(6.0)
+        stretcher = TimeStretcher()
+        stretcher.reset(0.0)
+        return stretcher, source, downmix_to_mono(source)
+
+    def test_a_grain_is_built_before_it_is_needed(self):
+        stretcher, source, mono = self._fresh()
+        self.assertEqual(len(stretcher._pending), 0)
+        stretcher.ensure_grain(source, mono, 0.25)
+        self.assertGreaterEqual(
+            len(stretcher._pending) // (CHANNELS * 2), SEQUENCE_FRAMES)
+
+    def test_it_stops_at_one_grain(self):
+        """`_pending` is also how long a rate change takes to be heard, so it is
+        held at one grain rather than filled up: two is a quarter second of the
+        old speed after the button says otherwise."""
+        stretcher, source, mono = self._fresh()
+        for _ in range(5):
+            stretcher.ensure_grain(source, mono, 0.25)
+        self.assertLess(
+            len(stretcher._pending) // (CHANNELS * 2), 2 * SEQUENCE_FRAMES)

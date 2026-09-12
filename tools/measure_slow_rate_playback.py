@@ -38,6 +38,7 @@ import audio_engine  # noqa: E402
 
 # For sweeping tunables against the numbers below without editing the module:
 # TAIKO_SINK_BUFFER_MS_OVERRIDE=<ms> TAIKO_CORRELATION_STEP=<n> TAIKO_SEARCH_STEP=<n>
+# TAIKO_TIMING_BUDGET_MS=<ms>
 #   python tools/measure_slow_rate_playback.py ...
 _buffer_override = os.environ.get("TAIKO_SINK_BUFFER_MS_OVERRIDE")
 if _buffer_override:
@@ -46,6 +47,29 @@ if os.environ.get("TAIKO_CORRELATION_STEP"):
     audio_engine.CORRELATION_STEP = int(os.environ["TAIKO_CORRELATION_STEP"])
 if os.environ.get("TAIKO_SEARCH_STEP"):
     audio_engine.SEARCH_STEP = int(os.environ["TAIKO_SEARCH_STEP"])
+if os.environ.get("TAIKO_TIMING_BUDGET_MS"):
+    audio_engine.TIMING_BUDGET_MS = float(os.environ["TAIKO_TIMING_BUDGET_MS"])
+# TAIKO_SEQUENCE_MS pins the grain to one length at every rate, for walking a
+# ladder of grain lengths by ear. The overlap is scaled with it rather than
+# left at SoundTouch's fixed 8ms: at a 10ms grain that would be 80% of the
+# output cross-faded, which is comb filtering (measured: a 440Hz sine came out
+# with 30% of its energy off 440Hz) and would be heard as the short grain's
+# fault rather than the window's. 1/8 keeps roughly upstream's ratio.
+_sequence_ms = os.environ.get("TAIKO_SEQUENCE_MS")
+if _sequence_ms:
+    _seq = int(audio_engine.SAMPLE_RATE * float(_sequence_ms) / 1000.0)
+    audio_engine.SEQUENCE_FRAMES = _seq
+    audio_engine.OVERLAP_FRAMES = max(16, _seq // 8)
+    audio_engine.GRAIN_FRAMES = _seq + audio_engine.OVERLAP_FRAMES
+# TAIKO_CLAMP_REACH=1 stops the splice search reaching further forward than the
+# read head advances (`sequence * rate`). Past that a grain may read source the
+# previous grain already emitted, so a transient is partially replayed -- the
+# suspect for "the kick distorts a bit" at 0.25x, where the hop is 13ms and
+# SoundTouch's reach is 25ms.
+if os.environ.get("TAIKO_CLAMP_REACH"):
+    _search = audio_engine.search_frames
+    audio_engine.search_frames = lambda rate, _f=_search: max(
+        16, min(_f(rate), int(audio_engine.SEQUENCE_FRAMES * rate)))
 
 
 def _make_test_wav(path: str, seconds: float = 30.0) -> None:
@@ -172,13 +196,24 @@ if len(written) > 1:
 # read right before each write. If it ever equals the full buffer size, the
 # hardware ring had nothing left to play at that moment -- true silence,
 # not just a thin buffer -- independent of how long the gap to get there was.
+#
+# **The first write does not count.** Nothing has been written yet, so the ring
+# is empty by construction and `bf >= buf` is true for reasons that have
+# nothing to do with keeping up. Counted, it reported exactly one drain in
+# every run this harness has ever produced -- a constant, which is the shape of
+# an artifact rather than a measurement, and it hid the question of how long
+# the device spends empty *before* that write instead (`time to first write`).
 if written:
-    full_drains = [(t, bf, buf) for t, _n, bf, buf in written if bf >= buf]
+    full_drains = [(t, bf, buf) for t, _n, bf, buf in written[1:] if bf >= buf]
     print(f"writes where the hardware buffer had fully drained first: "
-          f"{len(full_drains)} / {len(written)}  (buffer={written[0][3]} bytes = "
-          f"{written[0][3] / (audio_engine.CHANNELS * 2) / audio_engine.SAMPLE_RATE * 1000:.0f}ms)")
+          f"{len(full_drains)} / {len(written) - 1}  (buffer={written[0][3]} bytes = "
+          f"{written[0][3] / (audio_engine.CHANNELS * 2) / audio_engine.SAMPLE_RATE * 1000:.0f}ms"
+          f", first write excluded)")
     if full_drains:
         print(f"  first at wall={full_drains[0][0]}ms")
+    # What `_open_sink`'s priming is for: the device is open and silent from
+    # `start()` until this, so it is the startup dropout in milliseconds.
+    print(f"time to first write: {written[0][0]}ms after playback began")
 
 # Q3: is any single _fill() call itself slow enough to blow the pump budget?
 if fill_timings:

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import array
 import math
+import random
 import sys
 import time
 
@@ -33,7 +34,9 @@ from PySide6.QtMultimedia import QAudioDecoder, QAudioFormat  # noqa: E402
 import os  # noqa: E402
 
 import audio_engine  # noqa: E402
-from audio_engine import CHANNELS, SAMPLE_RATE, TimeStretcher, downmix_to_mono  # noqa: E402
+from audio_engine import (  # noqa: E402
+    CHANNELS, SAMPLE_RATE, TimeStretcher, downmix_to_mono,
+)
 
 # For sweeping the search cost against these numbers without editing the
 # module: TAIKO_CORRELATION_STEP=2 TAIKO_SEARCH_STEP=4 python tools/measure_stretch_quality.py ...
@@ -100,6 +103,65 @@ def tone(seconds: float, partials=CHORD_HZ, amplitude: int = 9000) -> array.arra
     return out
 
 
+# A kick every half second over a quiet pad. The metrics above it are all
+# measured on *stationary* signals, which is the one case WSOLA is best at --
+# they score the shipped build at its ceiling (tonality 0.999, warble at the
+# source's own 0.150, click 1.00) at every rate, and they scored CORRELATION_STEP
+# = 2 as "no change" because they could not have seen one. What a listener
+# actually hears at 0.25x is a drum hit coming out two, three or four times:
+# stretching 4x means re-emitting the same source region four times, and when
+# that region holds an attack, the attack repeats. Loud transients against a
+# quiet bed is exactly the contrast a tone has none of.
+PERCUSSIVE_PERIOD_MS = 500.0
+
+
+def percussive(seconds: float) -> array.array:
+    pad_hz, kick_hz = 196.0, 70.0
+    noise = random.Random(11)
+    frames = int(SAMPLE_RATE * seconds)
+    mono = array.array("h", (
+        int(1800 * math.sin(2.0 * math.pi * pad_hz * i / SAMPLE_RATE))
+        for i in range(frames)))
+    step = int(PERCUSSIVE_PERIOD_MS / 1000.0 * SAMPLE_RATE)
+    for start in range(int(0.25 * SAMPLE_RATE), frames - step, step):
+        for k in range(int(0.030 * SAMPLE_RATE)):
+            decay = math.exp(-k / (0.006 * SAMPLE_RATE))
+            mono[start + k] = audio_engine._clip(mono[start + k] + int(
+                21000 * decay * (0.6 * math.sin(2.0 * math.pi * kick_hz * k / SAMPLE_RATE)
+                                 + 0.4 * noise.uniform(-1.0, 1.0))))
+    out = array.array("h")
+    for value in mono:
+        out.append(value)
+        out.append(value)
+    return out
+
+
+def extra_attacks(frames: array.array, expected_ms: float) -> int:
+    """Attacks the stretch invented, i.e. a repeated drum hit.
+
+    Onsets off the envelope with hysteresis, then anything landing well inside
+    the expected spacing is a hit that was not in the source at that time. The
+    shipped build scores 18 at 0.25x and 11 at 0.5x over 12s -- the number to
+    beat, and the one that stays flat for every change the metrics above call
+    free.
+    """
+    left = frames[::CHANNELS]
+    window = 128
+    envelope = [max(map(abs, left[i:i + window]))
+                for i in range(0, len(left) - window, window)]
+    if not envelope or max(envelope) <= 0:
+        return 0
+    threshold = 0.45 * max(envelope)
+    onsets, armed = [], True
+    for index, value in enumerate(envelope):
+        if value > threshold and armed:
+            onsets.append(index * window / SAMPLE_RATE * 1000.0)
+            armed = False
+        elif value < threshold * 0.5:
+            armed = True
+    return sum(1 for a, b in zip(onsets, onsets[1:]) if b - a < expected_ms * 0.6)
+
+
 def sine(seconds: float, hz: float = 440.0, amplitude: int = 12000) -> array.array:
     out = array.array("h")
     for i in range(int(SAMPLE_RATE * seconds)):
@@ -161,26 +223,30 @@ def main() -> None:
     music = music[start:start + SAMPLE_RATE * CHANNELS * 12]
     chord = tone(8.0)
     pure = sine(8.0)
+    drums = percussive(24.0)
 
-    sequence, overlap = audio_engine.SEQUENCE_FRAMES, audio_engine.OVERLAP_FRAMES
-    print(f"sequence={sequence} ({sequence / SAMPLE_RATE * 1000:.0f}ms) "
-          f"overlap={overlap} ({overlap / SAMPLE_RATE * 1000:.0f}ms) "
-          f"search=+-{audio_engine.SEARCH_FRAMES} "
+    sequence = audio_engine.SEQUENCE_FRAMES
+    overlap = audio_engine.OVERLAP_FRAMES
+    print(f"sequence={sequence} ({sequence / SAMPLE_RATE * 1000:.1f}ms) "
+          f"overlap={overlap} ({overlap / SAMPLE_RATE * 1000:.1f}ms) "
+          f"search=+{audio_engine.SEARCH_FRAMES} (forward-only) "
           f"step={audio_engine.SEARCH_STEP}/{audio_engine.CORRELATION_STEP}")
     print(f"{SAMPLE_RATE / sequence:.0f} splices/sec, "
           f"{overlap / sequence * 100:.0f}% of output cross-faded")
     print(f"  source tonality={tonality(pure):.3f} warble={warble(chord):.3f} "
           f"(the ceiling every row below is measured against)")
-    print(f"{'rate':>6} {'tonality':>9} {'warble':>8} {'click':>7} {'cpu':>7}")
+    print(f"{'rate':>6} {'tonality':>9} {'warble':>8} {'click':>7} {'repeats':>8} {'cpu':>7}")
     for rate in rates:
         out, cost = run(music, rate, 4.0)
         chord_out, _ = run(chord, rate, 3.0)
         pure_out, _ = run(pure, rate, 3.0)
+        drums_out, _ = run(drums, rate, 12.0)
         # On the tone, not the music: a clipped master already contains steps
         # near full scale, so the ratio there is swamped and says nothing.
         click = max_step(pure_out) / max(1, max_step(pure))
+        repeats = extra_attacks(drums_out, PERCUSSIVE_PERIOD_MS / rate)
         print(f"{rate:>6} {tonality(pure_out):>9.3f} {warble(chord_out):>8.3f} "
-              f"{click:>7.2f} {cost:>6.2f}x")
+              f"{click:>7.2f} {repeats:>8} {cost:>6.2f}x")
 
 
 if __name__ == "__main__":
