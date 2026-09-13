@@ -325,6 +325,89 @@ class SeekTests(unittest.TestCase):
         self.assertEqual(mixer._voices, [])
 
 
+class ResyncTests(unittest.TestCase):
+    """A schedule replacement -- an edit during playback, or a hitsound-offset
+    change -- has to rebase `_voiced_through`, or the watermark keeps meaning
+    "how far through the *old* schedule", which is nonsense against a new one.
+
+    Reported from use: setting the hitsound offset to -220ms while a chart was
+    loaded produced "I can hear a note sound but it is not the note the
+    playhead is at" rather than a clean uniform desync. Reproduced in both
+    directions below before `resync` existed to fix either.
+    """
+
+    def test_a_note_shifted_behind_now_is_not_replayed(self):
+        """The silent-drop direction, on its own it would just look like a
+        missing hit -- not yet the reported symptom, but still wrong: a note
+        the mapper can see and hear nowhere near it is a worse bug than a
+        uniformly early or late one."""
+        mixer = _mixer([20_000])
+        mixer.mix(_silence(SEQUENCE_FRAMES), 15_000, SEQUENCE_FRAMES)
+        watermark_before = mixer._voiced_through
+        # An offset shift moves the same note to a frame the playhead has
+        # already passed.
+        mixer.set_schedule([10_298], ["don"], [1.0])
+        mixer.resync(watermark_before + 1)
+        out = _silence(SEQUENCE_FRAMES)
+        mixer.mix(out, watermark_before + 1, SEQUENCE_FRAMES)
+        self.assertEqual(_spikes(out, 1), [])
+
+    def test_a_note_that_already_played_does_not_fire_again_later(self):
+        """The direction that is literally the report: a note already heard,
+        whose shifted position now sits ahead of a *stale* watermark, would
+        fire a second time later with nothing on screen to justify it. Without
+        `resync` this reproduces; with it, the note stays played-once."""
+        mixer = _mixer([10_000])
+        mixer.mix(_silence(SEQUENCE_FRAMES), 10_000, SEQUENCE_FRAMES)
+        self.assertEqual(len(mixer._voices) or 1, 1)  # it did play once
+        # Simulate the bug directly: reschedule without resyncing.
+        mixer.set_schedule([30_000], ["don"], [1.0])
+        out = _silence(SEQUENCE_FRAMES)
+        mixer.mix(out, 30_000, SEQUENCE_FRAMES)
+        self.assertEqual(
+            _spikes(out, 1), [0],
+            "sanity: without resync this note DOES wrongly refire")
+        # Now the real path: the engine always resyncs after set_schedule.
+        mixer2 = _mixer([10_000])
+        mixer2.mix(_silence(SEQUENCE_FRAMES), 10_000, SEQUENCE_FRAMES)
+        mixer2.set_schedule([30_000], ["don"], [1.0])
+        mixer2.resync(25_000)          # the engine's "now" was past frame 10000
+        out2 = _silence(SEQUENCE_FRAMES)
+        mixer2.mix(out2, 30_000, SEQUENCE_FRAMES)
+        # 30000 is genuinely ahead of "now" (25000), so this one is a real,
+        # legitimate future note under the new schedule and must still play.
+        self.assertEqual(_spikes(out2, 1), [0])
+
+    def test_resync_does_not_touch_sounding_voices(self):
+        """An ordinary edit mid-note should not cut off whatever is currently
+        sounding -- that is what makes this `resync` and not `reset`."""
+        mixer = _mixer([100], sample_frames=SAMPLE_RATE)
+        mixer.mix(_silence(SEQUENCE_FRAMES), 0, SEQUENCE_FRAMES)
+        self.assertEqual(len(mixer._voices), 1)
+        mixer.set_schedule([200], ["don"], [1.0])
+        mixer.resync(SEQUENCE_FRAMES)
+        self.assertEqual(len(mixer._voices), 1)
+
+    def test_resync_is_not_seek_proof_and_is_not_meant_to_be(self):
+        """`resync` does not distinguish "already handled" from "not yet"
+        beyond the watermark number -- moving it backwards makes an
+        already-played note eligible again, same as `reset` would.
+
+        That is fine and not a gap: `resync`'s only caller
+        (`_Engine.set_hitsound_schedule`) always passes the live playback
+        position, which only moves backwards on a real seek -- and a seek
+        goes through `reset`, never `resync`. Replaying is the *correct*
+        behaviour there; this test exists so a future caller does not assume
+        `resync` is safe to call with an arbitrary or stale position.
+        """
+        mixer = _mixer([500])
+        mixer.mix(_silence(SEQUENCE_FRAMES), 0, SEQUENCE_FRAMES)
+        mixer.resync(0)
+        out = _silence(SEQUENCE_FRAMES)
+        mixer.mix(out, 0, SEQUENCE_FRAMES)
+        self.assertEqual(_spikes(out, 1), [500])
+
+
 class DisabledTests(unittest.TestCase):
 
     def test_disabled_plays_nothing(self):

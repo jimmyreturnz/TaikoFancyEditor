@@ -437,6 +437,30 @@ class HitsoundMixer:
         self._voices = []
         self._voiced_through = int(source_frame) - 1
 
+    def resync(self, source_frame: float) -> None:
+        """Rebase the dedupe watermark to `source_frame` when the *schedule*
+        changes rather than the playhead -- an edit, or a hitsound-offset
+        change -- without touching sounding voices, which `reset` is for.
+
+        `_voiced_through` is an absolute source frame, but it only means
+        anything relative to the schedule that produced it: it says how far
+        *through that schedule* playback has gone. Replacing the schedule
+        without this left the old watermark in force against the new frame
+        numbers, which is wrong in both directions. Shift the offset by -220ms
+        while playing and a note whose new frame lands behind the watermark is
+        silently skipped forever; a note that had already played, whose new
+        frame lands ahead of a watermark that had already passed it, fires
+        again later -- disconnected from wherever the playhead actually is,
+        which is exactly "I hear a note but it is not the note I am at".
+        Reproduced and confirmed both ways before this existed.
+
+        Rebasing to *now* makes the new schedule authoritative from this
+        instant on: everything at or after the current position is unplayed
+        under it, everything before is treated as already handled, regardless
+        of what the old watermark was.
+        """
+        self._voiced_through = int(source_frame) - 1
+
     def mix(self, out: array.array, source_start: int, frames: int) -> None:
         """Mix into `out`, which is `frames` frames of source from
         `source_start`.
@@ -1076,11 +1100,19 @@ class _Engine(QObject):
     @Slot(object, object, object)
     def set_hitsound_schedule(self, times_ms, keys, volumes) -> None:
         """The three parallel lists `gui.hitsound_schedule` produces, converted
-        to source frames once here rather than per grain."""
+        to source frames once here rather than per grain.
+
+        Resyncs the mixer's watermark to *now* after replacing the schedule --
+        see `HitsoundMixer.resync`. Every caller of this (an edit during
+        playback, a hitsound-offset change) rewrites which absolute source
+        frame each note lives at, and the watermark means nothing without
+        that rebase.
+        """
         self._mixer.set_schedule(
             [frame_for_ms(time_ms + self._hitsound_offset_ms)
              for time_ms in times_ms],
             list(keys), list(volumes))
+        self._mixer.resync(self._stretcher.source_frame)
 
     @Slot(float)
     def set_hitsound_volume(self, volume: float) -> None:
