@@ -14,7 +14,7 @@ Discordもjimmyreturnzです
 
 *日本語版は [README_JP.md](README_JP.md) をご覧ください。*
 
-Taiko Fancy Arranger started as a tool for turning osu!taiko notes into visual patterns — text, shapes, equations, drawings, spirals — without placing every circle by hand. Version 2.0.0 grew it into an editor: browse your osu! Songs folder, open a difficulty, edit notes, edit scroll velocity, preview the chart the way osu! renders it, and still arrange notes into patterns when you want to. Version 3.0.0 adds a dedicated gimmick editor, for the fake sliders, barline tricks and extreme-SV effects that osu!taiko mappers build out of timing points rather than notes. Version 3.2.0 rebuilds song playback so slow practice holds its place, and puts your own osu! skin into every view that draws a note.
+Taiko Fancy Arranger started as a tool for turning osu!taiko notes into visual patterns — text, shapes, equations, drawings, spirals — without placing every circle by hand. Version 2.0.0 grew it into an editor: browse your osu! Songs folder, open a difficulty, edit notes, edit scroll velocity, preview the chart the way osu! renders it, and still arrange notes into patterns when you want to. Version 3.0.0 adds a dedicated gimmick editor, for the fake sliders, barline tricks and extreme-SV effects that osu!taiko mappers build out of timing points rather than notes. 
 
 Everything stays a playable osu! beatmap. Sections the editor does not model — storyboards, breaks, colours, editor bookmarks — are passed through byte-for-byte on save.
 
@@ -22,7 +22,7 @@ Everything stays a playable osu! beatmap. Sections the editor does not model —
 > **Platform:** Windows x64  
 > **Author:** [jimmyreturnz](https://osu.ppy.sh/users/11306153)
 
-The original idea came from a random chat with maruaki101. Other inspirations include Alchyr's ranked maps *13 Stairs* and *Helios*, which use unusual note placement to create visual expression. You should go check it out [here!](https://osu.ppy.sh/beatmapsets/1093671#taiko/3819326)
+The original idea came from a random chat with maruaki101. Main inspirations include Alchyr's ranked maps *13 Stairs* and *Helios*, which use unusual note placement to create visual expression. You should go check it out [here!](https://osu.ppy.sh/beatmapsets/1093671#taiko/3819326)
 
 Many thanks to Mew’s beatmaps for studying reference that made the tool creation possible, and other player’s ideas!
 
@@ -55,70 +55,13 @@ A gimmick-editor release: a second anti-barline gimmick, one way into every conv
 
 Full notes: [`docs/releases/v3.3.0.md`](docs/releases/v3.3.0.md).
 
----
-
-## What is new in 3.2.2
-
-Bug-fix release: editor navigation, note dragging, the SV generator, background saving, and library scanning.
-
-- **Editor page no longer goes blank** after leaving it and clicking straight back into the Editor tab without picking a song again.
-- **Don/kat can be dragged** to a new position in the regular editor once selected.
-- **SV generator keeps 4 decimal places** on rate/BPM fields instead of rounding a matched value to 2.
-- **SV generator updates an existing green line in place** instead of leaving it and adding a second, offset one beside it.
-- **Fancy Arranger backgrounds now actually save** with Ctrl+S.
-- **Song library gets a Quick Scan button** for a fast incremental scan; Rescan is relabeled to describe the full rebuild it actually does.
-
-Full notes: [`docs/releases/v3.2.2.md`](docs/releases/v3.2.2.md).
-
----
-
-## What is new in 3.2.1
-
-Internal cleanup only — no user-visible changes. `MainWindow` was split into
-smaller classes, a duplicate dead method was removed, and a suspected
-playback stutter under heavy maps was investigated and found to already be
-within budget once views finish their one-time startup cost.
-
-Full notes: [`docs/releases/v3.2.1.md`](docs/releases/v3.2.1.md).
-
----
-
-## What is new in 3.2.0
-
-This release rebuilds song playback and puts your osu! skin into every view that draws a note.
-
-- **Audio playback rebuilt.** The app decodes the track and drives the sound card itself. Changing speed no longer moves the playhead (the old backend lost 114 ms of song time on a 0.25x to 1.0x switch), slowing down keeps the pitch, and the playhead follows the sample actually leaving the device.
-- **Music offset calibration.** Tap along to a click track in **Settings → Audio** and it writes the app's own output offset. It never touches a beatmap's offset.
-- **Skins.** Pick any taiko skin from your osu! Skins folder for note art, drumroll pieces and hitsounds — in the gameplay preview and the editor timeline layers alike, falling back per element to the built-in drawing.
-- **The gameplay preview is the playfield.** The skin's bar, scrolling background, barlines and hit target, at osu!'s own proportions. Notes disappear when they land, drumrolls travel through, and kiai pulses on the beat.
-- **Note opacity.** Set how solid notes are drawn in the editor layers, trading the snap grid's readability against the notes'.
-- **Volume that means something.** The Kiai and Sound Volume layer's number now drives how loud don and kat actually play, its lines only move vertically, and Don and Kat mirror independently in the barline layer.
-- **Fixes worth naming.** No more ear-splitting hitsound burst when scrolling fast, no backwards drift when seeking on a high-BPM section, Settings keeps its own scrolling, and the gimmick page's scrollbar scrolls.
-
-Full notes: [`docs/releases/v3.2.0.md`](docs/releases/v3.2.0.md).
-
----
-
-## What is new in 3.0.0
-
-This release adds a fourth editor page for gimmicks — visual effects built out of timing points rather than notes — plus hitsounds and a run of precision fixes across the whole editor.
-
-- **Gimmick editor page.** Six stacked layers over one difficulty: the normal chart, fake sliders, barline gimmicks, and an SV layer for each of the three. Entering it asks once whether to edit the difficulty in place or copy it to a new `[Gimmick]` difficulty, and takes a base timing snapshot so the grid stays put while thousands of 60000 BPM gimmick lines pile into the file.
-- **Fake sliders and shiny notes.** Dedicated tools for fake sliders, shiny notes, runs of fake sliders at a fixed spacing, converting the chart's own notes into gimmick structures, and painting kiai over a dragged range.
-- **Barline gimmicks.** Notes drawn out of red lines, mirrored around the note or trailing it, with a Function tool that fills a range with red lines on a millisecond count or the beat grid, including a BPM ramp.
-- **Per-structure SV.** Chart, fake slider and barline layers each get their own SV layer that owns only its own structures' green lines, with index-based copy/paste and an oscillating curve added to the generator.
-- **Hitsounds.** Notes sound during playback, using samples shipped in `assets/se/` — don, kat, big don and big kat. A new Audio settings page carries hitsound enable/volume, a latency offset, and music volume.
-- **Millisecond-exact editing.** The grid, playhead and every placement now agree on one whole millisecond, rounded the way osu! rounds. Holding **Ctrl** places at 1ms precision regardless of snap, with a live millisecond readout.
-- **Kiai everywhere.** Kiai sections draw as a translucent orange band in every gimmick layer, generated timing points carry the section's kiai state instead of silently ending it, and the gameplay viewer's kiai flash reaches every visible note.
-- **Smaller editing improvements.** Slider and spinner tails drag with the Select tool, right-click on the timing bar scrubs the playhead without ending a drag-selection, refused actions show a toast instead of doing nothing, and every spin box has pink +/- buttons.
-
-Full detail lives in [`docs/DEVELOPMENT_PLAN.md`](docs/DEVELOPMENT_PLAN.md).
+Full development log detail lives in [`docs/DEVELOPMENT_PLAN.md`](docs/DEVELOPMENT_PLAN.md).
 
 ---
 
 ## Windows SmartScreen notice
 
-Taiko Fancy Arranger v3.2.0 is a currently unsigned Windows application. The release includes source-level security hardening, input validation, safer file handling, automated tests, and published SHA-256 checksums.
+Taiko Fancy Arranger v3.3.0 is a currently unsigned Windows application. The release includes source-level security hardening, input validation, safer file handling, automated tests, and published SHA-256 checksums.
 
 Windows Defender SmartScreen may still display an "unrecognized app" warning because the executable has not yet established download reputation.
 
@@ -132,38 +75,15 @@ Language is chosen on first start and can be changed in **Settings**. Changing i
 
 ---
 
-## Audio settings
-
-Notes make sound during playback, using hitsound samples shipped in `assets/se/`: don, kat, big don and big kat each have their own sample. Only circles are voiced — fake sliders and barline gimmicks stay silent. A skin's own samples are used when it ships them, per sample, so a skin with only a don keeps the built-in kat.
-
-The **Audio** settings page carries hitsound enable and volume, a hitsound trim in milliseconds, music volume, and the music offset with its calibration wizard.
-
-**Notes are mixed into the song itself**, at the exact sample the music they belong to is at. They used to be played as separate one-shot sounds triggered when the playhead reached them, which put each note a rendered frame plus your sound card's own latency away from the drum it was meant to land on. Now there is one stream, so a note cannot drift from the music at any speed — and a fast scroll can no longer stack a section's notes into one loud burst, because nothing outside the twenty milliseconds being mixed can make a sound.
-
 ### Slow playback
 
-25%, 50% and 75% **keep the original pitch**. The song is time-stretched rather than slowed like a record, so a quarter-speed stream still sounds like the instruments it was played on — the same thing osu!'s own editor does, and the reason it is worth practising against.
+25%, 50% and 75% got a lot more accurate this update — the time-stretch now works in much shorter pieces (20ms instead of 117ms), which also fixed a kick drum sounding broken at 25% speed and is lighter on CPU too. There's still a small timing gap between what you see and what you hear at 25% that I'm still chasing down, but it's a fraction of what it used to be, so it should feel usable now instead of "stick to 100%".
 
-**The playhead holds its place against the music to within a few milliseconds.** Measured against a click track, worst-case disagreement between what you see and what you hear:
+Notes are mixed straight into the song's audio now too, instead of being played as their own separate sound — so they land on the music correctly at every speed, and can't pile up into one loud burst if you scroll or seek fast.
 
-| speed | before | now |
-| --- | --- | --- |
-| 100% | 0.0 ms | 0.0 ms |
-| 75% | 13.0 ms | 2.8 ms |
-| 50% | 30.0 ms | 4.2 ms |
-| 25% | 45.1 ms | 9.7 ms |
+**Music offset (ms)** on the Audio settings page shifts the playhead to match when sound reaches your ears. Default value is 0ms, but you can calibrate it inside the settings.
 
-That came from making the stretch work in 20 ms pieces rather than the 117 ms a reference implementation asks for. A shorter piece also sounds better here, not worse: on a loud mastered track at 25% the long one visibly took a kick drum apart. It costs less processor time as well, so slow playback is now steadier than full speed used to be — no dropouts measured in eight-second runs at any speed.
-
-The correction itself was then re-measured against real tracks rather than only the click test above, because the two turned out to disagree: a click test's sparse, isolated transients don't correlate the way continuous music does, so a number tuned to one doesn't carry over to the other. At 25% a small gap remains between the playhead and the music that isn't fully explained yet — it's real, it's small, and it's the thing being chased next.
-
-Changing speed does not interrupt anything. Audio already on its way to the speakers finishes at the old speed and everything after it runs at the new one, so there is no gap, no jump, and no drift introduced by the switch.
-
-**Music offset (ms)** shifts the playhead to match when sound reaches your ears. It ships at zero, because the right value depends on your device and drivers rather than on anything the app can know. **Positive means later**: raise it if the notes look early against what you hear. It is measured in real time, so one value stays correct at every speed, and **Calibrate…** finds it by having you tap along to a click track.
-
-**Hitsound offset (ms)** is a trim between the notes and the music, and nothing else. Your device's latency is already covered by the music offset above, because the notes now leave through the same output as the song. Positive means later, like the music offset. Leave it at zero unless you want the notes deliberately ahead of or behind the beat.
-
-Both offsets are properties of your machine and your taste, not of anybody's chart — neither one is ever written into a `.osu` file.
+**Hitsound offset (ms)** is separate from that — it nudges the notes' own sound against the music, since the notes are mixed into it now. Leave it at 0 unless you want the notes deliberately a bit early or late.
 
 ---
 
@@ -183,6 +103,7 @@ TaikoFancyArranger-Windows-x64.zip
 TaikoFancyArranger.exe
 ```
 
+5. If update exists, upon opening the program, there will be a patch note alongside with an option to download the new version.
 Python and PySide6 are bundled with the portable Windows release. Players using the release ZIP do not need to install Python or run `pip`.
 
 > Windows may show a reputation warning for an unsigned new application. Review the repository and release files before running the program.
@@ -193,9 +114,9 @@ Python and PySide6 are bundled with the portable Windows release. Players using 
 
 1. **Choose a language.** English or 日本語. This screen is deliberately untranslated — it is the one screen that cannot know which language you read.
 2. **Choose your osu! Songs folder.** Pre-filled with `%LOCALAPPDATA%/osu!/Songs` when it exists. The folder is remembered, and can be changed later from the library page.
-3. **Wait for the scan.** The first scan reads every `.osu` file once and takes a while on a large collection. It runs in slices, so the window stays responsive. Later starts show the cached list before verifying it.
+3. **Wait for the scan.** The first scan reads every `.osu` file once and takes a while on a large collection. It runs in slices, so the window stays responsive. Later starts show the cached list before verifying it. You may use the app while it is scanning, but the experience will not be that smooth on the editor and osu. Thus, it is suggested to wait for the scan, or make a small folder that consists of only maps that you would want to edit.
 
-Cancelling the folder picker leaves the library empty with a **Change folder** button rather than a dead end, and offers the setup again next launch.
+Cancelling the folder picker leaves the library empty with a **Change folder** button.
 
 ---
 
@@ -209,7 +130,7 @@ The library page is the front door.
 
 Controls:
 
-- **Search** — matches artist, title, both Unicode variants, difficulty name, creator and tags at once.
+- **Search** — matches artist, title, both Unicode variants, difficulty name, creator and tags at once. Same behavior as osu!
 - **Group by** — nothing, mapper, or artist.
 - **Sort** — A→Z or Z→A, which reverses group order too.
 - **Original language metadata** — shows `ArtistUnicode`/`TitleUnicode` instead of the romanized fields, falling back to whichever the map actually has.
@@ -222,22 +143,16 @@ Only taiko charts (`Mode: 1`) are listed.
 
 The Editor page stacks views vertically, grouped under their difficulty. Open one with **+** (view type + difficulty). Opening a difficulty automatically gives it a chart view and an SV view.
 
+Holding **Ctrl** places at 1ms precision regardless of the snap divisor, with a guide line and a live millisecond readout in the corner of every view.
+
 View types:
 
-| View | What it is |
+| View | Explanation |
 |---|---|
-| Chart | Notes on a time axis, with a snap grid anchored to the top and bottom edges |
+| Chart | Notes on a time axis, with a snap grid |
 | SV editor | Red, green and yellow timing lines plus an effective-SV graph |
-| Gameplay viewer | Read-only osu!taiko-style preview; objects scroll at their own SV |
+| Gameplay viewer | Read-only osu!taiko gameplay preview |
 | Density | The white-to-yellow note density heatmap |
-
-The gameplay viewer's kiai flash reaches every visible note, not just whichever ones happened to be on screen when kiai started.
-
-Above the views: beat snap, the merged time and percentage readout, the timing bar (kiai, bookmarks, SV, BPM), play and speed buttons. The snap divisor is global across the page, so every view stays on the same grid. Zoom (`Ctrl+wheel`) is per difficulty and shared by that difficulty's views. Right-clicking the timing bar while drag-selecting scrubs the playhead without ending the selection.
-
-Per-view chrome: **close**, **lock** (read-only), and the difficulty name at the right.
-
-An action the editor refuses — pasting into the wrong kind of view, for instance — shows a transient toast instead of silently doing nothing.
 
 ### Note editing
 
@@ -254,8 +169,8 @@ The tool row sits at the bottom of the page and acts on the focused chart view.
 
 - Left click places at the snapped time; a translucent ghost previews where it lands.
 - Sliders and spinners are **click-dragged** to their length. Press near the right edge of an existing one to resize it, or drag its tail with the **Select** tool afterwards.
-- Holding **Shift** resizes the note preview immediately; releasing it places a big (finisher) note or slider.
-- Right click deletes the note under the cursor; **Delete** removes the whole selection.
+- Holding **Shift** will changes the note to finisher size.
+- Right click deletes the note under the cursor
 - One object per millisecond, spinners excepted — placing over a note replaces it, as a single undo step.
 
 ### SV editing
@@ -270,9 +185,9 @@ With an SV view focused, the tool row becomes:
 
 - Red lines are uninherited (BPM) points, green are inherited (SV), yellow means both share a millisecond.
 - Click a green line to select it; drag vertically to change its SV, horizontally to retime it, snapped to the grid. Which axis you get depends on how close the click was to the value dot.
-- Rubber-band select a range, `Ctrl+A` for everything visible, `Delete` to remove. Uninherited points are never deleted here.
-- Double-clicking a timing line toggles kiai or the line's omit-barline flag.
-- The graph shows **effective** SV — green over red where both exist — with a fixed 0.1x floor and an autoscaling ceiling.
+- Deleting green lines will not remove Red lines
+- Double-clicking any timing line allows you to toggle kiai or the line's omit-barline flag.
+- The graph shows **effective** SV — green over red where both exist — with a fixed 0.1x floor and an autoscaling ceiling. - to be changed to 0.01x
 
 **Function mode:** drag a range, then choose initial rate, final rate, position offset, whether to omit the first barline, and whether the sweep is relative to the final BPM. Seven curves are offered as tiles, each drawing the sweep you actually typed:
 
@@ -281,12 +196,6 @@ linear   sin in   sin out   exp1.3   exp1.6   true exp   sin
 ```
 
 Points are generated on the notes in range by default, or every N snaps. The default −5 ms offset makes sure the SV is already in force when the note it governs arrives. However many points it makes, it is one undo step.
-
-### Millisecond precision
-
-osu! stores whole milliseconds while the beat grid is fractional, so at deep zoom an object could sit visibly off its own gridline. The grid, the playhead and every placement now agree on one whole millisecond, rounded the way osu! rounds (halves up, where Python rounds halves to even).
-
-Holding **Ctrl** places at 1ms precision regardless of the snap divisor, with a guide line and a live millisecond readout in the corner of every view.
 
 ### Editor shortcuts
 
@@ -307,7 +216,7 @@ Alt+wheel           Change beat snap
 
 All of these are rebindable in **Settings**, except `Delete` and `Ctrl+A`, which belong to the focused view.
 
-Leaving the editor with unsaved work lists which difficulties are unsaved by name and offers **Save**, **Continue without saving**, or **Cancel**. Continuing without saving keeps the edits in the session — nothing is written and nothing is thrown away.
+Leaving the editor with unsaved work lists which difficulties are unsaved by name and offers **Save**, **Continue without saving**, or **Cancel**. Continuing without saving keeps the edits in the session and nothing will be saved.
 
 ---
 
