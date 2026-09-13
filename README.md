@@ -18,13 +18,26 @@ Taiko Fancy Arranger started as a tool for turning osu!taiko notes into visual p
 
 Everything stays a playable osu! beatmap. Sections the editor does not model — storyboards, breaks, colours, editor bookmarks — are passed through byte-for-byte on save.
 
-> **Current release:** v3.3.0  
+> **Current release:** v3.3.1  
 > **Platform:** Windows x64  
 > **Author:** [jimmyreturnz](https://osu.ppy.sh/users/11306153)
 
 The original idea came from a random chat with maruaki101. Other inspirations include Alchyr's ranked maps *13 Stairs* and *Helios*, which use unusual note placement to create visual expression. You should go check it out [here!](https://osu.ppy.sh/beatmapsets/1093671#taiko/3819326)
 
 Many thanks to Mew’s beatmaps for studying reference that made the tool creation possible, and other player’s ideas!
+
+---
+
+## What is new in 3.3.1
+
+Slow playback and hitsounds, both rebuilt from measurement.
+
+- **Hitsounds are mixed directly into the song's audio** instead of played as separate triggered sounds — a note lands on its own millisecond of the music at every speed, including staying in sync if you change the hitsound offset or edit notes mid-playback, and a fast scroll or seek can no longer stack a section's hitsounds into one loud burst.
+- **Slow playback (25/50/75%) is substantially more accurate.** The time-stretch grain shortened from 117ms to 20ms, which also sounds better on real tracks (a kick drum used to come apart at 25%) and costs less CPU.
+- **Music offset (ms) and Hitsound offset (ms) are independent again** — the music's own volume no longer attenuates the hitsounds mixed alongside it.
+- **Known limitation:** a small timing gap between the playhead and the music remains at 25% speed, under investigation.
+
+Full notes: [`docs/releases/v3.3.1.md`](docs/releases/v3.3.1.md).
 
 ---
 
@@ -136,11 +149,13 @@ The **Audio** settings page carries hitsound enable and volume, a hitsound trim 
 | speed | before | now |
 | --- | --- | --- |
 | 100% | 0.0 ms | 0.0 ms |
-| 75% | 13.0 ms | 3.0 ms |
-| 50% | 30.0 ms | 2.9 ms |
-| 25% | 45.1 ms | 7.9 ms |
+| 75% | 13.0 ms | 2.8 ms |
+| 50% | 30.0 ms | 4.2 ms |
+| 25% | 45.1 ms | 9.7 ms |
 
 That came from making the stretch work in 20 ms pieces rather than the 117 ms a reference implementation asks for. A shorter piece also sounds better here, not worse: on a loud mastered track at 25% the long one visibly took a kick drum apart. It costs less processor time as well, so slow playback is now steadier than full speed used to be — no dropouts measured in eight-second runs at any speed.
+
+The correction itself was then re-measured against real tracks rather than only the click test above, because the two turned out to disagree: a click test's sparse, isolated transients don't correlate the way continuous music does, so a number tuned to one doesn't carry over to the other. At 25% a small gap remains between the playhead and the music that isn't fully explained yet — it's real, it's small, and it's the thing being chased next.
 
 Changing speed does not interrupt anything. Audio already on its way to the speakers finishes at the old speed and everything after it runs at the new one, so there is no gap, no jump, and no drift introduced by the switch.
 
