@@ -860,6 +860,29 @@ scope ("left click places, right click deletes," not "and then resize").
   **the reach has to scale with the grain**: left at upstream's 25 ms against a 20 ms grain it is
   wider than the grain itself, and tonality at 0.75x collapsed to 0.457 — caught by the harness at
   the one rate nobody had listened to.
+
+  **Follow-up, reported from use after the above shipped:** hitsounds mixed straight into the
+  stream (see the hitsound-mixing entry below) exposed two more things. One was a real bug — a
+  schedule replacement (an offset change, an edit during playback) left `HitsoundMixer`'s dedupe
+  watermark expressed against the *old* schedule, so a note could be silently dropped or fire again
+  later disconnected from the playhead. Fixed: `HitsoundMixer.resync` rebases the watermark to now
+  whenever the schedule changes. The other was the still-audible "kick lands late" report at 0.25x
+  on a 210 BPM chart (a 1/12 snap by ear, less at 0.5x/0.75x, fine at 1.0x). `grain_offset_ms`'s
+  "half of the reach" assumption was checked directly against real music (`tools/measure_search_
+  bias.py`, recovering `best_offset` exactly via a tail-matching trick, no assumptions) rather than
+  against the click train this section's own harness uses — the click train's search behaviour
+  (26-28% of reach) turned out not to represent real music's (50-58%), which is the same trap
+  `calcSeqParameters` fell into. Recalibrating from real tracks tightened the correction by a couple
+  of ms per rate. Two other candidates were checked and ruled out with a number apiece: uncalibrated
+  physical device latency (wrong direction — a wall-clock constant shrinks in song-time terms at
+  slower rates) and gui.py's interpolating clock adding its own lag (simulated exactly; it tracks
+  the reported position to within noise, because it extrapolates the known rate and only blends the
+  residual). **Not fully explained** — the corrected residual is single-digit milliseconds, and does
+  not obviously add up to a whole 1/12 snap (23.8ms of song time) on its own. Next candidates, not
+  yet measured: whether `audio/output_offset_ms` is actually calibrated on the reporting machine
+  (worth doing regardless, even though it doesn't explain the rate-dependence by itself), and
+  whether judging a few milliseconds by ear on heavily time-stretched audio at 0.25x is simply
+  harder than the number suggests it should be.
 - **Paint performance.** `TimelineGameplay._draw_snap_grid` constructed a new `QColor`/`QPen` per
   tick per frame; at fine snap divisors with several chart views open at once (now the default,
   since M2 auto-opens chart + SV per difficulty) that allocation churn was a real stutter
