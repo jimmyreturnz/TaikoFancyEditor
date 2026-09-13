@@ -29,17 +29,30 @@ Two numbers per rate, and the *signed* one is the one that matters:
 
 Measured baselines, 0.25 / 0.5 / 0.75 / 1.0, absolute error:
 
-- before any of this:            40.8 / 32.1 / 20.3 / 0.00 ms
-- after centring on the grain:   15.8 /  5.1 /  5.8 / 0.00 ms
-- at SoundTouch's 117ms grain:   21.2 / 15.0 /  5.4 / 0.00 ms
-- at the 20ms grain shipped now:  7.7 /  2.9 /  1.7 / 0.00 ms
+- before any of this:                       40.8 / 32.1 / 20.3 / 0.00 ms
+- after centring on the grain:               15.8 /  5.1 /  5.8 / 0.00 ms
+- at SoundTouch's 117ms grain:                21.2 / 15.0 /  5.4 / 0.00 ms
+- at the 20ms grain, half-of-reach guess:      7.7 /  2.9 /  1.7 / 0.00 ms
+- at the 20ms grain, calibrated on real music: 9.4 /  4.2 /  1.6 / 0.00 ms
 
 **Careful with `absolute` on this signal.** At the 20ms grain `worst` comes
-out barely above `absolute` (7.92 against 7.66 at 0.25x), which would mean the
+out barely above `absolute` (9.70 against 9.44 at 0.25x), which would mean the
 sawtooth has no spread at all -- and it must have 15ms of it there. The likely
 reason is that WSOLA's search aligns transients, so a train of impulses gets
 every click snapped to the same phase of its grain. Read a small spread here as
 the bias being small, not as the spread being gone.
+
+**The last row went up, on purpose, and this is not a regression.**
+`grain_offset_ms` used to assume the splice search lands uniformly across its
+reach (half of it) and was later found to disagree with itself when checked --
+so `tools/measure_search_bias.py` measured where the search *actually* lands,
+on three real tracks, using the exact `best_offset` the search chose (not an
+inference from where a click landed). The click train's own search behaviour
+turned out to sit at 26-28% of the reach; real music's sits at 50-58%. This
+harness's numbers moved to match what happens on the signal nobody actually
+plays being deliberately left worse, in exchange for what real playback
+measures being better. If this harness's numbers and `measure_search_bias.py`
+ever disagree about which way to tune the correction, believe the real music.
 
 And the column that this harness was missing when it mattered:
 

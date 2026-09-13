@@ -82,7 +82,19 @@ recovery -- two real bugs inherited from reading a stale copy.
   where the playhead says it does, which is the whole reason an editor slows
   down. The `snaps` column must be 0: a correction can place every transient
   perfectly and still arrive as a step at each grain boundary, which on screen
-  is the playhead teleporting.
+  is the playhead teleporting. **Its own signal is a click train and that is
+  not neutral** -- its search lands at 26-28% of the reach against real
+  music's 50-58%, measured, so calibrating anything from its residual bias
+  is the same trap that put a click-detector-tuned geometry here once already.
+  Use it for snaps and relative before/after comparisons; use
+  `measure_search_bias.py` below for the number that goes into
+  `grain_offset_ms`.
+- `tools/measure_search_bias.py <real audio> [audio ...] [rate ...]` — where
+  the WSOLA splice search actually lands, and what correction that needs, on
+  real tracks. Recovers `best_offset` with no assumptions and no production
+  code changed: `_tail_mono` is a byte-for-byte copy of a slice of the source,
+  and real audio does not repeat itself at that length by chance, so searching
+  for it finds exactly where a grain came from.
 - `tools/measure_stretch_quality.py <real map audio> [rate]` — tonality,
   warble, clicks and cost. **Needs a real track**; every signal it generates
   itself is synthetic, and that is exactly how a geometry that took a kick

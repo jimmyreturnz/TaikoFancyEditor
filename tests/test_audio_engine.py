@@ -562,11 +562,23 @@ class ReportedPositionTests(unittest.TestCase):
         one."""
         self.assertEqual(grain_offset_ms(1.0), 0.0)
 
-    def test_the_correction_is_half_the_lead_the_audio_can_have(self):
-        for rate in (0.75, 0.5, 0.25):
-            lead = SEQUENCE_FRAMES * (1.0 - rate) + SEARCH_FRAMES
-            self.assertAlmostEqual(
-                grain_offset_ms(rate), lead / 2.0 / SAMPLE_RATE * 1000.0, places=6)
+    def test_the_correction_matches_the_measured_anchors(self):
+        """Pinned to the values `tools/measure_search_bias.py` measured on
+        real tracks (ground truth via the tail-matching trick, not a formula
+        fitted to a click train's atypical search behaviour). See
+        `_MEASURED_OFFSET_ANCHORS_MS`'s comment for why this is a table and
+        not a two-parameter formula: the three points do not sit on one
+        straight line in `(1 - rate)`."""
+        for rate, expected_ms in ((0.25, 10.72), (0.5, 8.71), (0.75, 7.67)):
+            with self.subTest(rate=rate):
+                self.assertAlmostEqual(grain_offset_ms(rate), expected_ms, places=6)
+
+    def test_the_correction_interpolates_between_anchors(self):
+        """Anything the UI's four speed buttons never ask for still gets a
+        continuous, sane value rather than a lookup failure."""
+        self.assertAlmostEqual(grain_offset_ms(0.375), (10.72 + 8.71) / 2, places=6)
+        self.assertGreater(grain_offset_ms(0.1), grain_offset_ms(0.25))
+        self.assertGreater(grain_offset_ms(0.9), grain_offset_ms(1.0))
 
     def test_the_correction_never_moves_while_the_rate_holds(self):
         """The regression that shipped once and must not again.

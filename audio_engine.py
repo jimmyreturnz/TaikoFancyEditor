@@ -273,61 +273,88 @@ def _centre_bias(frames: int) -> array.array:
     ))
 
 
+# How far ahead of the reported position the audio actually is, at each rate
+# the UI offers (`gui.py`'s four speed buttons, 25/50/75/100% -- there is no
+# continuous dial). Measured directly on real music, not modelled: at each
+# grain, `tools/measure_search_bias.py`'s tail-matching trick recovers
+# `best_offset` exactly (`_tail_mono` is a byte-for-byte copy of
+# `mono[best_offset + SEQUENCE_FRAMES : best_offset + GRAIN_FRAMES]`, and real
+# audio does not repeat itself at that length by chance, so searching for it
+# finds `best_offset` with no assumptions). That gives the *true* content
+# position at every pump-tick instant, sampled uniformly across each grain
+# (not just at its edges -- sampling only at grain end measures the
+# sawtooth's worst point, not its mean, which is what centring needs) and
+# compared against what the naive linear-at-`rate` mapping would report.
+# Three tracks of different genre (electronic, dubstep remix, vocal pop),
+# stdev under 0.25ms across all of them at every rate:
+#
+#     rate    needed correction   old formula (half of everything)
+#     0.25          10.72ms                12.50ms
+#     0.50           8.71ms                10.00ms
+#     0.75           7.67ms                 7.50ms
+#     1.00           0.00ms (exact -- the straight-copy path, no grain, no search)
+#
+# The old formula assumed the splice search lands *uniformly* across its reach
+# and used half of it. That assumption was never checked against real music --
+# only inferred from a click train's residual bias, and the click train turns
+# out to be a bad proxy: measured the same way, its own search lands at 26-28%
+# of the reach, against real music's 50-58%. A quiet bed with sparse loud
+# impulses does not correlate the way continuously-textured music does, so
+# calibrating anything from it is the same trap that put SoundTouch's geometry
+# here in the first place -- a number that looked fine on a synthetic signal
+# and wasn't. This measurement uses real tracks throughout for that reason.
+#
+# **Two other explanations were investigated and ruled out**, worth recording
+# so they are not re-suspected without a number next time:
+#
+# - Uncorrected physical device latency (`audio/output_offset_ms` at its
+#   default of 0). Wrong direction: a constant *wall-clock* delay maps to
+#   `L * rate` of *song-time* mismatch, which shrinks at slower rates -- the
+#   opposite of "worse at 0.25x, decent at 1.0x".
+# - `gui.py`'s interpolating clock (`_advance_interpolated_clock`) introducing
+#   its own lag on top of this. Simulated exactly (constants and formula
+#   copied verbatim) and driven first by a perfect ramp, then by the real,
+#   grain-quantised reports above: the displayed clock tracks the engine's own
+#   reported position to within simulation noise at every rate. It extrapolates
+#   by the known rate every frame and only blends the *residual*, which has
+#   zero steady-state lag against a signal advancing at a roughly constant
+#   rate -- unlike a plain low-pass filter, which would not.
+#
+# The measured points do not sit on one straight line in `(1 - rate)`, so this
+# is a small anchor table with linear interpolation between real, measured
+# values rather than a two-parameter formula bent to fit three points it
+# does not actually lie on -- which would claim a precision the measurement
+# does not have. Only 0.25/0.5/0.75 are ever asked for; the interpolation
+# exists so an out-of-table rate (a test, a future speed) gets something
+# continuous and reasonable rather than a lookup failure.
+_MEASURED_OFFSET_ANCHORS_MS = ((0.25, 10.72), (0.5, 8.71), (0.75, 7.67), (1.0, 0.0))
+
+
 def grain_offset_ms(rate: float) -> float:
-    """How far ahead of the reported position the audio actually is.
+    """How far ahead of the reported position the audio actually is, at
+    `rate`. See `_MEASURED_OFFSET_ANCHORS_MS` above for what this is and how
+    it was measured -- real tracks, not a synthetic signal or a formula.
 
-    `_position_ms` maps output time back to song time *linearly at `rate`*, but
-    a cycle emits a whole grain of **unstretched** source taken from wherever
-    the search landed. So inside a grain the content advances at 1.0x while the
-    map advances at `rate` -- up to `sequence * (1 - rate)` of lead by the end
-    of it -- and the forward search adds 0..`reach` on top.
-
-    Measured on a click train (`tools/measure_stretch_timing.py`), absolute
-    error mean / worst, both columns corrected by this function:
-
-        rate    117ms grain      20ms grain
-        0.25    21.15 / 45.13    7.66 / 7.92
-        0.50    15.01 / 29.96    2.91 / 2.95
-        0.75     5.43 / 12.99    1.70 / 2.99
-        1.00     0.00 /  0.00    0.00 / 0.00
-
-    The left column is the SoundTouch geometry this replaced, and is where
-    "inaccurate at 25/50/75, fine at 100%" came from -- 1.0x is the
-    straight-copy path, with no grain and no search to be wrong about, so it
-    was always exact and the other three were not.
-
-    **Worst is now barely above mean, which is not as good as it looks.** The
-    sawtooth this centres should still leave `sequence * (1 - rate)` of spread
-    (15ms at 0.25x), and the harness sees 0.26ms of it. The likely reason is
-    the signal: WSOLA's search aligns transients, so on a train of impulses it
-    snaps every click to the same phase of its grain and the spread the model
-    predicts never shows up. Read these as the bias being small, not as proof
-    that the spread is gone -- on music it will be somewhere between.
-
-    **The `SEARCH_FRAMES` half of the lead is the approximate half**, and it is
-    most of what is left. A grain is taken from somewhere in `[read, read +
-    reach)` and half the reach is the expectation only if the search lands
-    uniformly; measured, it lands much nearer the read head than that, so this
-    over- or under-corrects by a few ms depending on the material. That shows
-    up above as a one-sided bias -- at 0.5x the mean *is* the bias, so
-    essentially all of the residual is this term. Left as half rather than
-    fitted, because fitting a constant to one synthetic click train is how the
-    numbers this docstring used to quote became wrong.
-
-    Deliberately a function of the rate and **nothing else**. A correction that
-    tracks each grain's own splice is more accurate on paper and unusable in
-    practice: it steps at every grain boundary, and gui.py's interpolating
-    clock abandons interpolation and jumps whenever the source disagrees by
-    more than `POSITION_ALLOWABLE_ERROR_MS * rate` (8.3ms at 0.25x). Measured,
-    that was 146 snaps in 1199 ticks -- the playhead teleporting a dozen times
-    a second. This one changes only when the rate does, which is a moment the
-    playhead is being moved anyway, and the harness holds it to 0 snaps in
-    1199 ticks at every rate.
+    Deliberately a function of the rate and **nothing else**, still. A
+    correction that tracks each grain's own splice is more accurate on paper
+    and unusable in practice: it steps at every grain boundary, and gui.py's
+    interpolating clock abandons interpolation and jumps whenever the source
+    disagrees by more than `POSITION_ALLOWABLE_ERROR_MS * rate` (8.3ms at
+    0.25x). Measured, that was 146 snaps in 1199 ticks -- the playhead
+    teleporting a dozen times a second. This one changes only when the rate
+    does, which is a moment the playhead is being moved anyway, and the
+    harness holds it to 0 snaps in 1199 ticks at every rate.
     """
     if rate == 1.0:
         return 0.0
-    lead = SEQUENCE_FRAMES * (1.0 - rate) + SEARCH_FRAMES
-    return lead / 2.0 / SAMPLE_RATE * 1000.0
+    anchors = _MEASURED_OFFSET_ANCHORS_MS
+    # Whichever consecutive pair brackets `rate`, or the first/last pair to
+    # extrapolate outside [0.25, 1.0] -- no rate the UI offers ever needs that,
+    # but a test or a future speed should get a continuous line, not a crash.
+    for (r0, m0), (r1, m1) in zip(anchors, anchors[1:]):
+        if rate <= r1:
+            break
+    return m0 + (m1 - m0) * (rate - r0) / (r1 - r0)
 
 
 def frame_for_ms(time_ms: float) -> int:
