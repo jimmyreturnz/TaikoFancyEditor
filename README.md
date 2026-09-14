@@ -73,7 +73,7 @@ Full development log detail lives in [`docs/DEVELOPMENT_PLAN.md`](docs/DEVELOPME
 
 ## Windows SmartScreen notice
 
-Taiko Fancy Arranger v3.3.1 is a currently unsigned Windows application. The release includes source-level security hardening, input validation, safer file handling, automated tests, and published SHA-256 checksums.
+Taiko Fancy Arranger v3.3.2 is a currently unsigned Windows application. The release includes source-level security hardening, input validation, safer file handling, automated tests, and published SHA-256 checksums.
 
 Windows Defender SmartScreen may still display an "unrecognized app" warning because the executable has not yet established download reputation.
 
@@ -95,7 +95,7 @@ Notes are mixed straight into the song's audio now too, instead of being played 
 
 **Music offset (ms)** on the Audio settings page shifts the playhead to match when sound reaches your ears. Default value is 0ms, but you can calibrate it inside the settings.
 
-**Hitsound offset (ms)** is separate from that — it nudges the notes' own sound against the music, since the notes are mixed into it now. Leave it at 0 unless you want the notes deliberately a bit early or late.
+**Hitsound offset (ms)** is separate from that — it nudges the notes' own sound against the music, since the notes are mixed into it now. It defaults to +22ms, which is where charts timed in osu! put their notes against this app's audio (measured over 60 maps). To fine-tune it by ear, slow the song to 25% and press **Ctrl+[** / **Ctrl+]** while it plays.
 
 ---
 
