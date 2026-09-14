@@ -153,6 +153,8 @@ class TimeAxisMixin:
     # constructor having to remember; `TimelineGameplay` sets its own instance
     # copy for the playhead it draws.
     is_playing = False
+    # True only while wheelEvent is emitting seek_requested -- see there.
+    wheel_seek_in_progress = False
 
     # Set by the gimmick editor to the base timing snapshot. Empty everywhere
     # else, so the view snaps against the document it is showing.
@@ -427,7 +429,13 @@ class TimeAxisMixin:
             self.current_time = wheel_seek_time(
                 self.snap_points, self.current_time, -1 if steps > 0 else 1, divisor
             )
-            self.seek_requested.emit(self.current_time)
+            # Direct connections run the slot inside emit, so this tells
+            # MainWindow.seek_audio the seek came from the wheel.
+            TimeAxisMixin.wheel_seek_in_progress = True
+            try:
+                self.seek_requested.emit(self.current_time)
+            finally:
+                TimeAxisMixin.wheel_seek_in_progress = False
             self.update()
         event.accept()
 

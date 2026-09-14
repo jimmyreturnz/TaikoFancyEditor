@@ -498,6 +498,12 @@ note behind, which is one Delete in layer 1 rather than lost music. Deleting a
 note that *was* selected still takes its structure with it, which is the case
 layer 1 is for.
 
+The fake slider layer's own red lines are the one delete that does not expand:
+a right click *on the line* (off the slider's circle, which is tried first)
+goes to `_delete_timing_lines` and leaves the slider standing. A right click on
+the slider still takes both. The line is still not draggable or selectable
+there -- `timing_delete_enabled`, not `timing_edit_enabled`.
+
 ## Things that are true and non-obvious
 
 - **Line endings are mixed, and `core.autocrlf=true`.** `gui.py` used to be

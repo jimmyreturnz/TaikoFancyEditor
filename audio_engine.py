@@ -357,6 +357,23 @@ def grain_offset_ms(rate: float) -> float:
     return m0 + (m1 - m0) * (rate - r0) / (r1 - r0)
 
 
+# Where a chart's notes sit against this app's decode of their song: the attack
+# a mapper timed a note to arrives this many ms *after* the note's millisecond.
+# Measured with `tools/measure_note_vs_music.py` over 60 random installed taiko
+# maps, averaging the energy envelope around every note: median +22ms on MP3
+# (21 self-consistent maps) and +23ms on OGG (14), so it is not a codec's
+# gapless delay -- it is what charts timed in osu! carry. Inaudible at 1.0x;
+# at 0.25x it is ~90ms of wall time with the hitsound first, which is what
+# "the kick lands late at slow speed" was. The default for
+# `audio/hitsound_offset_ms`, so a user trim still sits on top.
+DEFAULT_HITSOUND_OFFSET_MS = 22
+
+# How long a mouse-wheel seek during playback pauses, audio and playhead
+# together, after it lands. Default for `playback/wheel_seek_hold_ms`; 0 is
+# no pause. Being tuned by ear.
+WHEEL_SEEK_HOLD_MS = 0
+
+
 def frame_for_ms(time_ms: float) -> int:
     """Source frame for a chart millisecond. Halves up.
 
@@ -807,6 +824,10 @@ class _Engine(QObject):
         self._samples: dict[str, bytes] = {}
         self._sample_decoders: list = []
         self._hitsound_offset_ms = 0.0
+        # A wheel seek's pause: ms asked for by the next landing, and the
+        # silent frames still to write for the landing that took it.
+        self._next_hold_ms = 0.0
+        self._hold_frames = 0
         # ponytail: the whole track is decoded into memory -- 50MB for a 4:43
         # song, measured. Streaming would halve that at the cost of making every
         # backwards seek a re-decode, and backwards seeks are what an editor does.
@@ -823,6 +844,7 @@ class _Engine(QObject):
         # target, the target itself, and when the last real rebuild landed.
         self._seek_timer = None
         self._pending_seek_ms = None
+        self._pending_seek_wall = 0
         self._last_seek_wall = None
         self._last_seek_target = None
         self._seek_clock = QElapsedTimer()
@@ -967,7 +989,8 @@ class _Engine(QObject):
         # `HitsoundMixer.mix`, where it can still make headroom for the notes.
         self._device = self._sink.start()
         self._written = 0
-        self._segments = [(0, song_ms, self._rate)]
+        # Song time starts after the hold's silence, which `_fill` writes first.
+        self._segments = [(self._hold_frames, song_ms, self._rate)]
         self._fade_remaining = FADE_FRAMES
         self._pump = QTimer(self)
         self._pump.setTimerType(Qt.PreciseTimer)
@@ -1008,6 +1031,9 @@ class _Engine(QObject):
                     # request, because playback has moved on since.
                     return
                 self._pending_seek_ms = position_ms
+                # When it was asked for: the window starts moving from the
+                # target now, the audio only when this lands.
+                self._pending_seek_wall = now
                 if self._seek_timer is None:
                     self._seek_timer = QTimer(self)
                     self._seek_timer.setSingleShot(True)
@@ -1023,6 +1049,16 @@ class _Engine(QObject):
             return
         position_ms, self._pending_seek_ms = self._pending_seek_ms, None
         self._last_seek_wall = self._seek_clock.elapsed()
+        # The playhead has been running from the target (after its own hold)
+        # since the request, up to SEEK_COALESCE_MS ago. Landing the audio on
+        # the bare target started it that far behind, and gui.py's
+        # no-backwards clamp froze the playhead until it caught up --
+        # `tools/measure_wheel_seek.py --burst` measured ~60ms of freeze after
+        # a fast spin, ~250ms with a 15ms hold. Land where the playhead is.
+        elapsed = max(0.0, float(self._last_seek_wall - self._pending_seek_wall))
+        hold = self._next_hold_ms
+        position_ms += max(0.0, elapsed - hold) * self._rate
+        self._next_hold_ms = max(0.0, hold - elapsed)
         self._land_seek(position_ms)
 
     def _land_seek(self, position_ms: float) -> None:
@@ -1040,6 +1076,10 @@ class _Engine(QObject):
         self._sink = None
         self._pump = None
         self._device = None
+        # Consumed by this landing whether or not it plays, so a hold never
+        # leaks into a later play() or an unrelated seek.
+        hold_ms, self._next_hold_ms = self._next_hold_ms, 0.0
+        self._hold_frames = int(hold_ms / 1000.0 * SAMPLE_RATE) if playing else 0
         if playing:
             self._open_sink()
 
@@ -1074,6 +1114,8 @@ class _Engine(QObject):
         self._mixer.music_gain = self._volume
 
     def _set_state(self, state) -> None:
+        if state != QMediaPlayer.PlayingState:
+            self._hold_frames = 0
         if state != self._state:
             self._state = state
             self.state_changed.emit(state)
@@ -1157,13 +1199,23 @@ class _Engine(QObject):
         it up, and gui.py sends one whenever a setting changes."""
         self._hitsound_offset_ms = float(offset_ms)
 
+    @Slot(float)
+    def set_seek_hold_ms(self, hold_ms: float) -> None:
+        self._next_hold_ms = max(0.0, float(hold_ms))
+
     # -- the pump -------------------------------------------------------------
 
     @Slot()
     def _fill(self) -> None:
         if self._sink is None or self._device is None:
             return
-        if self._state == QMediaPlayer.PlayingState:
+        if self._state == QMediaPlayer.PlayingState and self._hold_frames > 0:
+            frames = min(self._hold_frames, self._sink.bytesFree() // (CHANNELS * 2))
+            if frames > 0:
+                self._device.write(bytes(frames * CHANNELS * 2))
+                self._written += frames
+                self._hold_frames -= frames
+        elif self._state == QMediaPlayer.PlayingState:
             # Before the pull, so the pull never has to run the search itself.
             self._stretcher.ensure_grain(self._pcm, self._mono, self._rate)
             free_frames = self._sink.bytesFree() // (CHANNELS * 2)
@@ -1178,6 +1230,14 @@ class _Engine(QObject):
                 elif self._decoder is None or not self._decoder.isDecoding():
                     self.stop()
                     return
+        if self._pending_seek_ms is not None:
+            # The sink is still playing the position this seek is leaving.
+            # Reporting it pulled gui.py's clock back to the old spot, where
+            # its no-backwards clamp froze the playhead until the seek landed:
+            # `tools/measure_wheel_seek.py` measured 110 frozen frames of 359
+            # with a notch every 25ms, all of them during a parked seek. The
+            # window already holds the target and extrapolates from it.
+            return
         self.position_changed.emit(self._position_ms())
 
     def _fade_in(self, block: bytes) -> bytes:
@@ -1221,7 +1281,9 @@ class _Engine(QObject):
         # A segment the play cursor has left can never be needed again.
         while len(self._segments) > 1 and self._segments[1][0] <= played:
             self._segments.pop(0)
-        return (song_ms + (played - start_frame) / SAMPLE_RATE * 1000.0 * rate
+        # Clamped: during a seek hold the play cursor is still in the silence
+        # before the first segment, and that is not song time.
+        return (song_ms + max(0.0, played - start_frame) / SAMPLE_RATE * 1000.0 * rate
                 + grain_offset_ms(rate))
 
 
@@ -1243,6 +1305,7 @@ class TrackPlayer(QObject):
     _pause = Signal()
     _stop = Signal()
     _seek = Signal(float)
+    _seek_hold = Signal(float)
     _rate = Signal(float)
     _volume = Signal(float)
     _hitsound_schedule = Signal(object, object, object)
@@ -1264,6 +1327,7 @@ class TrackPlayer(QObject):
         self._pause.connect(self._engine.pause)
         self._stop.connect(self._engine.stop)
         self._seek.connect(self._engine.seek)
+        self._seek_hold.connect(self._engine.set_seek_hold_ms)
         self._rate.connect(self._engine.set_rate)
         self._volume.connect(self._engine.set_volume)
         self._hitsound_schedule.connect(self._engine.set_hitsound_schedule)
@@ -1343,6 +1407,11 @@ class TrackPlayer(QObject):
     def setPosition(self, position_ms) -> None:
         self._position_ms = float(position_ms)
         self._seek.emit(float(position_ms))
+
+    def set_seek_hold_ms(self, hold_ms) -> None:
+        """Silence before the *next* landed seek's audio. Call before
+        `setPosition`: the two signals are queued in order."""
+        self._seek_hold.emit(float(hold_ms))
 
     def setPlaybackRate(self, rate) -> None:
         self._playback_rate = float(rate)

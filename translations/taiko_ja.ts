@@ -145,6 +145,10 @@
             <translation>この曲の音声をデコードできませんでした。</translation>
         </message>
         <message>
+            <source>Hitsound offset: %1 ms</source>
+            <translation>ヒットサウンドオフセット: %1 ms</translation>
+        </message>
+        <message>
             <source>4. Red Line</source>
             <translation>4. 赤線</translation>
         </message>
@@ -2167,6 +2171,14 @@ Taiko Fancy Arranger を閉じて、そのフォルダーの TaikoFancyArranger.
         <message>
             <source>Play/Pause</source>
             <translation>再生 / 一時停止</translation>
+        </message>
+        <message>
+            <source>Hitsound offset: 1ms earlier</source>
+            <translation>ヒットサウンドオフセット: 1ms早く</translation>
+        </message>
+        <message>
+            <source>Hitsound offset: 1ms later</source>
+            <translation>ヒットサウンドオフセット: 1ms遅く</translation>
         </message>
         <message>
             <source>Playback</source>

@@ -458,6 +458,8 @@ class LibraryPageTests(unittest.TestCase):
             "save_all": self.window.save_shortcut,
             "copy": self.window.copy_shortcut,
             "paste": self.window.paste_shortcut,
+            "hitsound_offset_earlier": self.window.hitsound_earlier_shortcut,
+            "hitsound_offset_later": self.window.hitsound_later_shortcut,
             **self.window.tool_shortcuts,
         }
         # all_shortcut_definitions, not SHORTCUT_DEFINITIONS: every gimmick

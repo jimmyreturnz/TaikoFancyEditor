@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
 )
 
 import updater
+from audio_engine import DEFAULT_HITSOUND_OFFSET_MS
 from settings import (
     NOTE_OPACITY_DEFAULT_PERCENT,
     NOTE_OPACITY_MIN_PERCENT,
@@ -348,7 +349,8 @@ class SettingsDialog(QDialog):
         )
         self.hitsounds_enabled.setChecked(self.settings.bool_value("audio/hitsounds_enabled", True))
         self.hitsound_volume.setValue(self.settings.int_value("audio/hitsound_volume", 70))
-        self.hitsound_offset_ms.setValue(self.settings.int_value("audio/hitsound_offset_ms", 0))
+        self.hitsound_offset_ms.setValue(self.settings.int_value(
+            "audio/hitsound_offset_ms", DEFAULT_HITSOUND_OFFSET_MS))
         self.music_volume.setValue(self.settings.int_value("audio/music_volume", 65))
         self.output_offset_ms.setValue(self.settings.int_value("audio/output_offset_ms", 0))
         self.note_opacity.setValue(self.settings.int_value(
@@ -376,7 +378,7 @@ class SettingsDialog(QDialog):
         elif page == "audio":
             self.hitsounds_enabled.setChecked(True)
             self.hitsound_volume.setValue(70)
-            self.hitsound_offset_ms.setValue(0)
+            self.hitsound_offset_ms.setValue(DEFAULT_HITSOUND_OFFSET_MS)
             self.output_offset_ms.setValue(0)
             self.music_volume.setValue(65)
         elif page == "skin":

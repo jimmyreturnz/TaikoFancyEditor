@@ -108,6 +108,10 @@ TOOLS_EDITOR_CATEGORY = "Tools — Editor"
 # registered, because a real shortcut would take Escape away from the views.
 SHORTCUT_DEFINITIONS: tuple[ShortcutDefinition, ...] = (
     ShortcutDefinition("play_pause", "Play/Pause", "Playback", "Space"),
+    # Tuned by ear while a chart plays at a slow rate, where the gap between a
+    # note and its music is several times longer than at 1.0x.
+    ShortcutDefinition("hitsound_offset_earlier", "Hitsound offset: 1ms earlier", "Playback", "Ctrl+["),
+    ShortcutDefinition("hitsound_offset_later", "Hitsound offset: 1ms later", "Playback", "Ctrl+]"),
     ShortcutDefinition("undo", "Undo", "Editing", "Ctrl+Z"),
     ShortcutDefinition("redo", "Redo", "Editing", "Ctrl+Y"),
     ShortcutDefinition("copy", "Copy", "Editing", "Ctrl+C"),

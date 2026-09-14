@@ -155,6 +155,11 @@ class WheelStepWhilePlayingTests(unittest.TestCase):
     def test_playing_steps_a_whole_beat(self):
         self.assertAlmostEqual(self._step(playing=True), 500.0, places=3)
 
+    def test_shift_steps_a_whole_beat_while_playing(self):
+        self.assertAlmostEqual(
+            self._step(playing=True, modifiers=Qt.KeyboardModifier.ShiftModifier),
+            500.0, places=3)
+
     def test_paused_steps_the_snap_divisor(self):
         # 31 rather than 31.25: a snapped millisecond is truncated, not
         # rounded, because osu!stable casts a fractional beat position to int.

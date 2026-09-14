@@ -327,9 +327,34 @@ class SeekCoalesceTests(unittest.TestCase):
         self.assertEqual(len(rebuilds), 1)
         engine._land_pending_seek()  # what the timer's own timeout does
         self.assertEqual(len(rebuilds), 2)
+        # Within 5ms, not one frame: a landing now adds the time since the
+        # request (see the next test), and a test run is not instantaneous.
         self.assertAlmostEqual(
-            rebuilds[-1], 1020.0 / 1000.0 * SAMPLE_RATE, delta=1)
+            rebuilds[-1], 1020.0 / 1000.0 * SAMPLE_RATE, delta=0.005 * SAMPLE_RATE)
         self.assertIsNone(engine._pending_seek_ms)
+
+    def test_a_late_landing_starts_where_the_playhead_has_got_to(self):
+        """The playhead runs from the target from the moment it is asked for;
+        audio landing on the bare target 40ms later starts 40ms behind it."""
+        engine, rebuilds = self._playing_engine()
+        engine.seek(1000.0)
+        engine.seek(1020.0)  # parked
+        engine._pending_seek_wall -= 40  # the request was 40ms ago
+        engine._land_pending_seek()
+        self.assertGreaterEqual(rebuilds[-1], 1060.0 / 1000.0 * SAMPLE_RATE - 1)
+        self.assertLess(rebuilds[-1], 1066.0 / 1000.0 * SAMPLE_RATE)
+
+    def test_a_late_landing_spends_its_hold_first(self):
+        engine, rebuilds = self._playing_engine()
+        engine.seek(1000.0)
+        engine.set_seek_hold_ms(30.0)
+        engine.seek(1020.0)  # parked
+        engine._pending_seek_wall -= 40
+        engine._land_pending_seek()
+        # 40ms elapsed, 30 of them the hold: 10ms of song, and no hold left.
+        self.assertGreaterEqual(rebuilds[-1], 1030.0 / 1000.0 * SAMPLE_RATE - 1)
+        self.assertLess(rebuilds[-1], 1036.0 / 1000.0 * SAMPLE_RATE)
+        self.assertEqual(engine._hold_frames, 0)
 
     def test_seeks_spaced_apart_are_not_a_burst(self):
         """A single click well after the last one must not pick up latency
@@ -379,6 +404,60 @@ class SeekCoalesceTests(unittest.TestCase):
         engine.seek(4200.0)   # a genuine move, mid-burst
         self.assertEqual(len(rebuilds), 1)
         self.assertEqual(engine._pending_seek_ms, 4200.0)
+
+    def _reports_from_one_fill(self, engine) -> list:
+        """Run one pump tick against a sink that has no room and reports a
+        position, and return what `_fill` emitted."""
+        from types import SimpleNamespace
+
+        engine._sink = SimpleNamespace(
+            stop=lambda: None, bytesFree=lambda: 0, processedUSecs=lambda: 0)
+        engine._device = SimpleNamespace()
+        engine._segments = [(0, 1000.0, 1.0)]
+        reports = []
+        engine.position_changed.connect(reports.append)
+        engine._fill()
+        return reports
+
+    def test_a_parked_seek_reports_no_position_from_the_old_stream(self):
+        """`tools/measure_wheel_seek.py`: with a notch every 25ms, 110 of 359
+        frames froze, all during a parked seek. The sink was still playing the
+        old position, `_fill` reported it, and gui.py's clock snapped back to
+        it and was held there by its no-backwards clamp."""
+        engine, _rebuilds = self._playing_engine()
+        engine.seek(1000.0)
+        engine.seek(1500.0)  # parked
+        self.assertEqual(engine._pending_seek_ms, 1500.0)
+        self.assertEqual(self._reports_from_one_fill(engine), [])
+
+    def test_without_a_parked_seek_the_position_is_still_reported(self):
+        engine, _rebuilds = self._playing_engine()
+        engine.seek(1000.0)
+        self.assertIsNone(engine._pending_seek_ms)
+        self.assertEqual(len(self._reports_from_one_fill(engine)), 1)
+
+    def test_a_wheel_hold_becomes_silence_on_the_next_landing(self):
+        engine, _rebuilds = self._playing_engine()
+        engine.set_seek_hold_ms(30.0)
+        engine.seek(1000.0)
+        self.assertEqual(engine._hold_frames, int(0.030 * SAMPLE_RATE))
+        self.assertEqual(engine._next_hold_ms, 0.0, "a hold is used once")
+
+    def test_a_later_seek_without_a_hold_has_none(self):
+        engine, _rebuilds = self._playing_engine()
+        engine.set_seek_hold_ms(30.0)
+        engine.seek(1000.0)
+        engine._last_seek_wall -= SEEK_COALESCE_MS + 5
+        engine.seek(2000.0)
+        self.assertEqual(engine._hold_frames, 0)
+
+    def test_leaving_playback_drops_a_hold_in_progress(self):
+        from PySide6.QtMultimedia import QMediaPlayer
+        engine, _rebuilds = self._playing_engine()
+        engine.set_seek_hold_ms(30.0)
+        engine.seek(1000.0)
+        engine._set_state(QMediaPlayer.PausedState)
+        self.assertEqual(engine._hold_frames, 0)
 
     def test_stop_cancels_a_parked_seek(self):
         """Otherwise a stale target could land later against a sink or track

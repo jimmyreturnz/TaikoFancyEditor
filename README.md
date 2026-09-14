@@ -18,13 +18,27 @@ Taiko Fancy Arranger started as a tool for turning osu!taiko notes into visual p
 
 Everything stays a playable osu! beatmap. Sections the editor does not model — storyboards, breaks, colours, editor bookmarks — are passed through byte-for-byte on save.
 
-> **Current release:** v3.3.1  
+> **Current release:** v3.3.2  
 > **Platform:** Windows x64  
 > **Author:** [jimmyreturnz](https://osu.ppy.sh/users/11306153)
 
 The original idea came from a random chat with maruaki101. Main inspirations include Alchyr's ranked maps *13 Stairs* and *Helios*, which use unusual note placement to create visual expression. You should go check it out [here!](https://osu.ppy.sh/beatmapsets/1093671#taiko/3819326)
 
 Many thanks to Mew’s beatmaps for studying reference that made the tool creation possible, and other player’s ideas!
+
+---
+
+## What is new in 3.3.2
+
+The slow-playback "kick lands late" report found and fixed, and wheel scrolling during playback made smooth.
+
+- **Hitsounds now default to +22ms against the music** — the "kick lands late at 25%" report was a flat offset between chart and song (median +22ms on MP3, +23ms on OGG over 60 installed maps), not the time-stretch.
+- **Wheel scrolling during playback no longer freezes the playhead** — 110 of 359 frames frozen at a notch every 25ms, now 0, and no freeze after a fast spin.
+- **Right-clicking a fake slider's red line removes only that line**; right-clicking the slider still removes both.
+- **Ctrl+[ / Ctrl+] nudge the hitsound offset by 1ms** while playing, to tune it by ear.
+- **The offset calibrator takes key taps as soon as it opens.**
+
+Full notes: [`docs/releases/v3.3.2.md`](docs/releases/v3.3.2.md).
 
 ---
 

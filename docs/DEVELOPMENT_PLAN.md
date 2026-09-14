@@ -877,12 +877,20 @@ scope ("left click places, right click deletes," not "and then resize").
   physical device latency (wrong direction — a wall-clock constant shrinks in song-time terms at
   slower rates) and gui.py's interpolating clock adding its own lag (simulated exactly; it tracks
   the reported position to within noise, because it extrapolates the known rate and only blends the
-  residual). **Not fully explained** — the corrected residual is single-digit milliseconds, and does
-  not obviously add up to a whole 1/12 snap (23.8ms of song time) on its own. Next candidates, not
-  yet measured: whether `audio/output_offset_ms` is actually calibrated on the reporting machine
-  (worth doing regardless, even though it doesn't explain the rate-dependence by itself), and
-  whether judging a few milliseconds by ear on heavily time-stretched audio at 0.25x is simply
-  harder than the number suggests it should be.
+  residual).
+
+  **Resolved (2026-09-14): it was never the stretch.** The hitsound came *first*, and raising
+  `audio/hitsound_offset_ms` fixed it at every rate — a constant song-time gap between where charts
+  put notes and where this app's decode puts the attacks. Inaudible at 1.0x, ~90ms of wall time at
+  0.25x, which is the whole "worse when slower" shape. `tools/measure_note_vs_music.py` (1.0x,
+  straight off the decode, averaged energy envelope around every note; self-test reads +0 and +25
+  on known attacks) over 60 random installed taiko maps: median **+22ms on MP3** (21
+  self-consistent maps) and **+23ms on OGG** (14). Same on both, so not a codec's gapless delay —
+  the MP3 hypothesis was checked and ruled out. The per-note median read ~0 everywhere first and was
+  wrong: busy music has an attack in any 120ms window, which pulls a per-note median to the middle.
+  `DEFAULT_HITSOUND_OFFSET_MS = 22` is now the setting's default; users trim by ear with
+  Ctrl+[ / Ctrl+] while playing slowed down. Not yet explained: *why* charts carry +22ms against
+  this decode (osu!'s own clock offsets are the next place to look).
 - **Paint performance.** `TimelineGameplay._draw_snap_grid` constructed a new `QColor`/`QPen` per
   tick per frame; at fine snap divisors with several chart views open at once (now the default,
   since M2 auto-opens chart + SV per difficulty) that allocation churn was a real stutter

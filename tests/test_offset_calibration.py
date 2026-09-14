@@ -15,7 +15,7 @@ from tempfile import TemporaryDirectory
 
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QPushButton
+from PySide6.QtWidgets import QApplication, QDialog, QPushButton
 
 from offset_calibration import (
     CLICK_INTERVAL_MS, LEAD_IN_MS, MAXIMUM_SPREAD_MS, MINIMUM_TAPS,
@@ -158,6 +158,24 @@ class DialogKeyTests(unittest.TestCase):
         QApplication.processEvents()
         self.assertEqual(len(self.dialog._errors), 1)
         self.assertEqual(self.dialog.play_button.text(), playing)
+
+    def test_the_dialog_holds_focus_when_opened_from_a_focused_button(self):
+        """Every button is NoFocus, so unless the dialog takes focus itself on
+        show, nothing has it and taps went nowhere until a click. Opened the
+        way Settings opens it -- from a window whose button holds focus --
+        because a bare dialog is handed focus by the offscreen platform anyway
+        and passes with or without the fix."""
+        self.dialog.done(0)
+        # Held on self: a collected parent deletes the dialog before tearDown.
+        self._parent = parent = QDialog()
+        button = QPushButton("Calibrate", parent)
+        parent.show()
+        button.setFocus()
+        QApplication.processEvents()
+        self.dialog = OffsetCalibrationDialog(parent)
+        self.dialog.show()
+        QApplication.processEvents()
+        self.assertIs(QApplication.focusWidget(), self.dialog)
 
     def test_a_tap_before_play_is_ignored(self):
         """Nothing is being measured yet, and a position of zero would read as

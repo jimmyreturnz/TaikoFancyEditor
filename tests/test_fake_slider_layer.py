@@ -154,6 +154,77 @@ class RowAwareGrabTests(_Layer2, unittest.TestCase):
         self.assertIs(chart._note_near_x(chart.x_for_time(note.time), y=1.0), note)
 
 
+class LineOnlyDeleteTests(_Layer2, unittest.TestCase):
+    """Right click on a fake slider's red line removes that line alone; right
+    click on the slider still removes both."""
+
+    def _place_one(self) -> int:
+        self.window._place_gimmick("fake_slider", "regular", self.SNAP)
+        self.layer.current_time = float(self.SNAP)
+        # A plain fake slider's drawn line is its own millisecond. The fixture
+        # map has fake sliders of its own, so pick ours rather than "the" one.
+        heads = self.window._fake_slider_lines(self.document)[0]
+        self.assertIn(self.slider_at, heads)
+        return self.slider_at
+
+    def _right_click(self, x: float, y: float) -> None:
+        self.layer.mousePressEvent(QMouseEvent(
+            QEvent.MouseButtonPress, QPointF(x, y), QPointF(x, y),
+            Qt.RightButton, Qt.RightButton, Qt.NoModifier,
+        ))
+
+    def _reds_at(self, time_ms):
+        return [
+            point for point in self.document.timing_points
+            if point.uninherited and round(point.time) == time_ms
+        ]
+
+    def test_a_right_click_on_the_line_keeps_the_slider(self) -> None:
+        head = self._place_one()
+        sliders = len(self._sliders_at(self.slider_at))
+        self.assertTrue(sliders)
+        self.assertTrue(self._reds_at(head))
+        _upper, lower = self._rows()
+        # The shiny row is empty here, so this is the line and not a circle.
+        self._right_click(self.layer.x_for_time(head), lower)
+        self.assertEqual(self._reds_at(head), [])
+        self.assertEqual(len(self._sliders_at(self.slider_at)), sliders)
+        self.state.history.undo(self.state)
+        self.assertTrue(self._reds_at(head), "one undo should bring the line back")
+
+    def test_a_squash_line_goes_alone_too(self) -> None:
+        """A Don's drawn line is the gimmick-BPM squash on the note it hides.
+        That is the line `_expand_move` grows into the slider one offset
+        later, so routed through the structure delete the slider went too."""
+        note = next(
+            n for n in self.document.hit_objects
+            if n.is_circle and not gui.MainWindow.is_fake_slider(n)
+        )
+        before = set(self.window._fake_slider_lines(self.document)[0])
+        self.window._place_gimmick("fake_slider", "don", float(note.time))
+        new_heads = set(self.window._fake_slider_lines(self.document)[0]) - before
+        self.assertEqual(len(new_heads), 1)
+        head = next(iter(new_heads))
+        self.assertTrue(any(
+            p.bpm == self.config.gimmick_bpm for p in self._reds_at(head)
+        ), "expected the Don to be squashed by a gimmick-BPM line")
+        slider_at = head + self.config.fake_slider_offset_ms
+        sliders = len(self._sliders_at(slider_at))
+        self.assertTrue(sliders)
+        self.layer.current_time = float(head)
+        _upper, lower = self._rows()
+        self._right_click(self.layer.x_for_time(head), lower)
+        self.assertEqual(self._reds_at(head), [])
+        self.assertEqual(len(self._sliders_at(slider_at)), sliders)
+
+    def test_a_right_click_on_the_slider_still_takes_both(self) -> None:
+        head = self._place_one()
+        upper, _lower = self._rows()
+        self._right_click(self.layer.x_for_time(self.slider_at), upper)
+        self.assertEqual(self._sliders_at(self.slider_at), [])
+        self.assertEqual(self._reds_at(head), [])
+
+
 class RedLineDialogTests(_Layer2, unittest.TestCase):
     """Double click in layer 2: the object's length first, its red line under
     it second -- the same order `mousePressEvent` resolves a grab in.

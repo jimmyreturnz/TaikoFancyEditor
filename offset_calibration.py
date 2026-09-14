@@ -207,6 +207,12 @@ class OffsetCalibrationDialog(QDialog):
             button.setFocusPolicy(Qt.NoFocus)
         self._refresh()
 
+    def showEvent(self, event) -> None:
+        # Every button is NoFocus, so on open nothing held focus and taps went
+        # nowhere until a click landed on the dialog itself.
+        super().showEvent(event)
+        self.setFocus(Qt.OtherFocusReason)
+
     # -- playback -------------------------------------------------------------
 
     def _position_reported(self, position_ms: float) -> None:

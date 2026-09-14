@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
     QSlider, QSpacerItem, QSpinBox, QSplitter, QStackedWidget, QStyle, QStyleOptionButton, QTabWidget, QToolButton, QVBoxLayout, QWidget, QDialog, QDialogButtonBox, QFontComboBox, QSizePolicy
 )
 
-from audio_engine import TrackPlayer
+from audio_engine import DEFAULT_HITSOUND_OFFSET_MS, WHEEL_SEEK_HOLD_MS, TrackPlayer
 from skin import TaikoSkin, skins_root
 from parameters import PARAMETERS
 from i18n import install_translator, tr
@@ -1641,11 +1641,16 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
         # because a fake slider's red line is the half of it that makes the
         # object fake and retiming that line is how a shiny is tuned. Separate
         # from `timing_edit_enabled` on purpose: the fake slider layer must not
-        # also let the line be dragged or deleted on its own, since a line
-        # pulled out from under its sliders dismantles the structure rather
-        # than moving it (only `_expand_move` knows how to move the whole
-        # thing, and it recognises a structure by the object, not the line).
+        # let the line be dragged on its own, since a line pulled out from
+        # under its sliders dismantles the structure rather than moving it
+        # (only `_expand_move` knows how to move the whole thing, and it
+        # recognises a structure by the object, not the line).
         self.timing_dialog_enabled = False
+        # Right click on a drawn red line removes that line alone, with no
+        # dragging or selecting. The fake slider layer: a mapper removing the
+        # line under a slider wants the slider kept, and a right click on the
+        # slider itself -- tried first -- still takes both.
+        self.timing_delete_enabled = False
         # Restrict the drawn red lines to these milliseconds; None draws all of
         # them. The fake slider layer sets it to the fake sliders' own times, so
         # the line it shows is the one squashing the object beside it rather
@@ -2105,6 +2110,12 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
                     self._gimmick_centre_near_x(event.position().x())
                     or self._timing_point_near_x(event.position().x())
                 )
+                if point is not None:
+                    self.timing_lines_delete_requested.emit([point.uid])
+            elif self.timing_delete_enabled:
+                # Only the lines this view draws: no structure centre lookup,
+                # because the point is to take the line and nothing around it.
+                point = self._timing_point_near_x(event.position().x())
                 if point is not None:
                     self.timing_lines_delete_requested.emit([point.uid])
             event.accept()
@@ -4714,7 +4725,11 @@ class GameplayViewerView(QWidget):
             self.current_time = wheel_seek_time(
                 self.beat_points, self.current_time, -1 if steps > 0 else 1, divisor
             )
-            self.seek_requested.emit(round(self.current_time))
+            TimeAxisMixin.wheel_seek_in_progress = True
+            try:
+                self.seek_requested.emit(round(self.current_time))
+            finally:
+                TimeAxisMixin.wheel_seek_in_progress = False
             self.update()
         event.accept()
 
@@ -8674,6 +8689,12 @@ class MainWindow(QMainWindow):
         self.save_shortcut = QShortcut(QKeySequence(self.shortcuts.sequence("save_all")), self)
         self.save_shortcut.setContext(Qt.ApplicationShortcut)
         self.save_shortcut.activated.connect(self._save_from_shortcut)
+        self.hitsound_earlier_shortcut = QShortcut(QKeySequence(self.shortcuts.sequence("hitsound_offset_earlier")), self)
+        self.hitsound_earlier_shortcut.setContext(Qt.ApplicationShortcut)
+        self.hitsound_earlier_shortcut.activated.connect(lambda: self._nudge_hitsound_offset(-1))
+        self.hitsound_later_shortcut = QShortcut(QKeySequence(self.shortcuts.sequence("hitsound_offset_later")), self)
+        self.hitsound_later_shortcut.setContext(Qt.ApplicationShortcut)
+        self.hitsound_later_shortcut.activated.connect(lambda: self._nudge_hitsound_offset(1))
         self._build_tool_shortcuts()
         self.preview_timer = QTimer(self)
         self.preview_timer.setSingleShot(True)
@@ -8934,9 +8955,25 @@ class MainWindow(QMainWindow):
             ("save_all", self.save_shortcut),
             ("copy", self.copy_shortcut),
             ("paste", self.paste_shortcut),
+            ("hitsound_offset_earlier", self.hitsound_earlier_shortcut),
+            ("hitsound_offset_later", self.hitsound_later_shortcut),
             *self.tool_shortcuts.items(),
         ):
             shortcut.setKey(QKeySequence(self.shortcuts.sequence(action_id)))
+
+    def _nudge_hitsound_offset(self, step: int) -> None:
+        """Calibrate the note-vs-music trim by ear, live.
+
+        Tapping cannot measure this one: the notes and the music leave through
+        the same buffer, so the only instrument is hearing whether they fuse.
+        The setter re-sends the schedule and the mixer rebases its watermark,
+        so a nudge mid-playback is heard on the next note. Slow the chart down
+        first -- at 0.25x every millisecond of error is four of wall time.
+        """
+        value = max(-500, min(500, self.hitsounds.offset_ms + step))
+        self.hitsounds.offset_ms = value
+        self.settings.set_value("audio/hitsound_offset_ms", value)
+        self.show_toast(tr("MainWindow", "Hitsound offset: %1 ms").replace("%1", f"{value:+d}"))
 
     def _apply_audio_settings(self) -> None:
         """Re-read the Audio page and apply it live.
@@ -8949,7 +8986,8 @@ class MainWindow(QMainWindow):
         """
         self.player.setVolume(self.settings.int_value("audio/music_volume", 65) / 100.0)
         self.hitsounds.enabled = self.settings.bool_value("audio/hitsounds_enabled", True)
-        self.hitsounds.offset_ms = self.settings.int_value("audio/hitsound_offset_ms", 0)
+        self.hitsounds.offset_ms = self.settings.int_value(
+            "audio/hitsound_offset_ms", DEFAULT_HITSOUND_OFFSET_MS)
         self.hitsounds.set_volume(self.settings.int_value("audio/hitsound_volume", 70) / 100.0)
         # Deliberately not defaulted to anything but zero. The lag between the
         # position the backend reports and the sound reaching the speakers is a
@@ -10611,6 +10649,10 @@ class MainWindow(QMainWindow):
             # red line in the map is another layer's business and just clutters
             # this one.
             view.timing_line_times_for = lambda document: self._fake_slider_lines(document)[0]
+            # Right click on the line removes that line alone; on the slider it
+            # still removes both. Not `timing_edit_enabled`: dragging a line out
+            # from under its slider would still dismantle the structure.
+            view.timing_delete_enabled = True
             # ...and double-clicking that line opens it, the same dialog and
             # the same one-step EditTimingPoint the barline layer's lines get.
             # Its BPM is what squashes the object beside it, so it is as much
@@ -11350,10 +11392,17 @@ class MainWindow(QMainWindow):
                 view.notes_delete_requested.connect(
                     lambda uids, dp=pairing.target: self._delete_gimmick_objects(dp, uids)
                 )
-                view.timing_lines_delete_requested.connect(
-                    lambda uids, dp=pairing.target:
-                        self._delete_gimmick_objects(dp, (), uids)
-                )
+                if layer_id == "fake_slider":
+                    # A line removed on its own, without `_expand_move` pulling
+                    # in the slider beside it -- that is the whole request.
+                    view.timing_lines_delete_requested.connect(
+                        lambda uids, dp=pairing.target: self._delete_timing_lines(dp, uids)
+                    )
+                else:
+                    view.timing_lines_delete_requested.connect(
+                        lambda uids, dp=pairing.target:
+                            self._delete_gimmick_objects(dp, (), uids)
+                    )
                 view.objects_move_requested.connect(
                     lambda notes, points, delta, dp=pairing.target:
                         self._move_objects(dp, notes, points, delta)
@@ -14883,6 +14932,17 @@ class MainWindow(QMainWindow):
         # No hitsound cursor to move: `TimeStretcher.reset` drops the mixer's
         # voices and watermark with the overlap tail, so the seek below is the
         # whole of it.
+        #
+        # A wheel notch during playback can land with a short pause, audio and
+        # playhead together (`playback/wheel_seek_hold_ms`, off by default).
+        self._seek_hold_until_ns = 0
+        if TimeAxisMixin.wheel_seek_in_progress and \
+                self.player.playbackState() == QMediaPlayer.PlayingState:
+            hold_ms = self.settings.int_value("playback/wheel_seek_hold_ms", WHEEL_SEEK_HOLD_MS)
+            if hold_ms > 0:
+                self.player.set_seek_hold_ms(hold_ms)
+                self._seek_hold_until_ns = (
+                    self.gameplay_frame_clock.nsecsElapsed() + hold_ms * 1_000_000)
         self.player.setPosition(round(position))
         # Every chart view, not just the shared deck timeline: on the gimmick
         # page the six layers are chart views, and a seek that reached only
@@ -14901,6 +14961,9 @@ class MainWindow(QMainWindow):
 
     _info_prefix = ""
     _info_suffix = ""
+    # gameplay_frame_clock ns until which a wheel seek's pause holds the
+    # playhead; 0 when none is running.
+    _seek_hold_until_ns = 0
 
     def _timeline_info_text(self, duration_text: str, position_text: str, snap_text: str) -> str:
         """Build the timeline help line from individually translated pieces.
@@ -15006,6 +15069,11 @@ class MainWindow(QMainWindow):
             # tolerance, simply stays wrong. The audio genuinely is not moving,
             # so neither is the playhead: hold it until the backend reports
             # again, and _player_position_changed re-anchors on that report.
+            self.audio_anchor_clock.restart()
+            return
+        if running and self.gameplay_frame_clock.nsecsElapsed() < self._seek_hold_until_ns:
+            # A wheel seek's pause (seek_audio): the engine is writing silence
+            # for the same span, so the playhead waits with it.
             self.audio_anchor_clock.restart()
             return
         source = self._source_clock_position()
