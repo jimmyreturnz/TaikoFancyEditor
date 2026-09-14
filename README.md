@@ -16,7 +16,7 @@ Discordもjimmyreturnzです
 
 Taiko Fancy Arranger started as a tool for turning osu!taiko notes into visual patterns — text, shapes, equations, drawings, spirals — without placing every circle by hand. Version 2.0.0 grew it into an editor: browse your osu! Songs folder, open a difficulty, edit notes, edit scroll velocity, preview the chart the way osu! renders it, and still arrange notes into patterns when you want to. Version 3.0.0 adds a dedicated gimmick editor, for the fake sliders, barline tricks and extreme-SV effects that osu!taiko mappers build out of timing points rather than notes. 
 
-Everything stays a playable osu! beatmap. Sections the editor does not model — storyboards, breaks, colours, editor bookmarks — are passed through byte-for-byte on save.
+Everything stays a playable osu! beatmap. Sections the editor does not support editing storyboards, breaks, colours, editor bookmarks yet.
 
 > **Current release:** v3.3.2  
 > **Platform:** Windows x64  
@@ -46,9 +46,7 @@ Full notes: [`docs/releases/v3.3.2.md`](docs/releases/v3.3.2.md).
 
 Slow playback and hitsounds, both rebuilt from measurement.
 
-- **Hitsounds are mixed directly into the song's audio** instead of played as separate triggered sounds — a note lands on its own millisecond of the music at every speed, including staying in sync if you change the hitsound offset or edit notes mid-playback, and a fast scroll or seek can no longer stack a section's hitsounds into one loud burst.
 - **Slow playback (25/50/75%) is substantially more accurate.** The time-stretch grain shortened from 117ms to 20ms, which also sounds better on real tracks (a kick drum used to come apart at 25%) and costs less CPU.
-- **Music offset (ms) and Hitsound offset (ms) are independent again** — the music's own volume no longer attenuates the hitsounds mixed alongside it.
 - **Known limitation:** a small timing gap between the playhead and the music remains at 25% speed, under investigation.
 
 Full notes: [`docs/releases/v3.3.1.md`](docs/releases/v3.3.1.md).
@@ -75,7 +73,7 @@ Full development log detail lives in [`docs/DEVELOPMENT_PLAN.md`](docs/DEVELOPME
 
 ## Windows SmartScreen notice
 
-Taiko Fancy Arranger v3.3.0 is a currently unsigned Windows application. The release includes source-level security hardening, input validation, safer file handling, automated tests, and published SHA-256 checksums.
+Taiko Fancy Arranger v3.3.1 is a currently unsigned Windows application. The release includes source-level security hardening, input validation, safer file handling, automated tests, and published SHA-256 checksums.
 
 Windows Defender SmartScreen may still display an "unrecognized app" warning because the executable has not yet established download reputation.
 
