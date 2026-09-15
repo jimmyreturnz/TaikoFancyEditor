@@ -18,13 +18,28 @@ Taiko Fancy Arranger started as a tool for turning osu!taiko notes into visual p
 
 Everything stays a playable osu! beatmap. Sections the editor does not support editing storyboards, breaks, colours, editor bookmarks yet.
 
-> **Current release:** v3.3.2  
+> **Current release:** v3.3.3  
 > **Platform:** Windows x64  
 > **Author:** [jimmyreturnz](https://osu.ppy.sh/users/11306153)
 
 The original idea came from a random chat with maruaki101. Main inspirations include Alchyr's ranked maps *13 Stairs* and *Helios*, which use unusual note placement to create visual expression. You should go check it out [here!](https://osu.ppy.sh/beatmapsets/1093671#taiko/3819326)
 
 Many thanks to Mew’s beatmaps for studying reference that made the tool creation possible, and other player’s ideas!
+
+---
+
+## What is new in 3.3.3
+
+Fancy Arranger's Apply made to keep what it shows, copy/paste and red lines tightened in the gimmick editor, and faster note placement on heavy gimmick maps.
+
+- **Apply in Fancy Arranger keeps the notes where the canvas showed them** — the next click no longer snaps them back, a drag with no transformation is committed, and a centred transformation with a drag is no longer applied twice as far.
+- **Pasted fake sliders keep their offset from the snap** instead of landing on the playhead.
+- **Placing a note on a heavy gimmick map is about 20% faster** — 192ms → 153ms, undo 253ms → 206ms, on a 21,040-timing-point map.
+- **Meter** is editable in a red line's double-click dialog.
+- **Anti-barline slits default to 1 tick for Don and 2 for Kat**, and the gimmick editor's chart SV starts on the note (offset 0).
+- **Red Line refuses a millisecond that already has a red line**, and says so.
+
+Full notes: [`docs/releases/v3.3.3.md`](docs/releases/v3.3.3.md).
 
 ---
 
@@ -73,7 +88,7 @@ Full development log detail lives in [`docs/DEVELOPMENT_PLAN.md`](docs/DEVELOPME
 
 ## Windows SmartScreen notice
 
-Taiko Fancy Arranger v3.3.2 is a currently unsigned Windows application. The release includes source-level security hardening, input validation, safer file handling, automated tests, and published SHA-256 checksums.
+Taiko Fancy Arranger v3.3.3 is a currently unsigned Windows application. The release includes source-level security hardening, input validation, safer file handling, automated tests, and published SHA-256 checksums.
 
 Windows Defender SmartScreen may still display an "unrecognized app" warning because the executable has not yet established download reputation.
 

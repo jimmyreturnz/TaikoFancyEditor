@@ -3399,6 +3399,9 @@ class SVEditorView(TimeAxisMixin, QWidget):
         self._line_kind_times: list[float] = []
         self._bpm_at: dict[float, float] = {}
         self._beat_points: list[TimingPoint] = []
+        # What the caches above were last built from -- see set_timing_points.
+        self._cache_key = None
+        self._cache_len = -1
         # Vertical scale, refitted to the visible SV on every paint. Starts at
         # the historical fixed window so an empty view still looks sensible.
         self.autoscale = True
@@ -3459,6 +3462,34 @@ class SVEditorView(TimeAxisMixin, QWidget):
             self.sorted_points_for(points) if self.sorted_points_for is not None
             else sorted_by_time(points)
         )
+        # Every edit refreshes every gimmick layer, and placing a note changes no
+        # timing point at all -- yet each SV layer rebuilt its caches from the
+        # whole list: 71ms of a 192ms placement on a 21k-point gimmick map.
+        # Skip the rebuild when nothing it reads has changed. The key is the
+        # points' own fields rather than an edit counter, because TimingPoint
+        # is mutable and edited in place (set_kiai, set_sv, drags), and a
+        # counter some path forgot to bump would leave a layer silently stale.
+        # ~2.5ms to build at that size, against ~18ms per layer skipped.
+        #
+        # A changed point count cannot match, so it rebuilds without paying for
+        # the key: building it anyway made every fake slider placement -- which
+        # always inserts points -- 23ms slower than no skip at all. The key is
+        # then built on the next same-length refresh, costing one rebuild there.
+        if len(self.timing_points) != self._cache_len:
+            self._cache_len = len(self.timing_points)
+            self._cache_key = None
+        else:
+            key = (
+                [
+                    (p.uid, p.time, p.beat_length, p.uninherited_flag, p.volume, p.effects, p.meter)
+                    for p in self.timing_points
+                ],
+                None if self.point_times is None else frozenset(self.point_times),
+                self.volume_mode, self.show_bpm_labels, self.autoscale,
+            )
+            if key == self._cache_key:
+                return
+            self._cache_key = key
         if self.kiai_bands_for is not None:
             self.kiai_bands = self.kiai_bands_for(self.timing_points)
         else:
@@ -7066,6 +7097,18 @@ class TimingLineDialog(QDialog):
         self.time_spin.setValue(round(point.time))
         layout.addRow(tr("MainWindow", "Time (ms)"), self.time_spin)
 
+        # Beats per bar, which is where this line's barlines fall. Red lines
+        # only: osu! reads meter from the uninherited point in force, so on a
+        # green line the field is written but never counts. The ceiling is
+        # generous on purpose -- anti-barline writes 999 so a line never stamps
+        # a second bar, and clamping that on open would silently rewrite it.
+        self.meter_spin = None
+        if self.uninherited:
+            self.meter_spin = QSpinBox()
+            self.meter_spin.setRange(1, 10000)
+            self.meter_spin.setValue(max(1, point.meter))
+            layout.addRow(tr("MainWindow", "Meter"), self.meter_spin)
+
         # The two effects bits, editable where the line itself is. Both are
         # things a gimmick has to fix line by line -- a stray bar to hide, a
         # kiai section a generated line switched off -- and until now the only
@@ -7112,6 +7155,8 @@ class TimingLineDialog(QDialog):
         beat_length = 60000.0 / value if self.uninherited else -100.0 / value
         if beat_length != point.beat_length:
             changes["beat_length"] = (point.beat_length, beat_length)
+        if self.meter_spin is not None and self.meter_spin.value() != point.meter:
+            changes["meter"] = (point.meter, self.meter_spin.value())
         effects = self.effects(point)
         if effects != point.effects:
             changes["effects"] = (point.effects, effects)
@@ -8581,13 +8626,15 @@ class MainWindow(QMainWindow):
         # the barline spacing and the fake slider offset were the same number,
         # which is exactly the pair that must not agree (spacing_collides).
         # The three SV layers get their own too, for `sv_offset_ms`: how far
-        # from its object each layer's green lines sit. Only the normal chart
-        # wants a lead-in by default -- the other two are keyed to timing lines,
-        # where the SV has to be on the line itself.
+        # from its object each layer's green lines sit. All three start on the
+        # object itself. The Editor page's SV view keeps its -5ms lead-in
+        # (SVFunctionDialog.DEFAULT_POSITION_OFFSET_MS); in the gimmick editor
+        # the chart's SV is placed against gimmick structures on exact
+        # milliseconds, and a lead-in there has to be asked for.
         self.gimmick_configs = {
             "fake_slider": GimmickConfig(),
             "barline": GimmickConfig(),
-            "sv_chart": GimmickConfig(sv_offset_ms=SVFunctionDialog.DEFAULT_POSITION_OFFSET_MS),
+            "sv_chart": GimmickConfig(),
             "sv_fake_slider": GimmickConfig(),
             "sv_barline": GimmickConfig(),
         }
@@ -11639,9 +11686,14 @@ class MainWindow(QMainWindow):
             # A plain red line duplicating *any* line there is equally
             # meaningless; a structure is refused only by another structure, so
             # one can still be drawn on top of the chart's own timing.
-            if any(point.bpm == config.gimmick_bpm for point in occupied) or (
-                kind == "red_line" and occupied
-            ):
+            #
+            # The Red Line tool is refused by *any* red line, a fake slider's
+            # or shiny's own included, and says so by name: two uninherited
+            # points on one millisecond are never placed.
+            if kind == "red_line" and occupied:
+                self.show_toast(tr("MainWindow", "There is already a red line here."))
+                return []
+            if any(point.bpm == config.gimmick_bpm for point in occupied):
                 self.show_toast(tr("MainWindow", "There is already a gimmick here."))
                 return []
         try:
@@ -12969,9 +13021,25 @@ class MainWindow(QMainWindow):
         # order and an uninherited point resets SV to 1.0x, so a green line
         # ahead of its red one is silently cancelled.
         lines = sorted(lines, key=lambda point: (point.time, 0 if point.uninherited else 1))
-        base = min(
-            [note.time for note in notes] + [point.time for point in lines]
-        )
+        base_times = [note.time for note in notes] + [point.time for point in lines]
+        # A fake slider sits its offset *after* the snap it was placed on, and
+        # paste lands the clipboard's base on the snapped playhead. A plain fake
+        # slider's own line is on the slider's millisecond rather than the snap,
+        # so nothing copied was on the snap: the base was the slider itself and
+        # the paste dropped it straight onto the playhead, offset gone. Each one
+        # counts its own snap as a candidate base, so a paste lands exactly where
+        # placing it there would.
+        if state is not None and getattr(view, "gimmick_layer", None) is not None:
+            config = self._gimmick_config("fake_slider")
+            shiny = self._shiny_times(state.document)
+            base_times += [
+                note.time - (
+                    config.shiny_offset_ms if round(note.time) in shiny
+                    else config.fake_slider_offset_ms
+                )
+                for note in notes if self.is_fake_slider(note)
+            ]
+        base = min(base_times)
         # Plain data, not the HitObjects themselves: a paste has to produce
         # new identities, and holding live objects would let a later edit (or
         # an undo) mutate what the clipboard "contains".
@@ -14575,6 +14643,7 @@ class MainWindow(QMainWindow):
             )
 
             if not transformation_name: return {}
+            self._undo_center_drag(params, "all")
             if transformation_name in {"taiko","vertical_taiko"}:
                 params.update({"note_times":{n.original_index:n.time for n in self.document.hit_objects},"timing_points":self.document.timing_points,"timing_mode":"filtered","anchor_mode":"selection_start"})
             return transform(transformation_name,indexes,params)
@@ -14597,6 +14666,7 @@ class MainWindow(QMainWindow):
         ]
 
         don_name, don_params = self._spec(0,"don"); kat_name, kat_params = self._spec(1,"kat")
+        self._undo_center_drag(don_params, "don"); self._undo_center_drag(kat_params, "kat")
         for name,params in ((don_name,don_params),(kat_name,kat_params)):
             if name in {"taiko","vertical_taiko"}: params.update({"note_times":{n.original_index:n.time for n in self.document.hit_objects},"timing_points":self.document.timing_points,"timing_mode":"filtered","anchor_mode":"selection_start"})
 
@@ -14605,6 +14675,23 @@ class MainWindow(QMainWindow):
         if kat_name: groups["kat"]={"transformation_name":kat_name,"selected_note_indexes":kat_indexes,"params":kat_params}
         return transform_groups(groups)
 
+
+    def _undo_center_drag(self, params: dict, offset_key: str) -> None:
+        """Compute the shape from where its centre was before the drag.
+
+        A canvas drag moves the notes by `preview_offsets` *and* nudges Center
+        X/Y along with them so the boxes read true (see
+        `_sync_center_controls_after_drag`). Both then reached the result: the
+        shape was rebuilt around the moved centre and the offset added on top,
+        so Apply committed a centred transformation twice as far as the canvas
+        had shown it. The offset is the translation; the centre is its label.
+
+        ponytail: a centre clamped at the playfield edge moved less than the
+        offset, so undoing the full offset there overshoots by the clamped part.
+        """
+        dx, dy = self.preview_offsets[offset_key]
+        if "center_x" in params: params["center_x"] = float(params["center_x"]) - dx
+        if "center_y" in params: params["center_y"] = float(params["center_y"]) - dy
 
     def _indices_for_drag_group(self, clicked_group: str) -> set[int]:
         if not self._is_split_mode():
@@ -14702,19 +14789,36 @@ class MainWindow(QMainWindow):
         self._sync_center_controls_after_drag(offset_key, dx, dy)
         self.refresh_canvas()
 
+    def _preview_specs(self) -> list:
+        if not self._is_split_mode(): return [self._spec(0,"all")]
+        return [self._spec(0,"don"),self._spec(1,"kat")]
+
+    def _preview_key(self, specs) -> tuple:
+        return (self.commit_revision,tuple(sorted(self.selected)),tuple((name,freeze_preview_value(params)) for name,params in specs))
+
+    def _with_preview_offsets(self, result: dict[int, tuple[int, int]]) -> dict[int, tuple[int, int]]:
+        """Every selected note's position: the transformation's, else where it
+        already is -- then the drag offset on top.
+
+        Offsetting only what the transformation returned dropped a drag on any
+        note it did not move, and with no transformation at all it returned
+        nothing: Apply committed none of a canvas drag.
+        """
+        base = {index: self.applied_positions[index] for index in self.selected if index in self.applied_positions}
+        base.update(result)
+        return self._apply_preview_offsets(base)
+
     def update_preview(self) -> None:
         try:
             self.preview_positions=dict(self.applied_positions)
-            specs=[]
-            if not self._is_split_mode(): specs=[self._spec(0,"all")]
-            else: specs=[self._spec(0,"don"),self._spec(1,"kat")]
+            specs=self._preview_specs()
             if any(name=="drawn_path" and len(params.get("points",[]))<2 for name,params in specs):
                 self.preview_positions=dict(self.applied_positions);self.refresh_canvas();self.status.setText(tr("MainWindow", "Open Drawing Window and draw a shape to preview."));return
-            key=(self.commit_revision,tuple(sorted(self.selected)),tuple((name,freeze_preview_value(params)) for name,params in specs))
+            key=self._preview_key(specs)
             result=self.preview_cache.get(key)
             if result is None:
                 result=self._calculate_selected_transform(); self.preview_cache={key:result}
-            self.preview_positions.update(self._apply_preview_offsets(result))
+            self.preview_positions.update(self._with_preview_offsets(result))
         except Exception as error:
             self.status.setText(
                 f"Preview error: {error}"
@@ -14746,7 +14850,7 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            changed_positions = self._apply_preview_offsets(
+            changed_positions = self._with_preview_offsets(
                 self._calculate_selected_transform()
             )
         except Exception as error:
@@ -14764,6 +14868,17 @@ class MainWindow(QMainWindow):
         self.preview_cache.clear()
         self.state.history.push(MoveNotes(changes), self.state)
         self.preview_offsets = {"all": [0.0, 0.0], "don": [0.0, 0.0], "kat": [0.0, 0.0]}
+        for group in self.position_controls:
+            self._sync_position_controls(group)
+        # The transformation is still selected on the same notes, so the next
+        # preview -- a click on the canvas or the timeline, any control --
+        # recomputed it from the positions it had just been applied to, with the
+        # drag offset gone: the notes snapped back to the transformation's
+        # pre-drag layout on screen while the committed ones sat elsewhere.
+        # What was just applied *is* the preview for this selection and these
+        # settings, until either changes or the history moves (the revision is
+        # in the key, so an undo recomputes as before).
+        self.preview_cache = {self._preview_key(self._preview_specs()): {}}
         self.state.sync_preview_to_applied()
         self.refresh_canvas()
 

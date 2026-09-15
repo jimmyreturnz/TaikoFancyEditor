@@ -727,6 +727,29 @@ class TimingLineDialogEffectsTests(unittest.TestCase):
         self.assertEqual(dialog.changes(point), {})
         dialog.deleteLater()
 
+    def test_red_line_meter_is_editable(self):
+        point = gui.TimingPoint.uninherited_at(1000, 180.0)
+        point.meter = 4
+        dialog = gui.TimingLineDialog(point)
+        self.assertEqual(dialog.meter_spin.value(), 4)
+        dialog.meter_spin.setValue(7)
+        self.assertEqual(dialog.changes(point), {"meter": (4, 7)})
+        dialog.deleteLater()
+
+    def test_anti_barline_meter_survives_opening(self):
+        # 999 is anti-barline's "never stamp another bar"; OK without touching
+        # the box must not clamp it into an edit.
+        point = gui.TimingPoint.uninherited_at(1000, 180.0)
+        point.meter = 999
+        dialog = gui.TimingLineDialog(point)
+        self.assertEqual(dialog.changes(point), {})
+        dialog.deleteLater()
+
+    def test_green_line_has_no_meter(self):
+        dialog = gui.TimingLineDialog(gui.TimingPoint.inherited_at(1000, 1.5))
+        self.assertIsNone(dialog.meter_spin)
+        dialog.deleteLater()
+
 
 class OscillatingSVTests(_Session, unittest.TestCase):
     """Oscillation reads the growth function as an amplitude, not a position."""

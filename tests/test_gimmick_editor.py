@@ -2284,6 +2284,24 @@ class GimmickMoveTests(_GimmickFixture, unittest.TestCase):
     def _red_times(self):
         return sorted(round(p.time) for p in self.document.timing_points if p.uninherited)
 
+    def test_the_red_line_tool_refuses_a_fake_slider_or_shiny_line(self):
+        """No second red line on one millisecond, ever -- a fake slider's or
+        shiny's own line included -- and the refusal says why by name."""
+        # Both lines sit on the snap, where a Red Line click lands: a Don fake
+        # slider's squash line is on its note, and a shiny's head line is on
+        # the clicked millisecond (the object is shiny_offset_ms after it). A
+        # plain fake slider's own line is fake_slider_offset_ms off the grid,
+        # so a click there snaps back before it reaches the line.
+        self.window._place_gimmick("fake_slider", "don", 10000)
+        self.window._place_gimmick("fake_slider", "shiny", 20000)
+        for label, line_at in (("fake slider", 10000), ("shiny", 20000)):
+            with self.subTest(label):
+                self.assertIn(line_at, self._red_times())
+                before = len(self.document.timing_points)
+                self.window._place_gimmick("barline", "red_line", line_at)
+                self.assertEqual(len(self.document.timing_points), before)
+                self.assertEqual(self.window._toast.text(), "There is already a red line here.")
+
     def test_a_fake_slider_carries_its_own_red_line(self):
         """One line, not two. A plain fake slider stopped writing a 60000 BPM
         squash -- there is no note under it to hide -- so all it has is the
@@ -2442,6 +2460,38 @@ class GimmickClipboardTests(_GimmickFixture, unittest.TestCase):
         self.assertEqual(
             len([p for p in self.document.timing_points if p.inherited]), before,
         )
+
+    def test_a_pasted_fake_slider_keeps_its_offset_from_the_snap(self):
+        """Paste lands where placing at the playhead would, not on it.
+
+        A plain fake slider's own line is on its own millisecond, so the copy
+        had nothing on the snap to measure from and pasted the slider onto the
+        playhead itself -- its offset lost on every Ctrl+V."""
+        config = self.window._gimmick_config("fake_slider")
+        fake = self.window._gimmick_views[1].chart_view
+        self.window._active_chart_view = fake
+        for kind, source, target, offset in (
+            ("regular", 10000, 20000, config.fake_slider_offset_ms),
+            ("shiny", 40000, 50000, config.shiny_offset_ms),
+        ):
+            with self.subTest(kind):
+                self.window._place_gimmick("fake_slider", kind, source)
+                fake.refresh_notes(self.document)
+                fake.selected = {
+                    n.original_index for n in self.document.hit_objects
+                    if gui.MainWindow.is_fake_slider(n) and n.time == source + offset
+                }
+                self.assertTrue(fake.selected)
+                self.window._copy_notes()
+                fake.current_time = float(target)
+                before = {n.uid for n in self.document.hit_objects}
+                self.window._paste_notes()
+                landed = sorted(
+                    n.time for n in self.document.hit_objects
+                    if n.uid not in before and gui.MainWindow.is_fake_slider(n)
+                )
+                self.assertTrue(landed)
+                self.assertEqual(landed[0], target + offset)
 
     def test_the_fake_slider_layer_copies_the_line_that_makes_it_fake(self):
         """Layer 2 owns no red lines, so its selection never contains one --
@@ -2978,15 +3028,16 @@ class GimmickSVOffsetTests(_GimmickFixture, unittest.TestCase):
     def _shown(self, layer_id):
         return sorted(round(p.time) for p in self.layers[layer_id]._visible_points)
 
-    def test_the_normal_chart_layer_leads_its_notes_by_default(self):
-        self.assertEqual(
-            self.window._gimmick_config("sv_chart").sv_offset_ms,
-            gui.SVFunctionDialog.DEFAULT_POSITION_OFFSET_MS,
-        )
-        self.assertEqual(self.window._gimmick_config("sv_barline").sv_offset_ms, 0)
-        self.assertEqual(self.window._gimmick_config("sv_fake_slider").sv_offset_ms, 0)
+    def test_every_gimmick_sv_layer_starts_on_its_objects(self):
+        """The -5ms lead-in is the Editor page's; in the gimmick editor even the
+        normal chart's SV starts on the note, and a lead-in is asked for."""
+        for layer_id in ("sv_chart", "sv_barline", "sv_fake_slider"):
+            with self.subTest(layer_id):
+                self.assertEqual(self.window._gimmick_config(layer_id).sv_offset_ms, 0)
+        self.assertEqual(gui.SVFunctionDialog.DEFAULT_POSITION_OFFSET_MS, -5)
 
     def test_an_offset_sweep_still_belongs_to_the_layer_that_made_it(self):
+        self.window._gimmick_config("sv_chart").sv_offset_ms = -5
         self.window._generate_sv(self.target, 0, 4000, self._params(-5), "sv_chart")
         shown = self._shown("sv_chart")
         self.assertIn(995, shown, "generated at note - 5 and still owned")
@@ -3006,6 +3057,10 @@ class GimmickSVOffsetTests(_GimmickFixture, unittest.TestCase):
         """The layer owns its objects' own milliseconds as well as the offset
         ones, so a click can land on either -- and, more to the point, an SV
         line a mapper already put on a note is still visible here."""
+        # A lead-in is opt-in in the gimmick editor now (see
+        # test_every_gimmick_sv_layer_starts_on_its_objects).
+        self.window._gimmick_config("sv_chart").sv_offset_ms = -5
+        self.window._refresh_gimmick_views()
         layer = self.layers["sv_chart"]
         layer.resize(800, 120)
         layer.current_time = 1000.0

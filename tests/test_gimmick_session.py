@@ -318,8 +318,10 @@ class AntiBarlineTests(unittest.TestCase):
         points = gs.anti_barline(
             [self._circle(1000)], 1000, 2000, self.BASE, gs.GimmickConfig(),
         )
-        wall = self._wall(points)
-        gaps = [b - a for a, b in zip(wall[1:], wall[2:])]
+        # Past the note only: its slit is a hole in this spacing, and which
+        # side of the note that hole falls on depends on the slit's width.
+        wall = [t for t in self._wall(points) if t > 1000]
+        gaps = [b - a for a, b in zip(wall, wall[1:])]
         # 750/36 is 20.833, so whole-millisecond ticks alternate 20 and 21
         # around it rather than drifting off it -- the accumulator is
         # fractional and only the emitted value is rounded.
@@ -394,9 +396,9 @@ class AntiBarlineTests(unittest.TestCase):
 
     def test_the_slit_width_is_the_note_colour(self):
         """The note itself is invisible, so the hole is the only thing left to
-        read a colour off: don = 2 ticks, kat = 4."""
+        read a colour off: don and kat each leave out their own tick count."""
         config = gs.GimmickConfig()
-        for kat, expected in ((False, 2), (True, 4)):
+        for kat, expected in ((False, config.anti_don_ticks), (True, config.anti_kat_ticks)):
             with self.subTest(kat=kat):
                 notes = [self._circle(1000), self._circle(1750, kat=kat)]
                 wall = self._wall(gs.anti_barline(notes, 1000, 2500, self.BASE, config))
@@ -500,10 +502,17 @@ class AntiBarlineTests(unittest.TestCase):
         hole is in. Bounded by the slit's own width rather than a fixed
         number of milliseconds, so it scales with the wall it is part of."""
         notes = [self._circle(1000), self._circle(2500)]
-        wall = self._wall(gs.anti_barline(notes, 1000, 2500, self.BASE, gs.GimmickConfig()))
         step = 750 / 36
-        self.assertGreaterEqual(min(wall), 1000 - gs.GimmickConfig().anti_don_ticks * step - 1)
-        self.assertLessEqual(max(wall), 2500 + gs.GimmickConfig().anti_don_ticks * step + 1)
+        # A 1-tick slit reaches 2: its nearer half is the whole tick, and a bar
+        # has to be left beyond it.
+        for ticks, reach in ((1, 2), (2, 2), (4, 4)):
+            with self.subTest(ticks=ticks):
+                config = gs.GimmickConfig(anti_don_ticks=ticks)
+                wall = self._wall(gs.anti_barline(notes, 1000, 2500, self.BASE, config))
+                self.assertGreaterEqual(min(wall), 1000 - reach * step - 1)
+                self.assertLessEqual(max(wall), 2500 + reach * step + 1)
+                self.assertLess(min(wall), 1000)
+                self.assertGreater(max(wall), 2500)
 
 
 class VisibleNoteTests(unittest.TestCase):

@@ -85,6 +85,49 @@ class WindowTestCase(unittest.TestCase):
         return next(f for f in self.window._editor_views if f.view_type == "sv").sv_view
 
 
+# -- Fancy Arranger: applied notes stay where they were shown -----------------
+
+
+class FancyArrangerApplyTests(WindowTestCase):
+    """Apply commits what the canvas shows, and the canvas keeps showing it.
+
+    The owner's report: a transformation plus a canvas drag, Apply, Apply to
+    original -- then any click re-ran the preview and the notes snapped back.
+    """
+
+    def _prepare(self, transformation: str):
+        keys = [n.original_index for n in self.state.document.hit_objects[:6]]
+        self.window._selection_changed(keys)
+        self.window.timeline.selected = set(keys)
+        combo = self.window._transform_page_refs["all"]["combo"]
+        combo.setCurrentIndex(combo.findData(transformation))
+        self.window.update_preview()
+        self.window._canvas_dragged("don", 40, 25)
+        return keys[1], self.window.canvas.positions[keys[1]]
+
+    def test_a_drag_with_no_transformation_is_committed(self):
+        key, shown = self._prepare("")
+        self.window.apply_selection()
+        self.assertEqual(self.window.applied_positions[key], shown)
+
+    def test_applied_notes_stay_when_the_preview_runs_again(self):
+        key, shown = self._prepare("text")
+        self.window.apply_selection()
+        self.window.update_preview()  # what the next click schedules
+        self.assertEqual(self.window.applied_positions[key], shown)
+        self.assertEqual(self.window.canvas.positions[key], shown)
+
+    def test_a_centred_transformation_is_not_moved_twice(self):
+        """A drag nudges Center X/Y as well as offsetting the notes; the shape
+        was rebuilt around the moved centre *and* offset again."""
+        key, shown = self._prepare("circle")
+        self.window.preview_cache.clear()
+        self.window.update_preview()
+        self.assertEqual(self.window.canvas.positions[key], shown)
+        self.window.apply_selection()
+        self.assertEqual(self.window.applied_positions[key], shown)
+
+
 # -- effective SV per timestamp ---------------------------------------------
 
 

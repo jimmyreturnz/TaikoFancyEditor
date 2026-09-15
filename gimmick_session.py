@@ -100,9 +100,10 @@ DEFAULT_ANTI_LINES_PER_BEAT = 36
 # Wall ticks omitted per note. The slit width is the note's colour: measured
 # 100% consistent over the reference section at don = 2 ticks (3.7px) and
 # kat = 4 (7.3px). There is nothing else to read a colour off -- the note
-# itself is invisible.
-DEFAULT_ANTI_DON_TICKS = 2
-DEFAULT_ANTI_KAT_TICKS = 4
+# itself is invisible. The defaults are the owner's narrower 1 and 2, which
+# keep the same 1:2 ratio; the reference's widths are one setting away.
+DEFAULT_ANTI_DON_TICKS = 1
+DEFAULT_ANTI_KAT_TICKS = 2
 
 # The wall is phased off the first note rather than started on it. A wall tick
 # sharing a note's millisecond would be a second uninherited point there, and
@@ -905,6 +906,15 @@ def anti_barline(
     def slit_of(note) -> int:
         return config.anti_kat_ticks if note.is_kat else config.anti_don_ticks
 
+    def reach_of(note) -> int:
+        """Ticks the wall runs past an edge note. The slit fills nearer side
+        first, so one side gives up at most half of it rounded up, and one bar
+        has to be left beyond that. From 2 ticks up the slit's own width
+        already covers both; a 1-tick slit reached one tick, the slit took it,
+        and the last note had no sheet after it."""
+        slit = slit_of(note)
+        return max(slit, -(-slit // 2) + 1)
+
     # The wall fills the dragged range, and reaches past the notes at either
     # end of it by one slit's width more. A note is a *hole in a sheet*, so it
     # needs sheet on both sides of it: anchored at the first note the wall
@@ -914,8 +924,8 @@ def anti_barline(
     # slit width is the bound because that is exactly what has to fit: half of
     # it for the hole, and as much again beyond for the bars the hole is in.
     first, last = eligible[0], eligible[-1]
-    wall_start = max(0.0, min(start_ms, first.time - slit_of(first) * step_at(first.time)))
-    wall_end = max(end_ms, last.time + slit_of(last) * step_at(last.time))
+    wall_start = max(0.0, min(start_ms, first.time - reach_of(first) * step_at(first.time)))
+    wall_end = max(end_ms, last.time + reach_of(last) * step_at(last.time))
 
     # Phased off the first note, never started on it -- see
     # ANTI_WALL_ANCHOR_OFFSET_MS. The grid runs out from that anchor in both

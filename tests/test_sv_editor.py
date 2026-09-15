@@ -56,6 +56,61 @@ def _release(view, x: float, y: float = 100.0) -> None:
     view.mouseReleaseEvent(event)
 
 
+class SVCacheSkipTests(unittest.TestCase):
+    """set_timing_points skips the rebuild only when nothing it reads changed.
+
+    The skip is what took an SV layer out of every note placement's cost; the
+    danger it carries is a layer left drawing stale caches, so each input that
+    must still force a rebuild is checked here.
+    """
+
+    def _view(self):
+        """A view that has refreshed twice, so its skip key is built.
+
+        The first refresh at a new point count rebuilds without a key (that
+        is the part that keeps inserts cheap); the second builds it.
+        """
+        view = gui.SVEditorView()
+        points = [
+            TimingPoint.uninherited_at(0, 500.0),
+            TimingPoint.inherited_at(1000, 1.5),
+            TimingPoint.inherited_at(2000, 0.5),
+        ]
+        view.set_timing_points(points)
+        return view, points
+
+    def _rebuilds(self, view, action) -> int:
+        with patch.object(view, "_rebuild_caches", wraps=view._rebuild_caches) as spy:
+            action()
+        return spy.call_count
+
+    def test_unchanged_points_skip_the_rebuild(self) -> None:
+        view, points = self._view()
+        view.set_timing_points(points)
+        self.assertEqual(self._rebuilds(view, lambda: view.set_timing_points(list(points))), 0)
+
+    def test_in_place_field_edit_rebuilds(self) -> None:
+        view, points = self._view()
+        view.set_timing_points(points)
+        points[1].set_sv(3.0)  # no command, no counter: the edit a drag makes
+        self.assertEqual(self._rebuilds(view, lambda: view.set_timing_points(points)), 1)
+        self.assertIn((1000, 3.0), [(t, round(sv, 6)) for t, sv in view._series])
+
+    def test_owned_milliseconds_change_rebuilds(self) -> None:
+        view, points = self._view()
+        view.point_times = {1000}
+        view.set_timing_points(points)
+        view.point_times = {1000, 2000}  # a note placed on 2000 now owns that line
+        self.assertEqual(self._rebuilds(view, lambda: view.set_timing_points(points)), 1)
+        self.assertEqual([p.time for p in view._visible_points], [1000, 2000])
+
+    def test_added_point_rebuilds(self) -> None:
+        view, points = self._view()
+        view.set_timing_points(points)
+        points.append(TimingPoint.inherited_at(3000, 2.0))
+        self.assertEqual(self._rebuilds(view, lambda: view.set_timing_points(points)), 1)
+
+
 class SVEasingTests(unittest.TestCase):
     """The preview square and the real generator share this function, so its
     correctness matters beyond decoration."""

@@ -377,6 +377,10 @@
             <translation>ここには既にギミックがあります。</translation>
         </message>
         <message>
+            <source>There is already a red line here.</source>
+            <translation>ここには既に赤線があります。</translation>
+        </message>
+        <message>
             <source>2x</source>
             <translation>2倍</translation>
         </message>
@@ -1395,6 +1399,10 @@ Every beatmap in it is checked once for taiko difficulties, and the result is re
         <message>
             <source>Omit barline</source>
             <translation>小節線を省略</translation>
+        </message>
+        <message>
+            <source>Meter</source>
+            <translation>拍子</translation>
         </message>
         <message>
             <source>Relative to final BPM</source>
