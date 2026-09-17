@@ -78,7 +78,9 @@ class ConfigTests(unittest.TestCase):
 
 class BarlineStructureTests(unittest.TestCase):
     def test_don_is_one_gimmick_line_and_a_mirrored_pair(self):
-        points, notes = gs.barline_note(10000, BASE, gs.GimmickConfig(), kind="don")
+        points, notes = gs.barline_note(
+            10000, BASE, gs.GimmickConfig(mirror_don_lines=True), kind="don",
+        )
         # The bars are drawn for a note the player actually hits, so one goes
         # on the snap unless place_notes says otherwise.
         self.assertEqual([note.time for note in notes], [10000])
@@ -91,7 +93,7 @@ class BarlineStructureTests(unittest.TestCase):
     def test_place_notes_off_writes_the_bars_and_nothing_else(self):
         """A gimmick that only wants the barlines as scenery."""
         points, notes = gs.barline_note(
-            10000, BASE, gs.GimmickConfig(place_notes=False), kind="don",
+            10000, BASE, gs.GimmickConfig(place_notes=False, mirror_don_lines=True), kind="don",
         )
         self.assertEqual(notes, [])
         self.assertEqual(len(points), 3, "the bars are unaffected")
@@ -109,7 +111,7 @@ class BarlineStructureTests(unittest.TestCase):
     def test_dons_own_spacing_widens_it_without_touching_kat(self):
         """Don's spacing is `spacing_ms` alone now -- it no longer feeds a
         formula Kat's pairs are derived from."""
-        config = gs.GimmickConfig(spacing_ms=3)
+        config = gs.GimmickConfig(spacing_ms=3, mirror_don_lines=True)
         points, _ = gs.barline_note(10000, BASE, config, kind="don")
         self.assertEqual([point.time for point in points], [9997.0, 10000.0, 10003.0])
 
@@ -526,7 +528,7 @@ class VisibleNoteTests(unittest.TestCase):
     BASE = [TimingPoint.uninherited_at(0, 120.0)]
 
     def test_a_barline_note_keeps_its_bars_and_shows_the_note(self):
-        config = gs.GimmickConfig(hide_note=False)
+        config = gs.GimmickConfig(hide_note=False, mirror_don_lines=True)
         points, notes = gs.barline_note(1000, self.BASE, config, kind="don")
         own = [p for p in points if p.time == 1000.0]
         self.assertEqual(len(own), 1)
@@ -674,9 +676,11 @@ class HiddenAntiBarlineTests(unittest.TestCase):
 class MirroredBarlineTests(unittest.TestCase):
     """Bars either side of the note, or trailing it."""
 
-    def test_mirrored_is_the_default(self):
+    def test_don_is_forward_only_and_kat_mirrored_by_default(self):
         points, _ = gs.barline_note(10000, BASE, gs.GimmickConfig(), kind="don")
-        self.assertEqual([int(p.time) - 10000 for p in points], [-1, 0, 1])
+        self.assertEqual([int(p.time) - 10000 for p in points], [0, 1])
+        points, _ = gs.barline_note(10000, BASE, gs.GimmickConfig(), kind="kat")
+        self.assertEqual([int(p.time) - 10000 for p in points], [-5, -3, -1, 0, 1, 3, 5])
 
     def test_forward_only_writes_the_squash_and_its_restores_after_it(self):
         """The owner's map: a squash on the note and one restore a millisecond

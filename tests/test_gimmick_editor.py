@@ -5,6 +5,7 @@ returns and the file and index state that follow from it.
 """
 from __future__ import annotations
 
+import dataclasses
 import os
 import tempfile
 import unittest
@@ -756,11 +757,11 @@ class GimmickPlacementTests(_GimmickFixture, unittest.TestCase):
             self.assertTrue(self._at(10000 + offset), f"no line at {10000 + offset}")
         self.assertAlmostEqual(self._red(10000)[0].bpm, 60000.0)
 
-    def test_a_barline_don_writes_three(self):
+    def test_a_barline_don_writes_two(self):
         before = len([p for p in self.document.timing_points if p.uninherited])
         self.window._place_gimmick("barline", "don", 10000)
         self.assertEqual(
-            len([p for p in self.document.timing_points if p.uninherited]) - before, 3
+            len([p for p in self.document.timing_points if p.uninherited]) - before, 2
         )
 
     def test_a_fake_slider_kat_writes_two_lines_a_note_and_a_slider(self):
@@ -949,9 +950,9 @@ class GimmickToolTests(_GimmickFixture, unittest.TestCase):
         self.assertEqual(reds(), points_before + 2)
 
         self.window._place_gimmick("barline", "don", 10400)
-        # One note, but three red lines: the bars are the structure here.
+        # One note, but two red lines: the bars are the structure here.
         self.assertEqual(len(document.hit_objects), notes_before + 3)
-        self.assertEqual(reds(), points_before + 5)
+        self.assertEqual(reds(), points_before + 4)
 
     def test_a_click_in_a_gimmick_layer_places_through_the_layer(self):
         document = self.window._states[self.window._gimmick_pairing.target].document
@@ -1206,6 +1207,9 @@ class GimmickRedLineTests(_GimmickFixture, unittest.TestCase):
         While ownership meant "no hit object here", that made the one line the
         layer exists to edit the one line it could not touch -- visible, not
         right-clickable, removable only by undo."""
+        # Mirrored, so the line under test has a neighbour on either side.
+        self.window.gimmick_configs["barline"] = dataclasses.replace(
+            self.window._gimmick_config("barline"), mirror_don_lines=True)
         self.window._place_gimmick("barline", "don", 10000)
         self.barline.resize(600, self.window.GIMMICK_LAYER_HEIGHT)
         # Zoomed to where the structure is actually worked on: its three lines
@@ -2251,7 +2255,7 @@ class GimmickNoteReuseTests(_GimmickFixture, unittest.TestCase):
         self.assertEqual(
             len([p for p in self.document.timing_points if p.uninherited])
             - len([p for p in points_before if p.uninherited]),
-            3,
+            2,
         )
 
     def test_a_note_a_millisecond_off_the_snap_still_centres_the_structure(self):
@@ -2378,7 +2382,7 @@ class GimmickMoveTests(_GimmickFixture, unittest.TestCase):
         self.window._move_objects(self.target, [note.uid], [], 200)
 
         moved = self._red_times()
-        for offset in (-1, 0, 1):
+        for offset in (0, 1):
             self.assertIn(10200 + offset, moved)
             self.assertNotIn(10000 + offset, moved)
 
@@ -2423,7 +2427,7 @@ class GimmickClipboardTests(_GimmickFixture, unittest.TestCase):
             p.uid for p in self.document.timing_points
             if p.uninherited and 9990 <= p.time <= 10010
         }
-        self.assertEqual(len(self.barline.selected_timing_uids), 3)
+        self.assertEqual(len(self.barline.selected_timing_uids), 2)
 
         self.window._active_chart_view = self.barline
         self.window._copy_notes()
@@ -2434,8 +2438,8 @@ class GimmickClipboardTests(_GimmickFixture, unittest.TestCase):
             round(p.time) for p in self.document.timing_points
             if p.uninherited and 19000 <= p.time <= 21000
         )
-        self.assertEqual(len(pasted), 3, pasted)
-        self.assertEqual(pasted[2] - pasted[0], 2, "the structure kept its shape")
+        self.assertEqual(len(pasted), 2, pasted)
+        self.assertEqual(pasted[1] - pasted[0], 1, "the structure kept its shape")
 
     def test_a_copied_structure_keeps_its_green_line_and_its_file_order(self):
         """A Don fake slider's `fake_slider_sv` is what takes the squashed note

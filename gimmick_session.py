@@ -270,7 +270,10 @@ class GimmickConfig:
     # Kat are separate structures a mapper layers on one region, and a single
     # flag forced a centred Don to come with a centred Kat. Nothing about the
     # two widths being independent made sense if their shapes were not.
-    mirror_don_lines: bool = True
+    #
+    # Don defaults to forward-only: a squash on the note and one restore at
+    # the chart's BPM a millisecond later, which is the owner's standard Don.
+    mirror_don_lines: bool = False
     mirror_kat_lines: bool = True
     # How far from its object an SV layer's green lines sit. An SV point
     # governs what comes *after* it, so a chart that wants a note drawn at a
@@ -824,12 +827,11 @@ def barline_note(
     else:
         raise GimmickConfigError(f"Unknown barline note kind: {kind!r}")
 
-    # Mirrored by default -- bars either side of the note read as one object
-    # centred on it. Forward only is a real style, though: a note whose bars
-    # all trail it, written as a squash on the note and a single restore one
-    # millisecond later, is what several hand-made maps use, and there was no
-    # way to ask for it. Per kind, so a centred Don can sit beside a trailing
-    # Kat.
+    # Mirrored, bars either side of the note read as one object centred on
+    # it. Forward only -- a squash on the note and a single restore one
+    # millisecond later -- is what several hand-made maps use, and is Don's
+    # default; Kat defaults to mirrored. Per kind, so a centred Don can sit
+    # beside a trailing Kat.
     offsets = (
         [-value for value in spacings] + list(spacings) if mirrored
         else list(spacings)

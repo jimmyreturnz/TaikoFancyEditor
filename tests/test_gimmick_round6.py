@@ -551,13 +551,13 @@ class EffectsBitTests(_Session, unittest.TestCase):
         added = [p for p in self.document.timing_points if 9995 <= p.time <= 10005]
         self.assertFalse(any(p.omit_first_barline for p in added))
 
-    def test_a_barline_don_is_one_bar_either_side_and_a_kat_is_three(self):
+    def test_a_barline_don_is_one_bar_after_and_a_kat_is_three_either_side(self):
         self.window._place_gimmick("barline", "don", 10000)
         self.window._place_gimmick("barline", "kat", 20000)
         self.assertEqual(
             sorted(round(p.time) - 10000 for p in self.document.timing_points
                    if 9990 <= p.time <= 10010 and p.uninherited),
-            [-1, 0, 1],
+            [0, 1],
         )
         self.assertEqual(
             sorted(round(p.time) - 20000 for p in self.document.timing_points
@@ -609,7 +609,7 @@ class KatSpacingConfigTests(_Session, unittest.TestCase):
 
     def test_dons_own_spacing_is_untouched_by_the_kat_config(self):
         self.window._place_gimmick("barline", "don", 10000)
-        self.assertEqual(self._offsets_near(10000), [-1, 0, 1])
+        self.assertEqual(self._offsets_near(10000), [0, 1])
 
     def test_expand_move_gathers_every_custom_spaced_line(self):
         """`_expand_move` used to grow a drag through +/-(n, n+2, n+4) built
