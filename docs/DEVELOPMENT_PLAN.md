@@ -574,6 +574,139 @@ fixed** and were mis-recorded as open. `gui.py`'s `kiai_ranges` delegates to
 field-count requirement). Both were replaced during M1's consolidation; only
 the table entries were left behind. They are struck through below.
 
+**Owner requests, 2026-09-17** -- see the next section. Recorded only; nothing
+started.
+
+---
+
+## Owner requests, 2026-09-17
+
+### Fancy Arranger: every box customizable (not started)
+
+Asked for: drag each box (canvas, transform controls, timeline, density)
+somewhere else and have it fit the screen; close or hide single boxes; keep
+the app fully working in a small window; and make transformations match
+osu!'s editor canvas and background in proportion.
+
+Where it stands, from `_build_fancy_arranger_page`:
+
+- The page is a fixed `QVBoxLayout`: sub-toolbar, a horizontal `QSplitter`
+  (`TransformCanvas` | controls panel), snap row, `self.timeline`, the
+  timing/playback row, `fancy_density`. Nothing moves, nothing is saved.
+- Hard minimums stop it from shrinking: the controls panel is
+  `setMinimumWidth(460)`, `TransformCanvas` is `setMinimumHeight(360)`.
+- **Proportion bug:** `TransformCanvas._update_view_geometry` lets the 4:3
+  playfield fill the **full height** of the 16:9 preview. In osu! the 512x384
+  playfield sits inside 640x480, so it is 384/480 = 80% of the height, with
+  osu!'s own vertical offset. Every pattern previewed over a background is
+  therefore drawn larger than osu! will show it. Confirm the exact offset
+  against osu!stable before changing it -- measure first.
+
+Approach, cheapest first:
+
+1. **Accuracy.** `_update_view_geometry` uses osu!'s 640x480 -> playfield
+   mapping, with a regression test that checks `playfield_rect` against that ratio.
+   Small, and doesn't depend on the other two.
+2. **Shrinkable window.** A scroll area around the controls panel instead of
+   the fixed minimums, so a small or half-screen window scrolls rather than
+   clipping.
+3. **Dockable boxes** with Qt's own `QDockWidget`, so no new dependency. Put a
+   `QMainWindow` inside the page, with the canvas as the central widget and
+   controls, timeline row and density as docks. Dragging, floating, closing and
+   fitting to the screen come free. Save the layout with
+   `saveState()`/`restoreState()` in the existing settings, and add a View menu
+   (to reopen closed docks) and a Reset layout action. Risks: the
+   `self.timeline.timing_bar` wiring; the application event filter's
+   `page_stack.currentWidget() is self.fancy_arranger_page` check has to still
+   recognise a floating dock; new labels need `tr()` and catalog entries.
+
+### README backlog, checked against the code
+
+**Already done, README out of date:** red line meter preset; separate row
+selection in the fake slider layer (Shift selects both); omit the barline at
+each note's position (these three are uncommitted as of this date); Ctrl+S
+saves every changed difficulty; negative-length fake sliders render to scale;
+Red Line refuses a millisecond that already has one; SV graph floor is 0.01x.
+Vertical SV drag in 0.01 steps: `SV_DRAG_STEP` exists but only some paths
+round to it -- find the one the owner is hitting.
+
+**Still to do:**
+
+1. Barline Don default: only the +1ms red line at the current BPM, not
+   mirrored to -1ms (`mirror_don_lines` defaults to True).
+2. Separate "invisible note" BPM and red line BPM settings for the barline
+   and fake slider layers.
+3. At most one note, green line and red line per millisecond. Duplicated
+   green lines are the known SV bug on heavy gimmick sections.
+4. Paste lands exactly on the snap in every layer (fake sliders fixed in
+   3.3.3).
+5. Auto-snap to each object's own nearest snap, not the current divisor.
+6. Option to put a red line on the first fake slider (current or custom BPM),
+   with the chart's speed restored 1ms later. Also fixes the known issue
+   that a red line cannot be placed under, or moved after landing on, a
+   fake slider.
+7. Different approach behaviour for barline and fake slider Kats, for example
+   a rising SV.
+8. Opt-in exp(x>=1) curve in the SV generator.
+9. Separate "open view" lists for the regular editor and the gimmick editor.
+10. Smoother fast scrolling -- measure with `tools/profile_playback.py` first.
+11. Larger items: UI and assets rework, song library rework, updater rework,
+    Thai localization.
+
+### Gameplay preview: mods, and a range that matches osu! (not started)
+
+**The visible range is wrong, and that comes first.** The preview shows far
+more of the chart than osu!taiko does, and the zoom has nothing to do with it
+(the owner checked at both ends; the preview does not change). The actual
+cause: `GameplayViewerView.x_for_time` spaces objects by `velocity_at(t) *
+px_per_beat`, and `px_per_beat` is a flat `GAMEPLAY_PX_PER_BEAT = 200.0`
+**screen pixels**, regardless of the view's size. (`GAMEPLAY_PX_PER_BEAT_MIN` and
+`_MAX` are defined and never used.) Everything else in the view is sized
+against the 200-unit playfield height; the scroll spacing alone is not. So a
+wide, short view, which is how the preview is usually docked (1882x170 in the
+profiling runs), puts a whole in-game screen of notes into a small part of its
+width and fills the rest with chart osu! would not show yet.
+
+The fix is to express spacing in playfield units, and bound what is visible by
+osu!'s own time range and aspect ratio, taken from the **current** `ppy/osu`
+revision (`DrawableTaikoRuleset`, `TaikoPlayfieldAdjustmentContainer`) rather
+than guessed. It is still an open question whether a view wider than osu!'s
+aspect ratio should cut off at osu!'s right edge or letterbox. Measure before
+and after: pick a reference map, count the notes on screen in game at a known
+timestamp, and compare with the preview.
+The mods below all change scroll or visibility, so they are only meaningful
+once this range is right.
+
+Mods requested, with their effects to be read from the ruleset rather than
+guessed:
+
+| Mod | Effect |
+| --- | --- |
+| EZ | Slower scroll (SliderMultiplier scaled -- check `TaikoModEasy` for the factor) |
+| HR | Faster scroll (SliderMultiplier scaled -- check `TaikoModHardRock`) |
+| HT | 0.75x rate, pitch preserved |
+| Daycore | 0.75x rate, pitch 25% lower (frequency, not tempo) |
+| DT | 1.5x rate, pitch preserved |
+| NC | 1.5x rate, pitch 50% higher (frequency, not tempo) |
+| HD | Notes fade out before the hit position (taiko `TaikoModHidden`) |
+| FL | Only a region around the hit position is visible (`TaikoModFlashlight`, size may change with combo) |
+
+Notes for whoever builds it:
+
+- **Rate mods go through `audio_engine`, not the preview.** HT/DT change tempo
+  and preserve pitch, which is exactly what `TimeStretcher` already does for
+  the 25/50/75% buttons. Daycore/NC are the other `AdjustableProperty`
+  (`Frequency`): resample without WSOLA. Neither needs a new dependency. Scroll
+  speed on screen follows song time, so the preview needs no change for rate.
+- **EZ/HR are one factor on `_scroll_scale`.** They also change OD/HP, which
+  a preview does not show.
+- **HD/FL are drawing only**: a per-object alpha against distance from the hit
+  position, and a mask over the playfield. Take the fade distances and
+  flashlight size from the ruleset, and follow the rule the kiai flash already
+  follows: the ruleset decides, not the eye.
+- Mods combine (HDHR, HDDT, ...), so apply them as independent flags, not as
+  one choice from a list.
+
 ---
 
 ## Why
