@@ -31,7 +31,7 @@ The main inspirations include Alchyr's ranked maps *13 Stairs* and *Helios*, whi
 
 - Fixed a bug in Fancy Arranger where the position of notes reset after clicking 'Apply Transformation to ..." and then readjust some value and click again.
 - **Pasted fake sliders keep their offset from the snap** instead of landing on the playhead, this will be very useful when copypasting them.
-- **Placing a note on a heavy gimmick map is about 20% faster**
+- **Placing objects on a heavy gimmick map is about 20% faster**
 - **Meter** is editable in a red line's double-click dialog.
 - **Anti-barline slits default to 1 tick for Don and 2 for Kat**, and the gimmick editor's chart default SV offset starts exactly on the note (offset 0).
 Full notes: [`docs/releases/v3.3.3.md`](docs/releases/v3.3.3.md).
