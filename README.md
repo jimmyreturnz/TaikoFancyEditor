@@ -1,6 +1,6 @@
 # Taiko Fancy Arranger
 
-If you want to ask on how to use it or suggest some ideas, my osu name is [jimmyreturnz](https://osu.ppy.sh/users/11306153)\
+If you want to ask on how to use it, suggest ideas, or report bugs, my osu name is [jimmyreturnz](https://osu.ppy.sh/users/11306153)\
 my discord is also jimmyreturnz, thanks in advance!
 
 使い方の質問やアイデアの提案などがあれば僕のosu!ネームはjimmyreturnzです
@@ -11,9 +11,9 @@ Discordもjimmyreturnzです
 
 *日本語版は [README_JP.md](README_JP.md) をご覧ください。*
 
-Taiko Fancy Arranger started as a tool for turning osu!taiko notes into visual patterns — text, shapes, equations, drawings, spirals — without placing every circle by hand. Version 2.0.0 grew it into an editor: browse your osu! Songs folder, open a difficulty, edit notes, edit scroll velocity, preview the chart the way osu! renders it, and still arrange notes into patterns when you want to. Version 3.0.0 adds a dedicated gimmick editor, for the fake sliders, barline tricks and extreme-SV effects that osu!taiko mappers build out of timing points rather than notes. 
+Taiko Fancy Arranger started as a tool for turning osu!taiko notes into visual patterns such as text, shapes, equations, drawings, spirals, or even an image, without placing every circle by hand. Version 2.0.0 grew it into an editor: browse your osu! Songs folder, open a difficulty, edit notes, edit scroll velocity, preview the chart the way osu! renders it, and still arrange notes into patterns when you want to. Version 3.0.0 adds a dedicated gimmick editor, for the fake sliders, barline gimmick and extreme SV effects that osu!taiko mappers build out of timing points rather than notes. 
 
-Everything stays a playable osu! beatmap. Sections the editor does not support editing storyboards, breaks, colours, editor bookmarks yet.
+The editor does not support editing storyboards, breaks, colours, editor bookmarks yet.
 
 > **Current release:** v3.3.3  
 > **Platform:** Windows x64  
@@ -237,6 +237,9 @@ I hope this design would be easier for you to tell which notes are fake sliders 
 You can also change the length of the fake slider by double clicking it, defaulting to -0.0010.\
 This is to allow you to kind of 'encode' the fake slider; let's say you have many fake sliders in any given interval and you want each of the groups within them to have different SV behavior, you may pre-config the length before you place the fake slider and then apply SV only to fake sliders with this specific length :) 
 
+Keep in mind that the editor still cannot render fake sliders with high negative length, such as -100 length, yet.\
+I am not sure yet on how I could render them, if you could suggest or educate me how, I would be very thankful :>
+
 Tools:
 
 ```text
@@ -303,7 +306,7 @@ The original visual arranger, unchanged in behaviour and now on its own page wit
 
 Some transformations support chunking, direction controls, seeded randomness, or **Back and Forth** traversal.
 
-Polyline and Bézier path exist in the transformation engine but are not yet selectable in the interface, because both need a way to enter control points that the parameter panel does not have yet. Freehand shapes are covered by **Drawing** in the meantime.
+Suggest other transformation if you would like to.
 
 ### Text patterns
 
@@ -447,40 +450,6 @@ Slider length is computed with osu!'s default `SliderMultiplier` of 1.4, because
 
 ---
 
-## Building from source
-
-```text
-pip install -r requirements-build.txt
-pyside6-lrelease translations/taiko_ja.ts
-python -m unittest discover
-pyinstaller --noconfirm --clean TaikoFancyArranger.spec
-```
-
-Run from source with `python gui.py`, or `run_from_source.bat` on Windows.
-
-Packaging files:
-
-| File | Purpose |
-|---|---|
-| `VERSION` | The release version, bundled into the build |
-| `TaikoFancyArranger.spec` | PyInstaller spec — bundles `assets/`, `VERSION` and the compiled `.qm` translations |
-| `requirements.txt` | Runtime dependency (PySide6) |
-| `requirements-build.txt` | The above plus PyInstaller |
-| `.env.example` | Documents that **no** environment variables are needed; never put secrets here |
-| `.github/workflows/release-windows.yml` | Builds the portable ZIP and SHA-256 checksums, and attaches them to a published release |
-
-Publishing a GitHub release tagged `vX.Y.Z` runs that workflow, which compiles translations, builds, and uploads `TaikoFancyArranger-Windows-x64.zip` plus `SHA256SUMS.txt`. A matching `docs/releases/vX.Y.Z.md` is bundled into the ZIP when present.
-
-The program reads no environment variables and needs no `.env` file. `.env` and key/certificate files are gitignored.
-
-Tests run headless:
-
-```text
-QT_QPA_PLATFORM=offscreen python -m unittest discover -v
-```
-
----
-
 ## Feedback and bug reports
 
 When reporting a bug, include:
@@ -499,23 +468,18 @@ Do not upload copyrighted audio or private beatmap assets unless permission has 
 
 ## Project status
 
-Version 3.2.0 is the current public release. The project focuses on creative single-player beatmap editing, arrangement and previewing. Multiplayer and automatic difficulty calculation are outside the current scope.
+Version 3.3.3 is the current public release. The project focuses on creative single player editing, arrangement and previewing. Multiplayer and automatic difficulty calculation are outside the current scope.
 
 Not yet implemented, and next in line:
 
 - Multi-difficulty editing of maps that share audio is possible today, but has not been exercised hard.
 
-## Further plans
-
-These ideas are exploratory and are not guaranteed for a specific release.
+## Not guaranteed further plans
 
 - Add rotation controls to transformations that do not support rotation yet
 - Improve the usability of the Equation transformation
-- Experiment with additional SV and visual gimmick concepts
 - Improve the overall UI design
-- Explore a possible web version
-- Explore a possible full-alt transformation
-- Consider adding an updater in a later version
+- updater rework so that users no longer have to redownload the entire app each time?
 - Thai localization ภาษาไทย
 
 ---
@@ -524,4 +488,9 @@ These ideas are exploratory and are not guaranteed for a specific release.
 
 Taiko Fancy Arranger is released under the MIT License. See [`LICENSE`](LICENSE) for details.
 
-This project is a community-made tool and is not affiliated with or endorsed by osu! or ppy Pty Ltd.
+This project is a community-made tool and is not affiliated with or endorsed by osu! or peppy.
+
+## Lastly
+
+Thanks for reading if you made it to here, it was fun working on this project.\
+Hope you could enjoy mapping better with this editor!
