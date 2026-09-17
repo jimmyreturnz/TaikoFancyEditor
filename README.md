@@ -1,6 +1,6 @@
 # Taiko Fancy Arranger
 
-If you want to ask on how to use it or suggest some ideas, my osu name is jimmyreturnz\
+If you want to ask on how to use it or suggest some ideas, my osu name is [jimmyreturnz](https://osu.ppy.sh/users/11306153)\
 my discord is also jimmyreturnz, thanks in advance!
 
 使い方の質問やアイデアの提案などがあれば僕のosu!ネームはjimmyreturnzです
@@ -48,49 +48,10 @@ Right now when you drag selects, it selects both layers inside it at once, will 
 - Sometimes copypasting objects in any layers might cause it to land in wrong millisecond (+- 1 or 2 milliseconds), this problem also happens in osu editor as well.\
 Within the editor, I will be ensuring that it get pasted exactly on where the snap is down to the millisecond on all objects and layer.
 - Might as well add auto snapping function that detects the object's nearest snaps first then snap to it, unlike osu stable auto snapper that currently snap notes to your current snaps.
+- Will add an option to place redline at the first fake slider at the current BPM (or custom BPM) to accommodate the behavior of you wanting the regular note to be invisible with high bpm, and reset the chart speed back to normal with current bpm at one millisecond later.
+- Will also try to come up with a way that you can make barline kat or fake slider kat to have different approaching behavior (like adding an increasing SV speed to barline kat to make them look harder to read). 
 - UI rework and adding proper assets to the app.
 - Further optimization when applicable.
-
----
-
-## What is new in 3.3.2
-
-The slow-playback "kick lands late" report found and fixed, and wheel scrolling during playback made smooth.
-
-- **Hitsounds now default to +22ms against the music** — the "kick lands late at 25%" report was a flat offset between chart and song (median +22ms on MP3, +23ms on OGG over 60 installed maps), not the time-stretch.
-- **Wheel scrolling during playback no longer freezes the playhead** — 110 of 359 frames frozen at a notch every 25ms, now 0, and no freeze after a fast spin.
-- **Right-clicking a fake slider's red line removes only that line**; right-clicking the slider still removes both.
-- **Ctrl+[ / Ctrl+] nudge the hitsound offset by 1ms** while playing, to tune it by ear.
-- **The offset calibrator takes key taps as soon as it opens.**
-
-Full notes: [`docs/releases/v3.3.2.md`](docs/releases/v3.3.2.md).
-
----
-
-## What is new in 3.3.1
-
-Slow playback and hitsounds, both rebuilt from measurement.
-
-- **Slow playback (25/50/75%) is substantially more accurate.** The time-stretch grain shortened from 117ms to 20ms, which also sounds better on real tracks (a kick drum used to come apart at 25%) and costs less CPU.
-- **Known limitation:** a small timing gap between the playhead and the music remains at 25% speed, under investigation.
-
-Full notes: [`docs/releases/v3.3.1.md`](docs/releases/v3.3.1.md).
-
----
-
-## What is new in 3.3.0
-
-A gimmick-editor release: a second anti-barline gimmick, one way into every converter, snapping that matches osu! exactly, and fixes across copy/paste, the SV generator's curves and the fake slider layer.
-
-- **Hidden anti-barline**, in the barline layer's Convert Notes: one red line makes osu! draw the whole barline sheet, and each note's slit is opened by raising SV for a fraction of a beat — so the slit **opens with distance and closes at the hit position**, and the note's colour is only readable while it is far away.
-- **Convert Notes is the one way into every converter**, and its numbers are asked per call instead of being read from — or written back to — the layer's saved Config.
-- **Hide note** on every Don/Kat structure: off, the note stays visible inside its own structure.
-- **Multiple Fake Slider previews the whole run** under the cursor, at the size Shift will give it.
-- **Snapping matches osu!'s truncation** — a snapped position goes down to the whole millisecond, not to the nearest one. Measured over 25 installed maps.
-- **Finisher notes are drawn bigger**, at the ruleset's own 1.538x a normal note.
-- **Fixed:** copy/paste landed 1ms off on some beats; copying a gimmick lost its green line; pasting SV in a gimmick layer ignored the layer's offset; the SV generator's "true exponential" bent the same way for every range and its sine curves were the wrong way round; checked buttons clipped their own labels; the snap grid cost 15.3ms of a 16.3ms frame on an extreme chart.
-
-Full notes: [`docs/releases/v3.3.0.md`](docs/releases/v3.3.0.md).
 
 Full development log detail lives in [`docs/DEVELOPMENT_PLAN.md`](docs/DEVELOPMENT_PLAN.md).
 
@@ -109,18 +70,6 @@ Windows Defender SmartScreen may still display an "unrecognized app" warning bec
 Currently supports English and Japanese. There is no Thai translation yet even though I am Thai myself 😂
 
 Language is chosen on first start and can be changed in **Settings**. Changing it asks you to restart, because Qt does not retranslate widgets that already exist.
-
----
-
-### Slow playback
-
-25%, 50% and 75% got a lot more accurate this update — the time-stretch now works in much shorter pieces (20ms instead of 117ms), which also fixed a kick drum sounding broken at 25% speed and is lighter on CPU too. There's still a small timing gap between what you see and what you hear at 25% that I'm still chasing down, but it's a fraction of what it used to be, so it should feel usable now instead of "stick to 100%".
-
-Notes are mixed straight into the song's audio now too, instead of being played as their own separate sound — so they land on the music correctly at every speed, and can't pile up into one loud burst if you scroll or seek fast.
-
-**Music offset (ms)** on the Audio settings page shifts the playhead to match when sound reaches your ears. Default value is 0ms, but you can calibrate it inside the settings.
-
-**Hitsound offset (ms)** is separate from that — it nudges the notes' own sound against the music, since the notes are mixed into it now. It defaults to +22ms, which is where charts timed in osu! put their notes against this app's audio (measured over 60 maps). To fine-tune it by ear, slow the song to 25% and press **Ctrl+[** / **Ctrl+]** while it plays.
 
 ---
 
@@ -149,7 +98,7 @@ Python and PySide6 are bundled with the portable Windows release. Players using 
 
 ## First start
 
-1. **Choose a language.** English or 日本語. This screen is deliberately untranslated — it is the one screen that cannot know which language you read.
+1. **Choose a language.** English or 日本語.
 2. **Choose your osu! Songs folder.** Pre-filled with `%LOCALAPPDATA%/osu!/Songs` when it exists. The folder is remembered, and can be changed later from the library page.
 3. **Wait for the scan.** The first scan reads every `.osu` file once and takes a while on a large collection. It runs in slices, so the window stays responsive. Later starts show the cached list before verifying it. You may use the app while it is scanning, but the experience will not be that smooth on the editor and osu. Thus, it is suggested to wait for the scan, or make a small folder that consists of only maps that you would want to edit.
 
@@ -172,7 +121,9 @@ Controls:
 - **Sort** — A→Z or Z→A, which reverses group order too.
 - **Original language metadata** — shows `ArtistUnicode`/`TitleUnicode` instead of the romanized fields, falling back to whichever the map actually has.
 
-Only taiko charts (`Mode: 1`) are listed.
+Only taiko charts are listed.
+
+There will be a rework on the song library soon, stay tuned!
 
 ---
 
@@ -190,6 +141,9 @@ View types:
 | SV editor | Red, green and yellow timing lines plus an effective-SV graph |
 | Gameplay viewer | Read-only osu!taiko gameplay preview |
 | Density | The white-to-yellow note density heatmap |
+
+You can edit multiple difficulties at the same time as well, but I believe you still have to save each of them in each view.
+The very next update will come with Ctrl+Shift+s to save all difficulties at once, and will separate list of possible 'open view' between regular editor and gimmick editor.
 
 ### Note editing
 
@@ -225,6 +179,7 @@ With an SV view focused, the tool row becomes:
 - Deleting green lines will not remove Red lines
 - Double-clicking any timing line allows you to toggle kiai or the line's omit-barline flag.
 - The graph shows **effective** SV — green over red where both exist — with a fixed 0.1x floor and an autoscaling ceiling. - to be changed to 0.01x
+Will fix vertical dragging increases SV by literally 8 decimal points later in the next update, it will be by 0.01 increment later.
 
 **Function mode:** drag a range, then choose initial rate, final rate, position offset, whether to omit the first barline, and whether the sweep is relative to the final BPM. Seven curves are offered as tiles, each drawing the sweep you actually typed:
 
@@ -233,6 +188,8 @@ linear   sin in   sin out   exp1.3   exp1.6   true exp   sin
 ```
 
 Points are generated on the notes in range by default, or every N snaps. The default −5 ms offset makes sure the SV is already in force when the note it governs arrives. However many points it makes, it is one undo step.
+
+Will eventually add an option to select exp(x>=1) SV for an experimental purpose.
 
 ### Editor shortcuts
 
@@ -263,13 +220,22 @@ A "gimmick" in osu!taiko is a visual effect built out of timing points rather th
 
 The gimmick page stacks six layers over one difficulty: the normal chart, a fake slider layer, a barline gimmick layer, and an SV layer for each of the three.
 
-Entering it for a difficulty asks once whether to edit that difficulty in place or copy it into a new `[Gimmick]` difficulty, and remembers the answer permanently. It also takes a **base timing snapshot** at that moment: a gimmick fills a file with 60000 BPM lines, every one of which collapses the snap grid, so the grid, wheel scroll and BPM overlay are all driven from the snapshot instead of the file being edited — the grid never moves under the cursor as gimmick timing points pile up.
+Entering it for a difficulty asks once whether to edit that difficulty in place or copy it into a new `[Gimmick]` difficulty, and remembers the answer permanently.\
+You can also change the timing reference for a smoother scrolling experience, it is suggested to use a clean version of the chart though.\
 
-Kiai sections draw as a translucent orange band in every layer. Every timing point a gimmick tool generates carries the kiai state of the section it lands in, instead of silently ending it.
+Kiai sections draw as a translucent orange band in every layer. Every timing point a gimmick tool generates carries the kiai state of the current section.
+
+Holding Ctrl while hovering your cursor at any layer allows you to place objects as precise as 1 millisecond apart.
 
 ### Fake sliders and shiny notes
 
-The fake slider layer places fake sliders, and "shiny" notes — several fake sliders stacked on one millisecond, which reads in-game as a bright white glow beside a note. The two are told apart by position: an object one millisecond after the note or line it hangs off is a shiny, two milliseconds after is a fake slider. The layer draws them on two rows, fake sliders on the ceiling and shiny below, with the snap grid down the middle, because at gimmick zoom they sit one pixel column apart.
+The fake slider layer places fake sliders, and "shiny" notes (several fake sliders stacked on one millisecond, which can be seen in game as a bright white glow beside a note)\
+The tool classify them by position: a fake slider at one millisecond after the note or line it hangs off is a shiny, two milliseconds after is a fake slider.\
+The layer draws them on two rows, fake sliders on the ceiling and shiny below, with the snap grid down the middle, because at gimmick zoom they sit one pixel column apart.\
+I hope this design would be easier for you to tell which notes are fake sliders and which notes are shiny.
+
+You can also change the length of the fake slider by double clicking it, defaulting to -0.0010.\
+This is to allow you to kind of 'encode' the fake slider; let's say you have many fake sliders in any given interval and you want each of the groups within them to have different SV behavior, you may pre-config the length before you place the fake slider and then apply SV only to fake sliders with this specific length :) 
 
 Tools:
 
@@ -290,11 +256,22 @@ Kiai
 
 ### Barline gimmicks
 
-Notes drawn out of red lines — a Don is one mirrored pair of bars, a Kat is three, and each pair is independently configurable. Bars can be mirrored around the note or trail it. A red line tool has its own configurable BPM, and a Function tool fills a range with red lines on a millisecond count or the beat grid, with an optional BPM ramp and a chosen SV.
+Notes drawn out of red lines — a Don is one mirrored pair of bars, a Kat is three, and each pair is independently configurable.\
+Bars can be mirrored around the note or trail it. A red line tool has its own configurable BPM, and a Function tool fills a range with red lines on a millisecond count or the beat grid, with an optional BPM ramp and a chosen SV.\
+You can also do the same kind of behavior with fake sliders where you might want to apply SV to this specific BPM, or better, BPM range.
 
 ### Per-structure SV
 
-Each of the three object layers (chart, fake slider, barline) has its own SV layer, and each owns exactly its own structures' milliseconds — the three no longer show each other's green lines. Copy and paste inside them maps by object index rather than by millisecond, so an SV shape lifted off four fake sliders lands on the next four whatever their spacing. Oscillating SV joins the seven easing curves in the generator.
+Each of the three object layers (chart, fake slider, barline) has its own SV layer, and each owns exactly its own structures' milliseconds\
+Copy and paste inside them maps by object index rather than by millisecond, so an SV shape lifted off four fake sliders lands on the next four whatever their spacing. Oscillating SV joins the seven easing curves in the generator.\
+You can also change the offset of where SV is applied if you prefer, however it is suggested in gimmick editor that you should apply it directly onto where the object you want to apply the SV to is.\
+As mentioned earlier, you can also apply SV speed only to fake sliders with length-specific and barline with BPM-specific.\
+I believe this can simplify your gimmick beatmaps creation workflow much better, especially if you are a big fan of barline gimmick with barline to obstruct players' reading.
+
+### Known Issue (will fix soon)
+- Will try to figure out an issue that when you add redline to the ms where there is already a fake slider and it would be moved to fake slider layer (this is fine and intended), but you cannot move them afterward.\
+- You cannot place redline directly under fake sliders anyways, the current workaround is to place it at somewhere else and Ctrl+Drag it to the fake slider. 
+I will add an option to place redline at the first fake slider at the current BPM (or custom BPM) to accommodate the behavior of you wanting the regular note to be invisible with high bpm, and reset the chart speed back to normal with current bpm at one millisecond later. I hope this would standardize the format of how gimmick charts should be created.
 
 ---
 
