@@ -1,16 +1,13 @@
 # Taiko Fancy Arranger
 
-I'll write a proper readme myself somedays, just read below first for brief understanding of what this tool can
-If you want to ask on how to use it or suggest some ideas, my osu name is jimmyreturnz
-my discord is also jimmyreturnz
-thanks in advance!
+If you want to ask on how to use it or suggest some ideas, my osu name is jimmyreturnz\
+my discord is also jimmyreturnz, thanks in advance!
 
-いつかちゃんとしたREADMEファイルを書くつもりですがまずは下記を読んでこのツールがどんなものか簡単に理解してください
 使い方の質問やアイデアの提案などがあれば僕のosu!ネームはjimmyreturnzです
 Discordもjimmyreturnzです
 よろしくお願いします！
 
-**An osu!taiko editor with a visual pattern arranger built in.**
+**An osu!taiko editor with a visual pattern arranger built in, now with gimmick editor**
 
 *日本語版は [README_JP.md](README_JP.md) をご覧ください。*
 
@@ -22,24 +19,37 @@ Everything stays a playable osu! beatmap. Sections the editor does not support e
 > **Platform:** Windows x64  
 > **Author:** [jimmyreturnz](https://osu.ppy.sh/users/11306153)
 
-The original idea came from a random chat with maruaki101. Main inspirations include Alchyr's ranked maps *13 Stairs* and *Helios*, which use unusual note placement to create visual expression. You should go check it out [here!](https://osu.ppy.sh/beatmapsets/1093671#taiko/3819326)
+The main inspirations include Alchyr's ranked maps *13 Stairs* and *Helios*, which use unusual note placement to create visual expression. You should go check it out [here!](https://osu.ppy.sh/beatmapsets/1093671#taiko/3819326)
 
-Many thanks to Mew’s beatmaps for studying reference that made the tool creation possible, and other player’s ideas!
+## Credits
+- Alchyr's TaikoEditor
+- {Mew, _gt, Alchyr}'s maps for study reference, thank you so much!
 
 ---
 
 ## What is new in 3.3.3
 
-Fancy Arranger's Apply made to keep what it shows, copy/paste and red lines tightened in the gimmick editor, and faster note placement on heavy gimmick maps.
-
-- **Apply in Fancy Arranger keeps the notes where the canvas showed them** — the next click no longer snaps them back, a drag with no transformation is committed, and a centred transformation with a drag is no longer applied twice as far.
-- **Pasted fake sliders keep their offset from the snap** instead of landing on the playhead.
-- **Placing a note on a heavy gimmick map is about 20% faster** — 192ms → 153ms, undo 253ms → 206ms, on a 21,040-timing-point map.
+- Fixed a bug in Fancy Arranger where the position of notes reset after clicking 'Apply Transformation to ..." and then readjust some value and click again.
+- **Pasted fake sliders keep their offset from the snap** instead of landing on the playhead, this will be very useful when copypasting them.
+- **Placing a note on a heavy gimmick map is about 20% faster**
 - **Meter** is editable in a red line's double-click dialog.
-- **Anti-barline slits default to 1 tick for Don and 2 for Kat**, and the gimmick editor's chart SV starts on the note (offset 0).
-- **Red Line refuses a millisecond that already has a red line**, and says so.
-
+- **Anti-barline slits default to 1 tick for Don and 2 for Kat**, and the gimmick editor's chart default SV offset starts exactly on the note (offset 0).
 Full notes: [`docs/releases/v3.3.3.md`](docs/releases/v3.3.3.md).
+
+## To be added / fixed:
+- Red line generator function with **preconfigured meter** (could be useful for 60000 bpm 1/4 meter static barlines gimmick.
+- improving the smoothness when scrolling too fast, been actively trying to find solutions and improve it for a while now. It is much better than before, and there is still a room for an improvement.
+- Will change barline note for don to default as only using redline at current bpm at +1 ms and not mirroring it to -1ms. 
+- Will add more config to the barline gimmick layer (or fake slider layer too) to allow presetting "invisible note" bpm and "red line" bpm separately. By saying invisible note bpm, you already know that placing high bpm at the note's position make it invisible, and you then put other things like either fake slider notes at +2ms or barline gimmick there.
+- Preventing regular note (don kat), green line, red line, from having more than one of each of them in the same millisecond\
+Currently there might still be a bug where SV line is duplicated, so if you can notice that in some parts the SV looks weird (the main suspects are where there are many gimmick objects), please check timingpoints in osu editor itself to see if there is any duplicated line for now.
+- Separate selection in fake slider layer.\
+Right now when you drag selects, it selects both layers inside it at once, will separate them from each other (hold shift to select both layers at once)
+- Sometimes copypasting objects in any layers might cause it to land in wrong millisecond (+- 1 or 2 milliseconds), this problem also happens in osu editor as well.\
+Within the editor, I will be ensuring that it get pasted exactly on where the snap is down to the millisecond on all objects and layer.
+- Might as well add auto snapping function that detects the object's nearest snaps first then snap to it, unlike osu stable auto snapper that currently snap notes to your current snaps.
+- UI rework and adding proper assets to the app.
+- Further optimization when applicable.
 
 ---
 
