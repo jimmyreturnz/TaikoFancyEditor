@@ -1666,9 +1666,18 @@ class _StubBarlineFunctionDialog:
 
     def __init__(
         self, start_ms, end_ms, parent=None, base_timing=None, snap_divisor=4, note_times=None,
-        current_sv=1.0,
+        current_sv=1.0, meter=4,
     ):
         type(self).seen_range = (start_ms, end_ms)
+        type(self).seen_meter = meter
+
+    class meter_spin:
+        """The Config's default; a test that cares sets `meter`."""
+        meter = 4
+
+        @classmethod
+        def value(cls):
+            return cls.meter
 
     def exec(self):
         return 1 if type(self).accepted else 0
@@ -1766,6 +1775,29 @@ class GimmickFunctionTests(_GimmickFixture, unittest.TestCase):
         for at in (10000, 10001, 10002, 10003):
             written = [p for p in self.document.timing_points if p.time == at]
             self.assertEqual([p.uninherited for p in written], [True, False], at)
+
+    def test_the_generated_run_carries_the_dialogs_meter(self):
+        """osu! reads meter from the red line in force, so a run written at a
+        fixed 4/4 re-bars the chart after it whatever the mapper typed."""
+        _StubBarlineFunctionDialog.accepted = True
+        _StubBarlineFunctionDialog.result = [10000, 10001]
+        _StubBarlineFunctionDialog.meter_spin.meter = 999
+        try:
+            with patch.object(gui, "BarlineFunctionDialog", _StubBarlineFunctionDialog):
+                self.window._generate_barlines(self.state.source_path, 10000, 10001)
+        finally:
+            _StubBarlineFunctionDialog.meter_spin.meter = 4
+        reds = [
+            p for p in self.document.timing_points
+            if p.uninherited and p.time in (10000, 10001)
+        ]
+        self.assertEqual([p.meter for p in reds], [999, 999])
+
+    def test_the_dialog_opens_on_the_red_line_configs_meter(self):
+        self.window.gimmick_configs["barline"] = gui.GimmickConfig(red_line_meter=7)
+        with patch.object(gui, "BarlineFunctionDialog", _StubBarlineFunctionDialog):
+            self.window._generate_barlines(self.state.source_path, 10000, 10001)
+        self.assertEqual(_StubBarlineFunctionDialog.seen_meter, 7)
 
     def test_the_generated_run_is_one_undo_step(self):
         _StubBarlineFunctionDialog.accepted = True
@@ -3120,7 +3152,7 @@ class BarlineNoteGuardTests(_GimmickFixture, unittest.TestCase):
 
         class _Stub:
             def __init__(self, start, end, parent=None, base_timing=None, snap_divisor=4,
-                         note_times=None, current_sv=1.0):
+                         note_times=None, current_sv=1.0, meter=4):
                 seen["note_times"] = note_times
             def exec(self): return 0
             def times(self): return []

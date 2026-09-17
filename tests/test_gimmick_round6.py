@@ -848,6 +848,33 @@ class ShinyNoteTests(_Session, unittest.TestCase):
         self.assertNotIn(20000 + config.fake_slider_offset_ms, layer.shiny_times)
         self.assertTrue(layer.split_rows, "layer 2 draws two rows")
 
+    def test_a_band_selects_in_its_own_row_and_shift_takes_both(self):
+        config = self.window._gimmick_config("fake_slider")
+        self.window._place_gimmick("fake_slider", "shiny", 10000)
+        self.window._place_gimmick("fake_slider", "regular", 10100)
+        layer = self._layer()
+        shiny_at = 10000 + config.shiny_offset_ms
+        slider_at = 10100 + config.fake_slider_offset_ms
+        middle = layer._baseline_y()
+
+        def band(y, shift=False):
+            layer.drag_anchor_time = 9990.0
+            layer.drag_mouse_x = layer.x_for_time(10150.0)
+            layer._drag_y = y
+            modifiers = gui.Qt.ShiftModifier if shift else gui.Qt.NoModifier
+            with patch.object(gui.QApplication, "keyboardModifiers", return_value=modifiers):
+                layer._update_drag_selection()
+                span = layer._row_span(y)
+            return {round(n.time) for n in layer.selected_notes()}, span
+
+        self.assertEqual(band(middle - 10), ({slider_at}, (0.0, float(middle))))
+        self.assertEqual(
+            band(middle + 10), ({shiny_at}, (float(middle), float(layer.height()))))
+        self.assertEqual(
+            band(middle + 10, shift=True),
+            ({shiny_at, slider_at}, (0.0, float(layer.height()))),
+        )
+
     def test_the_two_rows_are_apart_and_the_grid_is_between_them(self):
         layer = self._layer()
         baseline = layer.height() / 2
@@ -1134,6 +1161,11 @@ class BarlineGenerateSvTests(_Session, unittest.TestCase):
 
             def sv_multiplier(self):
                 return sv
+
+            class meter_spin:
+                @staticmethod
+                def value():
+                    return 4
 
             def deleteLater(self):
                 pass

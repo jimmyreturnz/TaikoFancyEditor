@@ -299,8 +299,14 @@ class TimeAxisMixin:
         if not QApplication.keyboardModifiers() & Qt.ControlModifier:
             return
         x = self.x_for_time(round(self._hover_time))
+        top, bottom = self.cursor_line_span()
         painter.setPen(QPen(CTRL_PRECISION_LINE_COLOR, 1))
-        painter.drawLine(QPointF(x, 0), QPointF(x, self.height()))
+        painter.drawLine(QPointF(x, top), QPointF(x, bottom))
+
+    def cursor_line_span(self) -> tuple[float, float]:
+        """(top, bottom) of the Ctrl-precision line: the whole view, except on
+        a split layer, which keeps it to the row under the cursor."""
+        return 0.0, float(self.height())
 
     def draw_cursor_position(self, painter) -> None:
         """The millisecond under the cursor, in the corner of the view.

@@ -541,6 +541,10 @@
             <translation>ノーツ自体を隠す</translation>
         </message>
         <message>
+            <source>Omit barline at each note's position</source>
+            <translation>各ノーツの位置の小節線を省略</translation>
+        </message>
+        <message>
             <source>On, the note is squashed to invisibility by a gimmick-BPM line and only the structure is seen. Off, that line carries the chart's own BPM with its barline detached, so the note stays visible inside the structure.</source>
             <translation>オンにすると、ギミックBPMの線でノーツが潰されて見えなくなり、構造だけが見えます。オフにすると、その線は譜面自身のBPMを持ち小節線は切り離されるので、ノーツは構造の中に見えたまま残ります。</translation>
         </message>
@@ -611,6 +615,10 @@
         <message>
             <source>Redline BPM</source>
             <translation>赤線BPM</translation>
+        </message>
+        <message>
+            <source>Redline meter</source>
+            <translation>赤線の拍子</translation>
         </message>
         <message>
             <source>Sweep</source>

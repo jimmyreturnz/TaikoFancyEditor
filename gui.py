@@ -1733,6 +1733,10 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
         # mouseMoveEvent only fires with a button held otherwise.
         self.setMouseTracking(True)
         self._hover_time: float | None = None
+        self._hover_y: float | None = None
+        # The y a rubber band started at, which on a split layer is the row it
+        # selects in. None for every drag that is not a selection.
+        self._drag_y: float | None = None
 
         # Slider/spinner placement is click-drag (start -> stop), not a
         # single click with a fixed length.
@@ -2130,6 +2134,7 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
             self.drag_start_x = event.position().x()
             self.drag_mouse_x = self.drag_start_x
             self.drag_anchor_time = self.time_for_x(self.drag_start_x)
+            self._drag_y = None
             self.grabMouse()
             self.update()
             event.accept()
@@ -2230,6 +2235,7 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
             self.selected.clear()
             self.selection_changed.emit(set())
         self.drag_start_x=event.position().x(); self.drag_mouse_x=self.drag_start_x
+        self._drag_y = event.position().y()
         self.drag_anchor_time=self.time_for_x(self.drag_start_x); self.grabMouse(); self.auto_scroll_timer.start(); self.update()
     def _begin_move(self, note, point, x: float) -> None:
         """Start a select-tool drag of whatever the click landed on.
@@ -2336,7 +2342,14 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
         if self.drag_anchor_time is None: return
         a,b=sorted((self.drag_anchor_time,self.time_for_x(self.drag_mouse_x)))
         first,last=bisect_left(self.note_times,a),bisect_right(self.note_times,b)
-        self.selected={n.original_index for n in self.notes[first:last]}
+        # A split layer's band selects in the row it started in, so a run of
+        # fake sliders can be taken without the shinies a millisecond from
+        # them. Shift takes both.
+        lower = self._selection_row()
+        self.selected={
+            n.original_index for n in self.notes[first:last]
+            if lower is None or (round(n.time) in self.shiny_times) == lower
+        }
         # A layer that owns its red lines selects those too, and only the ones
         # it owns: a line sitting on someone else's object is another layer's.
         if self.timing_edit_enabled:
@@ -2380,7 +2393,29 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
         # something else happened to repaint the view, which in select mode
         # meant clicking.
         self._hover_time = self.time_for_x(event.position().x())
+        self._hover_y = event.position().y()
         self.update()
+
+    def _selection_row(self, y: float | None = None) -> bool | None:
+        """The row `y` (default: the band's start) is in on a split layer --
+        True for the lower one -- or None where selection spans the whole view:
+        off a split layer, with Shift held, or with no y to go by."""
+        y = self._drag_y if y is None else y
+        if not self.split_rows or y is None or QApplication.keyboardModifiers() & Qt.ShiftModifier:
+            return None
+        return y > self._baseline_y()
+
+    def _row_span(self, y: float | None) -> tuple[float, float]:
+        """(top, bottom) of what `_selection_row(y)` covers."""
+        lower = self._selection_row(y)
+        if lower is None:
+            return 0.0, float(self.height())
+        middle = float(self._baseline_y())
+        return (middle, float(self.height())) if lower else (0.0, middle)
+
+    def cursor_line_span(self) -> tuple[float, float]:
+        return self._row_span(self._drag_y if self.drag_anchor_time is not None else self._hover_y)
+
     def leaveEvent(self, event) -> None:
         """Hand the readout back to the playhead when the cursor leaves."""
         self._hover_time = None
@@ -2839,8 +2874,9 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
         if self.drag_anchor_time is not None:
             anchor_x=self.x_for_time(self.drag_anchor_time); current_x=max(0.0,min(float(self.width()),self.drag_mouse_x))
             left,width=min(anchor_x,current_x),abs(current_x-anchor_x)
-            painter.fillRect(QRectF(left,0,width,self.height()),QColor(190,195,205,28))
-            painter.setPen(QPen(QColor(220,225,235,70),1)); painter.drawRect(QRectF(left,0,width,self.height()-1))
+            top, bottom = self._row_span(self._drag_y)
+            painter.fillRect(QRectF(left,top,width,bottom-top),QColor(190,195,205,28))
+            painter.setPen(QPen(QColor(220,225,235,70),1)); painter.drawRect(QRectF(left,top,width,bottom-top-1))
         painter.setRenderHint(QPainter.Antialiasing, True)
 
         # Notes being dragged are drawn where they are *going*, with a
@@ -5928,6 +5964,14 @@ class GimmickConfigDialog(QDialog):
         self.red_bpm_widget = QWidget()
         self.red_bpm_widget.setLayout(red_bpm_row)
 
+        # Beats per bar for that same line. osu! reads meter from the
+        # uninherited point in force, so a standalone red line re-bars
+        # everything after it -- at 4/4 unless it is told otherwise. The
+        # ceiling matches TimingLineDialog's, where anti-barline's 999 lives.
+        self.red_meter_spin = QSpinBox()
+        self.red_meter_spin.setRange(1, 10000)
+        self.red_meter_spin.setValue(config.red_line_meter)
+
         # Bit 3 of the effects field. A fake slider's 60000 BPM line draws a bar
         # nobody asked for; the barline layer's whole output is bars, so it is
         # offered here only.
@@ -6022,6 +6066,7 @@ class GimmickConfigDialog(QDialog):
             layout.addRow("", self.mirror_kat_check)
             layout.addRow(tr("MainWindow", "Red line offset (ms)"), self.offset_spin)
             layout.addRow(tr("MainWindow", "Redline BPM"), self.red_bpm_widget)
+            layout.addRow(tr("MainWindow", "Redline meter"), self.red_meter_spin)
             layout.addRow("", self.place_notes_check)
             layout.addRow(tr("MainWindow", "Anti-barline lines per beat"), self.anti_density_spin)
             layout.addRow(tr("MainWindow", "Anti-barline barline BPM"), self.anti_bpm_widget)
@@ -6145,6 +6190,7 @@ class GimmickConfigDialog(QDialog):
             red_line_bpm=(
                 self.red_bpm_spin.value() if self.red_bpm_check.isChecked() else None
             ),
+            red_line_meter=self.red_meter_spin.value(),
             omit_barline=self.omit_barline_check.isChecked(),
             shiny_offset_ms=self.shiny_offset_spin.value(),
             shiny_count=self.shiny_count_spin.value(),
@@ -6303,6 +6349,14 @@ class ConvertNotesDialog(QDialog):
 
         self.hide_note_check = self._hide_note_check(config)
         form.addRow("", self.hide_note_check)
+        self.omit_note_barline_check = QCheckBox(
+            tr("MainWindow", "Omit barline at each note's position"))
+        self.omit_note_barline_check.setChecked(config.omit_note_barline)
+        # A shown note's line already omits its barline, so the box only
+        # means something while the note is hidden.
+        self.omit_note_barline_check.setEnabled(self.hide_note_check.isChecked())
+        self.hide_note_check.toggled.connect(self.omit_note_barline_check.setEnabled)
+        form.addRow("", self.omit_note_barline_check)
         return page
 
     def _fake_slider_page(self, config: GimmickConfig) -> QWidget:
@@ -6506,6 +6560,7 @@ class ConvertNotesDialog(QDialog):
                 mirror_don_lines=self.mirror_don_check.isChecked(),
                 mirror_kat_lines=self.mirror_kat_check.isChecked(),
                 hide_note=self.hide_note_check.isChecked(),
+                omit_note_barline=self.omit_note_barline_check.isChecked(),
             )
         return replace(
             self._base,
@@ -6551,7 +6606,7 @@ class BarlineFunctionDialog(QDialog):
     def __init__(
         self, start_ms: float, end_ms: float, parent=None,
         base_timing: list[TimingPoint] | None = None, snap_divisor: int = 4,
-        note_times: set[int] | None = None, current_sv: float = 1.0,
+        note_times: set[int] | None = None, current_sv: float = 1.0, meter: int = 4,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle(tr("MainWindow", "Generate red lines"))
@@ -6639,6 +6694,14 @@ class BarlineFunctionDialog(QDialog):
         self.end_bpm_spin.setDecimals(4)
         self.end_bpm_spin.setValue(start_bpm * 2)
         layout.addRow(tr("MainWindow", "End BPM"), self.end_bpm_spin)
+
+        # Same reason as the Red Line tool's Config row: osu! takes meter from
+        # the uninherited point in force, so every line in the run re-bars what
+        # follows it. Seeded from that Config so the two tools agree.
+        self.meter_spin = QSpinBox()
+        self.meter_spin.setRange(1, 10000)
+        self.meter_spin.setValue(int(meter))
+        layout.addRow(tr("MainWindow", "Redline meter"), self.meter_spin)
 
         # Every uninherited point resets SV to 1.0x, so a run of red lines
         # silently flattens the chart's scroll speed for its whole length
@@ -6934,7 +6997,9 @@ class FakeSliderFunctionDialog(BarlineFunctionDialog):
 
         # The BPM ramp writes a growing BPM onto each red line; here the red
         # lines are a structure's own and their BPM is not the mapper's to bend.
-        for widget in (self.bpm_curve_combo, self.start_bpm_spin, self.end_bpm_spin):
+        for widget in (
+            self.bpm_curve_combo, self.start_bpm_spin, self.end_bpm_spin, self.meter_spin,
+        ):
             set_row_visible(self._form_layout, widget, False)
         # Snaps, not milliseconds. A barline run wants every millisecond it can
         # get; a run of drawn objects at that density is thousands of sliders
@@ -8937,6 +9002,13 @@ class MainWindow(QMainWindow):
             for view in [*self.findChildren(TimelineGameplay), *self.findChildren(SVEditorView)]:
                 if view.isVisible() and view.underMouse():
                     view.update()
+                    # Shift also widens a split layer's band to both rows,
+                    # which should not wait for the mouse to move either.
+                    if (
+                        isinstance(view, TimelineGameplay)
+                        and view.drag_anchor_time is not None and view._drag_y is not None
+                    ):
+                        view._update_drag_selection()
             # Falls through rather than returning True: nothing else treats
             # Shift as consumed, and eating it here would be a silent change
             # to every other Shift-modified gesture (Shift+click, Shift+drag).
@@ -10991,12 +11063,14 @@ class MainWindow(QMainWindow):
                 if not self.is_fake_slider(note)
             },
             current_sv=sv_at(sorted_by_time(state.document.timing_points), start_ms),
+            meter=self._gimmick_config("barline").red_line_meter,
         )
         accepted = dialog.exec() == QDialog.Accepted
         times = dialog.times() if accepted else []
         # Read before the dialog goes: the growth curve lives on its widgets.
         bpms = dialog.bpms(times) if accepted else []
         sv = dialog.sv_multiplier() if accepted else None
+        meter = dialog.meter_spin.value() if accepted else 4
         dialog.deleteLater()
         if not times:
             return
@@ -11016,7 +11090,7 @@ class MainWindow(QMainWindow):
             # it -- and taking no template at all would reset the whole run to
             # 100%, which is what this used to do.
             template = active_point_at(ordered, at)
-            points.append(TimingPoint.uninherited_at(at, bpm, template=template))
+            points.append(TimingPoint.uninherited_at(at, bpm, meter=meter, template=template))
             # Straight after its red line, never before: osu! resolves a shared
             # timestamp by file order, and the red one has just reset SV to
             # 1.0x, so the other way round the reset would win and the run

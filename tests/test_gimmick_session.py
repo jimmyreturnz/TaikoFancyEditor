@@ -717,6 +717,14 @@ class MirroredBarlineTests(unittest.TestCase):
         points, _ = gs.barline_note(10000, BASE, config, kind="kat")
         self.assertEqual([int(p.time) - 10000 for p in points], [0, 2, 6, 9])
 
+    def test_omit_note_barline_detaches_only_the_squash_bar(self):
+        for omit in (False, True):
+            config = gs.GimmickConfig(omit_note_barline=omit)
+            points, _ = gs.barline_note(10000, BASE, config, kind="kat")
+            by_offset = {int(p.time) - 10000: p.omit_first_barline for p in points}
+            self.assertEqual(by_offset.pop(0), omit)
+            self.assertFalse(any(by_offset.values()))
+
 
 class ShinyNoteTests(unittest.TestCase):
     """A stack of fake sliders on one millisecond, which is what reads white."""
@@ -871,6 +879,20 @@ class RedLineTests(unittest.TestCase):
         self.assertEqual(notes, [])
         self.assertEqual(points[0].time, 9999.0)
         self.assertAlmostEqual(points[0].bpm, 180.0)
+
+    def test_the_meter_is_what_the_line_carries(self):
+        """osu! reads meter from the uninherited point in force, so a
+        standalone line re-bars the chart after it unless it is told where."""
+        points, _ = gs.red_line(10000, 180.0, gs.GimmickConfig(red_line_meter=7))
+        self.assertEqual(points[0].meter, 7)
+
+    def test_the_meter_defaults_to_four(self):
+        points, _ = gs.red_line(10000, 180.0, gs.GimmickConfig())
+        self.assertEqual(points[0].meter, 4)
+
+    def test_a_meter_below_one_is_refused(self):
+        with self.assertRaises(gs.GimmickConfigError):
+            gs.GimmickConfig(red_line_meter=0)
 
     def test_zero_offset_lands_on_the_snap(self):
         points, _ = gs.red_line(10000, 200.0, gs.GimmickConfig())

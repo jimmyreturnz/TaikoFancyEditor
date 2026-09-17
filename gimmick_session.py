@@ -292,6 +292,12 @@ class GimmickConfig:
     # which is the squash the structures are built out of and is never what a
     # standalone line wants.
     red_line_bpm: float | None = None
+    # Beats per bar for the plain red-line tool's line. osu! reads meter from
+    # the uninherited point in force, so a standalone line silently re-bars
+    # everything after it at 4/4 unless the mapper says otherwise -- and a
+    # large value is the anti-barline trick of a line that never stamps a
+    # second bar.
+    red_line_meter: int = 4
     # The shiny note: `shiny_count` fake sliders stacked on one millisecond,
     # `shiny_offset_ms` after the snap. Its own offset rather than the fake
     # slider's, because the two must not land on the same millisecond -- see
@@ -354,6 +360,11 @@ class GimmickConfig:
     # its barline detached: it changes nothing except restarting measure
     # counting, and the structure is drawn around a note you can still see.
     hide_note: bool = True
+    # Barline notes only: detach the bar the squash line on the note's own
+    # millisecond stamps, so the bars drawn are only the restores either side.
+    # Off by default -- that centre bar is part of how the structure has always
+    # looked. With `hide_note` off the line omits its barline regardless.
+    omit_note_barline: bool = False
 
     def __post_init__(self) -> None:
         if self.fake_slider_length > FAKE_SLIDER_MAX_LENGTH:
@@ -376,6 +387,8 @@ class GimmickConfig:
             raise GimmickConfigError("Fake slider SV must be positive")
         if self.red_line_bpm is not None and self.red_line_bpm <= 0:
             raise GimmickConfigError("Red line BPM must be positive")
+        if self.red_line_meter < 1:
+            raise GimmickConfigError("Red line meter must be at least 1")
         if self.shiny_offset_ms < 1:
             raise GimmickConfigError("Shiny offset must be at least 1 ms")
         if self.shiny_count < 1:
@@ -829,7 +842,9 @@ def barline_note(
     # restores either side still draw the bars, so the structure is the same
     # shape with a visible note inside it.
     points = [
-        TimingPoint.uninherited_at(time_ms, config.gimmick_bpm) if config.hide_note
+        TimingPoint.uninherited_at(
+            time_ms, config.gimmick_bpm, omit_first_barline=config.omit_note_barline,
+        ) if config.hide_note
         else TimingPoint.uninherited_at(
             time_ms, base_bpm_at(base_timing, time_ms), omit_first_barline=True,
         )
@@ -1210,9 +1225,14 @@ def red_line(
     reads when the layer is configured to leave it alone. `red_line_bpm`
     overrides it: an uninherited point's BPM *is* its scroll speed, so a typed
     value is a standalone speed change with no green line involved.
+    `red_line_meter` is where its bars fall, since osu! takes meter from the
+    uninherited point in force and a line written at 4/4 re-bars the rest of
+    the chart whether the mapper meant it to or not.
     """
     at = int(time_ms) + config.red_line_offset_ms
-    return [TimingPoint.uninherited_at(at, config.red_line_bpm or bpm)], []
+    return [TimingPoint.uninherited_at(
+        at, config.red_line_bpm or bpm, meter=config.red_line_meter
+    )], []
 
 
 # -- oscillating SV --------------------------------------------------------
