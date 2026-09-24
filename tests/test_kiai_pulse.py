@@ -34,7 +34,7 @@ def setUpModule() -> None:
 def _brightness(view, half: int = 34) -> int:
     """Summed channel value of the box around the hit position."""
     image = view.grab().toImage()
-    centre_x = round(view.width() * gui.GAMEPLAY_HIT_X_RATIO)
+    centre_x = round(view._hit_x())
     centre_y = view.height() // 2
     total = 0
     for x in range(centre_x - half, centre_x + half):
@@ -341,7 +341,9 @@ class TailFlashTests(unittest.TestCase):
             image.fill(QColor("white"))
             image.save(str(folder / "taiko-roll-end.png"))
             view = gui.GameplayViewerView()
-            view.resize(900, 200)
+            # Wide enough that the roll's end cap is inside osu!'s screen
+            # (osu_edge_x, 1365px at this height) at the preview's real scale.
+            view.resize(1800, 200)
             point = TimingPoint(time=0.0, beat_length=500.0, meter=4)
             view.timing_points = [point]
             view.beat_points = [point]
@@ -401,7 +403,9 @@ class FlashRenderTests(unittest.TestCase):
         # Short of the playhead, not on it: a circle *at* the hit position has
         # been hit and is no longer drawn, so a stack parked there measured the
         # lane wash and nothing else -- which is a test that cannot fail.
-        note_time = int(playhead) + 200
+        # 100ms is ~63px at the preview's real scale: close enough that the
+        # note's flash still reaches the box `_brightness` samples.
+        note_time = int(playhead) + 100
         document.hit_objects = [
             HitObject(x=256, y=192, time=note_time, type=1, hit_sound=0)
             for _ in range(stack)

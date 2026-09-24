@@ -4465,12 +4465,30 @@ PLAYFIELD_BARLINE_HEIGHT = 175.0 / PLAYFIELD_UNIT
 # 122px against a 114px note, which is the ring the note lands inside.
 PLAYFIELD_HIT_TARGET_SCALE = 126.0 / 118.0
 
-GAMEPLAY_PX_PER_BEAT = 200.0
-GAMEPLAY_PX_PER_BEAT_MIN = 40.0
-GAMEPLAY_PX_PER_BEAT_MAX = 900.0
-# Where the hit position sits, as a fraction of the view width; notes scroll
-# right to left onto it.
-GAMEPLAY_HIT_X_RATIO = 0.16
+# One osu!stable gamefield unit (a 480-tall screen), as a fraction of the
+# playfield height. The playfield is BASE_HEIGHT 200 of lazer's 768-tall screen
+# (`TaikoPlayfieldAdjustmentContainer`), so a stable unit is 768/480/200 of it.
+# Horizontal scroll and the visible range are stable units in osu!'s own code,
+# so this is what ties them to the view height the notes are already sized by.
+STABLE_UNIT_PER_PLAYFIELD = 768.0 / 480.0 / PLAYFIELD_UNIT
+# The hit target's centre, in playfield units from the left edge: the right
+# area is padded by INPUT_DRUM_WIDTH (180), and the hit target is a 200-wide
+# container at X = -24 in it (`TaikoPlayfield`). 256 playfield units is exactly
+# the 160 stable units `ComputeTimeRange` measures from, so the two agree.
+GAMEPLAY_HIT_X_UNITS = 180.0 - 24.0 + 200.0 / 2.0
+# Scroll distance per beat at 1.0x SV, in stable units:
+# `100 * SliderMultiplier * VELOCITY_MULTIPLIER(1.4)`. `_scroll_scale` already
+# carries SliderMultiplier / SLIDER_MULTIPLIER_ASSUMED, so the assumed value is
+# folded back in here and the product is osu!'s number.
+GAMEPLAY_STABLE_UNITS_PER_BEAT = 100.0 * 1.4 * SLIDER_MULTIPLIER_ASSUMED
+# osu!lazer's `LockPlayfieldAspectRange` (on by default) clamps the screen
+# aspect it computes the visible time from to at most 16:9: a wider screen
+# makes the playfield taller rather than showing more of the chart. So a view
+# wider than that has a right edge past which osu! shows nothing, and the
+# preview dims it. False is osu!stable's (and lazer-unlocked's) behaviour, where
+# a wider screen simply shows more -- one switch, pending the owner's call.
+GAMEPLAY_MAX_ASPECT = 16.0 / 9.0
+GAMEPLAY_LOCK_ASPECT = True
 # Cap on how far the visible-note lookup will search either way. A near-zero SV
 # section makes one screen cover an unbounded amount of *time*, and scanning a
 # whole map for it would cost a frame.
@@ -4523,7 +4541,6 @@ class GameplayViewerView(QWidget):
 
         self.current_time = 0.0
         self.snap_divisor = 4
-        self.px_per_beat = GAMEPLAY_PX_PER_BEAT
         self.wheel_accumulator = 0.0
         self.last_rendered_time = -1.0
 
@@ -4777,8 +4794,39 @@ class GameplayViewerView(QWidget):
         """
         return self._hit_x() + (time_ms - self.current_time) * self.velocity_at(time_ms) * self.px_per_beat
 
+    @property
+    def px_per_beat(self) -> float:
+        """Pixels one beat of scroll covers at 1.0x SV -- osu!'s distance,
+        measured in the view's own height.
+
+        This was a flat 200 screen pixels whatever the view's size, while every
+        other size in it scaled with the height, so a wide, short dock (1882x170
+        in the profiling runs) put a whole in-game screen of notes into a
+        corner and filled the rest with chart osu! would not show yet.
+        """
+        return self.height() * STABLE_UNIT_PER_PLAYFIELD * GAMEPLAY_STABLE_UNITS_PER_BEAT
+
     def _hit_x(self) -> float:
-        return self.width() * GAMEPLAY_HIT_X_RATIO
+        return self.height() * GAMEPLAY_HIT_X_UNITS / PLAYFIELD_UNIT
+
+    def osu_edge_x(self) -> float:
+        """Where osu!'s screen ends: 16:9 of a screen whose playfield is this
+        tall (see GAMEPLAY_LOCK_ASPECT). Beyond the view's width, the view."""
+        if not GAMEPLAY_LOCK_ASPECT:
+            return float(self.width())
+        edge = self.height() * STABLE_UNIT_PER_PLAYFIELD * 480.0 * GAMEPLAY_MAX_ASPECT
+        return min(float(self.width()), edge)
+
+    def _draw_past_osu_edge(self, painter: QPainter) -> None:
+        """Cover what osu! would not show. Opaque: a faint note behind a tint
+        still reads as "coming up", and osu! shows nothing there at all. A thin
+        line marks the edge itself."""
+        edge = self.osu_edge_x()
+        if edge >= self.width():
+            return
+        painter.fillRect(QRectF(edge, 0.0, self.width() - edge, self.height()), QColor(12, 15, 20))
+        painter.setPen(QPen(QColor(255, 255, 255, 40), 1))
+        painter.drawLine(QPointF(edge, 0.0), QPointF(edge, float(self.height())))
 
     def visible_time_range(self) -> tuple[float, float]:
         """Time bounds wide enough to contain everything on screen.
@@ -4787,7 +4835,7 @@ class GameplayViewerView(QWidget):
         object, and clamped: a near-stopped section would otherwise put an
         unbounded amount of time on one screen and turn this into a full scan.
         """
-        reach = self.width() / max(1e-6, self._slowest_velocity * self.px_per_beat)
+        reach = self.osu_edge_x() / max(1e-6, self._slowest_velocity * self.px_per_beat)
         reach = min(reach, GAMEPLAY_MAX_LOOKAHEAD_MS)
         return self.current_time - reach, self.current_time + reach
 
@@ -5080,6 +5128,7 @@ class GameplayViewerView(QWidget):
                             painter, max(end_x, x), center_y, radius, pulse,
                             strength, self.skin, big, "taiko-roll-end", True,
                         )
+        self._draw_past_osu_edge(painter)
 
     def _unfinished_pulse_anchor(self, band_start, band_end) -> float | None:
         """`band_start` while the pulse the section left running is still fading.

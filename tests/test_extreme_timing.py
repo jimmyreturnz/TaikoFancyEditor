@@ -186,7 +186,9 @@ class BarlineGimmickTests(unittest.TestCase):
 
     def test_an_ordinary_map_still_gets_its_barlines(self):
         view = gui.GameplayViewerView()
-        view.resize(800, 200)
+        # Wide enough to reach 2s either side at the preview's real scale
+        # (pixels per beat follow the height, ~0.63 px/ms here).
+        view.resize(3000, 200)
         view.timing_points = [TimingPoint(time=0.0, beat_length=500.0)]
         view.beat_points = list(view.timing_points)
         view._beat_times = [0.0]

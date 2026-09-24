@@ -81,7 +81,7 @@ class ScrollVelocityTests(unittest.TestCase):
         in a 2.0x section is twice as far out as one the same time away in a
         1.0x section, whatever lies between them and the playhead."""
         self.view.current_time = 0.0
-        hit_x = self.view.width() * gui.GAMEPLAY_HIT_X_RATIO
+        hit_x = self.view._hit_x()
         slow = self.view.x_for_time(1000.0) - hit_x  # 1.0x
         fast = self.view.x_for_time(4500.0) - hit_x  # 2.0x
         self.assertAlmostEqual(slow, 1000.0 / 500.0 * self.view.px_per_beat, places=6)
@@ -109,18 +109,19 @@ class ScrollVelocityTests(unittest.TestCase):
     def test_the_current_time_sits_on_the_hit_position(self):
         self.view.current_time = 3000.0
         self.assertAlmostEqual(
-            self.view.x_for_time(3000.0), self.view.width() * gui.GAMEPLAY_HIT_X_RATIO, places=6
+            self.view.x_for_time(3000.0), self.view._hit_x(), places=6
         )
 
     def test_scroll_speed_only_scales_the_picture(self):
-        """Ctrl+wheel must not change *where* in the map the view is, only how
-        much of it fits -- velocity is stored in beats for this reason."""
+        """A taller view scrolls more pixels per beat but must not change
+        *where* in the map it is -- velocity is stored in beats for this reason."""
         self.view.current_time = 3000.0
         before = self.view.velocity_at(5000.0)
-        self.view.px_per_beat *= 2.0
+        pixels = self.view.px_per_beat
+        self.view.resize(self.view.width(), self.view.height() * 2)
+        self.assertAlmostEqual(self.view.px_per_beat, pixels * 2, places=6)
         self.assertAlmostEqual(self.view.velocity_at(5000.0), before, places=9)
-        hit_x = self.view.width() * gui.GAMEPLAY_HIT_X_RATIO
-        self.assertAlmostEqual(self.view.x_for_time(3000.0), hit_x, places=6)
+        self.assertAlmostEqual(self.view.x_for_time(3000.0), self.view._hit_x(), places=6)
 
     def test_a_zero_beat_length_does_not_divide_by_zero(self):
         """The invisible-note gimmick authors beat_length near zero, and a
@@ -843,6 +844,61 @@ class SliderMultiplierScrollTests(unittest.TestCase):
         self.assertGreater(view.velocity_at(1000.0), 0.0)
 
 
+class OsuVisibleRangeTests(unittest.TestCase):
+    """The preview shows what osu! shows: the scroll is sized by the view's
+    height, as everything else in it is, and nothing past a 16:9 screen.
+
+    Numbers from ppy/osu master (read 2026-09-24): `TaikoPlayfield` puts the
+    hit target's centre 256 playfield units in, and
+    `TaikoPlayfieldAdjustmentContainer.ComputeTimeRange` gives the time a
+    screen holds as `(aspect * 480 - 160) / 100 * 1000 / 1.4`, clamped to 16:9
+    and divided by the scroll multiplier `SliderMultiplier * SV * 1000 /
+    beatLength`.
+    """
+
+    def setUp(self) -> None:
+        self._temp = tempfile.TemporaryDirectory()
+        self.path = write_fixture(Path(self._temp.name), "full_v14")  # SM 1.4, 500ms beat
+
+    def tearDown(self) -> None:
+        self._temp.cleanup()
+
+    def _view(self, width: int, height: int) -> gui.GameplayViewerView:
+        view = _viewer(parse_osu(self.path))
+        view.resize(width, height)
+        view.current_time = 1000.0
+        return view
+
+    def test_the_hit_target_is_256_playfield_units_in(self):
+        view = self._view(1882, 170)
+        self.assertAlmostEqual(view._hit_x(), 170 * 256 / 200, places=6)
+
+    def test_a_screen_holds_what_compute_time_range_says(self):
+        view = self._view(1882, 170)
+        time_range = (16 / 9 * 480 - 160) / 100 * 1000 / 1.4
+        multiplier = 1.4 * 1.0 * 1000 / 500.0
+        visible = (view.osu_edge_x() - view._hit_x()) / (view.velocity_at(1000.0) * view.px_per_beat)
+        self.assertAlmostEqual(visible, time_range / multiplier, places=3)
+
+    def test_a_wider_view_shows_no_more_of_the_chart(self):
+        """LockPlayfieldAspectRange: a wider screen makes osu!'s playfield
+        taller, not longer, so past 16:9 there is nothing to show."""
+        narrow, wide = self._view(1300, 170), self._view(3000, 170)
+        self.assertAlmostEqual(narrow.osu_edge_x(), wide.osu_edge_x(), places=6)
+        self.assertLess(wide.osu_edge_x(), wide.width())
+
+    def test_a_narrow_view_ends_at_its_own_width(self):
+        view = self._view(600, 170)
+        self.assertEqual(view.osu_edge_x(), 600.0)
+
+    def test_past_the_edge_is_shaded(self):
+        view = self._view(1882, 170)
+        image = view.grab().toImage()
+        edge = int(view.osu_edge_x())
+        shade = QColor(image.pixel(edge + 40, 10))
+        self.assertLess(max(shade.red(), shade.green(), shade.blue()), 40)
+
+
 class BarlineTests(unittest.TestCase):
     """`barline_times` answers for the frame at `current_time`, so each test
     parks the playhead inside the range it asks about. A section is only walked
@@ -853,6 +909,11 @@ class BarlineTests(unittest.TestCase):
         self._temp = tempfile.TemporaryDirectory()
         path = write_fixture(Path(self._temp.name), "full_v14")
         self.view = _viewer(parse_osu(path))
+        # Wide: at the preview's real scale an 800px view reaches only ~1.2s,
+        # and `barline_times` bounds its walk by the width. These tests are
+        # about which bars a section makes, not how far one screen reaches --
+        # OsuVisibleRangeTests owns that.
+        self.view.resize(3000, 170)
 
     def tearDown(self) -> None:
         self._temp.cleanup()
@@ -908,11 +969,11 @@ class BarlineTests(unittest.TestCase):
         view.current_time = 10000.0
         times = view.barline_times(*view.visible_time_range())
 
-        # 0.25x/500ms-beat -> 0.1 px/ms, so a 2000ms measure spans 200px and the
-        # 800px view reaches thousands of ms past where the old window stopped.
+        # 0.25x/500ms-beat at 200px tall -> 0.157 px/ms, so a 2000ms measure
+        # spans 314px and the 800px view reaches 5000ms, thousands past where
+        # the red line's velocity would have stopped it.
         self.assertIn(12000.0, times, "barlines stop short of the right edge")
         self.assertIn(14000.0, times)
-        self.assertIn(16000.0, times)
         for time_ms in times:
             self.assertAlmostEqual(time_ms % 2000.0, 0.0, places=6)
 
@@ -1098,11 +1159,11 @@ class PaintAndInputTests(unittest.TestCase):
     def test_ctrl_wheel_does_not_rescale_the_view(self):
         """The viewer shows the chart at the speed the player sees it at, so
         there is nothing for a zoom gesture to mean here."""
-        self.view.px_per_beat = gui.GAMEPLAY_PX_PER_BEAT
+        before = self.view.px_per_beat
         for _ in range(5):
             _wheel(self.view, 120, Qt.KeyboardModifier.ControlModifier)
             _wheel(self.view, -120, Qt.KeyboardModifier.ControlModifier)
-        self.assertEqual(self.view.px_per_beat, gui.GAMEPLAY_PX_PER_BEAT)
+        self.assertEqual(self.view.px_per_beat, before)
 
     def test_ctrl_wheel_does_not_seek(self):
         self.view.current_time = 1000.0
