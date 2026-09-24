@@ -1128,6 +1128,20 @@ TRANSFORMATION_LABELS = {
 }
 
 
+# osu!'s gameplay frame in osu!pixels -- the storyboard's space, which the
+# background is drawn in -- and the 8px the playfield sits lower than centre
+# in it (`OsuPlayfieldAdjustmentContainer`, AlignWithStoryboard).
+OSU_FRAME_WIDTH = 640.0
+OSU_FRAME_HEIGHT = 480.0
+OSU_PLAYFIELD_SHIFT_Y = 8.0
+
+
+def osu_circle_radius(circle_size: float) -> float:
+    """osu!'s hit circle radius in osu!pixels at `circle_size`:
+    `54.4 - 4.48 * CS` (32 at CS 5), the value both clients use."""
+    return 54.4 - 4.48 * float(circle_size)
+
+
 def display_name(name: str) -> str:
     label = TRANSFORMATION_LABELS.get(name) or name.replace("_", " ").title()
     return tr("Transformations", label)
@@ -1414,6 +1428,8 @@ class TransformCanvas(QWidget):
 
         self.background_pixmap = QPixmap()
         self.background_opacity = 0.55
+        # The export's CS, which sizes the circles (osu_circle_radius).
+        self.circle_size = 7.0
         self.setAcceptDrops(True)
         self.setMinimumHeight(360)
 
@@ -1467,17 +1483,25 @@ class TransformCanvas(QWidget):
             render_height,
         )
 
-        # Fixed 4:3 osu! playfield inside the 16:9 preview.
-        playfield_height = self.render_rect.height()
-        playfield_width = playfield_height * 4.0 / 3.0
-        if playfield_width > self.render_rect.width():
-            playfield_width = self.render_rect.width()
-            playfield_height = playfield_width * 3.0 / 4.0
+        # osu!'s own placement, not the 4:3 playfield stretched to the full
+        # height as it was -- which drew every pattern 25% larger than osu!
+        # shows it over the same background. `OsuPlayfieldAdjustmentContainer`:
+        # the 512x384 playfield is 80% of a 4:3 area (640x480 in osu!pixels,
+        # the storyboard's own space), centred, and shifted down 8 osu!pixels
+        # to line up with the storyboard -- osu!stable's (64, 56).
+        frame_height = self.render_rect.height()
+        frame_width = frame_height * 4.0 / 3.0
+        if frame_width > self.render_rect.width():
+            frame_width = self.render_rect.width()
+            frame_height = frame_width * 3.0 / 4.0
+        scale = frame_height / OSU_FRAME_HEIGHT
+        frame_left = self.render_rect.center().x() - frame_width / 2.0
+        frame_top = self.render_rect.center().y() - frame_height / 2.0
         self.playfield_rect = QRectF(
-            self.render_rect.center().x() - playfield_width / 2.0,
-            self.render_rect.center().y() - playfield_height / 2.0,
-            playfield_width,
-            playfield_height,
+            frame_left + (OSU_FRAME_WIDTH - PLAYFIELD_WIDTH) / 2.0 * scale,
+            frame_top + ((OSU_FRAME_HEIGHT - PLAYFIELD_HEIGHT) / 2.0 + OSU_PLAYFIELD_SHIFT_Y) * scale,
+            PLAYFIELD_WIDTH * scale,
+            PLAYFIELD_HEIGHT * scale,
         )
 
         self.view_scale = self.playfield_rect.width() / PLAYFIELD_WIDTH
@@ -1490,6 +1514,10 @@ class TransformCanvas(QWidget):
         self.update()
 
     def paintEvent(self, event) -> None:
+        # First, not after the border: the border and the background read the
+        # geometry too, and drew with the previous size's until the notes
+        # asked for it again.
+        self._update_view_geometry()
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, True)
         painter.fillRect(self.rect(), QColor("#11151c"))
@@ -1513,8 +1541,6 @@ class TransformCanvas(QWidget):
             self.playfield_rect
         )
 
-        self._update_view_geometry()
-
         for note in self.notes:
             position = self.positions.get(
                 note.original_index,
@@ -1523,7 +1549,8 @@ class TransformCanvas(QWidget):
 
             x = self.view_offset_x + position[0] * self.view_scale
             y = self.view_offset_y + position[1] * self.view_scale
-            radius = 30 if note.is_finisher else 12
+            # osu!'s circle at the export's CS, to scale with the playfield.
+            radius = osu_circle_radius(self.circle_size) * self.view_scale
 
             painter.setBrush(
                 QColor("#4aa3ff")
@@ -1545,6 +1572,9 @@ class TransformCanvas(QWidget):
                 radius,
                 radius,
             )
+            if note.is_finisher:
+                painter.setBrush(Qt.NoBrush)
+                painter.drawEllipse(QPointF(x, y), radius * 0.72, radius * 0.72)
 
 
     def _note_at_canvas_position(self, position):
@@ -10103,6 +10133,8 @@ class MainWindow(QMainWindow):
         workspace_splitter = QSplitter(Qt.Horizontal)
 
         self.canvas = TransformCanvas()
+        self.canvas.circle_size = self.circle_size_control.value()
+        self.circle_size_control.changed.connect(self._canvas_circle_size_changed)
         self.canvas.background_dropped.connect(self._background_dropped)
         self.canvas.drag_offset_requested.connect(self._canvas_dragged)
         workspace_splitter.addWidget(self.canvas)
@@ -15921,6 +15953,10 @@ class MainWindow(QMainWindow):
                 center_x.set_value(max(0, min(PLAYFIELD_WIDTH, float(center_x.value()) + dx)))
             if center_y is not None:
                 center_y.set_value(max(0, min(PLAYFIELD_HEIGHT, float(center_y.value()) + dy)))
+
+    def _canvas_circle_size_changed(self, value: float) -> None:
+        self.canvas.circle_size = float(value)
+        self.canvas.update()
 
     def _canvas_dragged(self, clicked_group: str, requested_dx: float, requested_dy: float, sync_controls: bool = True) -> None:
         if self.document is None or not self.selected:
