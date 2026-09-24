@@ -22,7 +22,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QImageReader, QBrush, QColor, QFont, QFontDatabase, QFontMetrics, QKeySequence, QPainter, QPen, QPixmap, QPolygonF, QRadialGradient, QShortcut, QIcon
 from PySide6.QtMultimedia import QMediaPlayer
 from PySide6.QtWidgets import (
-    QAbstractItemView, QAbstractSlider, QAbstractSpinBox, QApplication, QButtonGroup, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
+    QAbstractItemView, QAbstractSlider, QAbstractSpinBox, QApplication, QButtonGroup, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame,
     QBoxLayout, QGraphicsOpacityEffect, QGridLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QMainWindow, QMessageBox,
     QProgressBar, QPushButton, QScrollArea,
@@ -406,6 +406,40 @@ def step_button(text: str, on_click, parent: QWidget | None = None) -> QPushButt
     button.clicked.connect(on_click)
     fit_button_width(button)
     return button
+
+
+# Joined pills: a group of choices reads as one control, and only the pressed
+# ones are pink -- with solid pink pills in a row, the pressed one differed by a
+# shade. The bottom border is the non-colour cue for "pressed".
+SEGMENT_STYLE = """
+QFrame#segment { background: #252d39; border: 1px solid #3a4554; border-radius: 6px; }
+QFrame#segment QPushButton {
+    background: transparent; color: #aeb8c5; border: 0; border-radius: 4px;
+    border-bottom: 2px solid transparent; padding: 3px 9px; font-size: 12px; font-weight: 600;
+}
+QFrame#segment QPushButton:hover { background: #2f3947; color: #e8edf3; }
+QFrame#segment QPushButton:checked {
+    background: #ff66aa; color: #ffffff; font-weight: 700; border-bottom: 2px solid #ffffff;
+}
+"""
+
+
+def segmented(buttons) -> QFrame:
+    """`buttons` in one joined pill group (SEGMENT_STYLE)."""
+    frame = QFrame()
+    frame.setObjectName("segment")
+    frame.setStyleSheet(SEGMENT_STYLE)
+    # Its own height, centred in the row, rather than the row's full height
+    # with the pills floating in the middle of it.
+    frame.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+    layout = QHBoxLayout(frame)
+    layout.setContentsMargins(2, 2, 2, 2)
+    layout.setSpacing(2)
+    for button in buttons:
+        button.setStyleSheet("")
+        button.setFocusPolicy(Qt.NoFocus)
+        layout.addWidget(button)
+    return frame
 
 
 def equalize_button_widths(buttons, heights: bool = False, widths: bool = True) -> None:
@@ -9379,6 +9413,8 @@ class MainWindow(QMainWindow):
         # not exist until the pages are built.
         self._build_clipboard_shortcuts()
         self._rebuild_control_tabs()
+        self._restore_mods()
+        self._sync_mod_controls()
         QApplication.instance().installEventFilter(self)
 
     # -- DifficultyState forwarding -----------------------------------------
@@ -9808,6 +9844,16 @@ class MainWindow(QMainWindow):
             Qt.AlignLeft | Qt.AlignVCenter
         )
         header.addWidget(self.status, 1)
+        # The mods in force, in osu!'s order, visible from every page -- the
+        # strip that sets them is on two of the four.
+        self.mods_chip = QLabel()
+        # Outlined, not filled: a filled pink pill in this header is a button,
+        # and this one does nothing when clicked.
+        self.mods_chip.setStyleSheet(
+            "background: rgba(255, 102, 170, 34); color: #ff9dcc; border: 1px solid #ff66aa;"
+            " border-radius: 4px; padding: 1px 6px; font-weight: 700;")
+        self.mods_chip.setVisible(False)
+        header.addWidget(self.mods_chip)
 
         self.settings_button = QPushButton(f"⚙ {tr('SettingsDialog', 'Settings')}")
         self.settings_button.setObjectName("settingsButton")
@@ -10170,7 +10216,7 @@ class MainWindow(QMainWindow):
         self.playback_speed_buttons=[]
         for label,rate in (("25%",.25),("50%",.5),("75%",.75),("100%",1.0)):
             button=QPushButton(label);button.setCheckable(True);button.setProperty("playbackRate",rate)
-            button.clicked.connect(lambda checked=False,r=rate:self._change_playback_speed(r));self.playback_speed_buttons.append(button);timeline_row.addWidget(button)
+            button.clicked.connect(lambda checked=False,r=rate:self._choose_speed(r));self.playback_speed_buttons.append(button);timeline_row.addWidget(button)
         layout.addLayout(timeline_row)
 
         self.fancy_density = DensityOverview()
@@ -10537,11 +10583,11 @@ class MainWindow(QMainWindow):
         for label, rate in (("25%", .25), ("50%", .5), ("75%", .75), ("100%", 1.0)):
             button = QPushButton(label)
             button.setCheckable(True)
-            button.setStyleSheet(TOOL_BUTTON_STYLE)
             button.setProperty("playbackRate", rate)
-            button.clicked.connect(lambda checked=False, r=rate: self._change_playback_speed(r))
+            button.clicked.connect(lambda checked=False, r=rate: self._choose_speed(r))
             self.editor_playback_speed_buttons.append(button)
-            strip.addWidget(button)
+        strip.addWidget(segmented(self.editor_playback_speed_buttons))
+        self._build_mod_strip(strip)
         # Widths for this row are equalized in showEvent (see there): derived
         # from the polished labels instead of hard-coded pixels, which stopped
         # fitting the moment the UI font grew.
@@ -10667,9 +10713,10 @@ class MainWindow(QMainWindow):
             button = QPushButton(label)
             button.setCheckable(True)
             button.setProperty("playbackRate", rate)
-            button.clicked.connect(lambda checked=False, r=rate: self._change_playback_speed(r))
+            button.clicked.connect(lambda checked=False, r=rate: self._choose_speed(r))
             self.gimmick_playback_speed_buttons.append(button)
-            strip.addWidget(button)
+        strip.addWidget(segmented(self.gimmick_playback_speed_buttons))
+        self._build_mod_strip(strip)
 
         layout.addLayout(strip)
 
@@ -13567,6 +13614,7 @@ class MainWindow(QMainWindow):
             skin = getattr(self, "skin", None)
             if skin is not None:
                 view.set_skin(skin)
+            view.set_mods(self._mods)
             self._gameplay_views.append(view)
             self._editor_snap_views.append(view)
         elif view_type == "density":
@@ -16066,6 +16114,107 @@ class MainWindow(QMainWindow):
         if state is None or not state.history.can_redo(): return
         state.history.redo(state); self._after_history_change(state)
 
+    # -- mods ------------------------------------------------------------
+
+    _mods: frozenset = frozenset()
+
+    def _build_mod_strip(self, strip) -> None:
+        """HD | NC DT DC HT | HR EZ | FL, then the rate/pitch readout. Grouped
+        the way osu! orders them (MOD_ORDER), so every row and every string
+        reads the same."""
+        if not hasattr(self, "_mod_buttons"):
+            self._mod_buttons: list[dict[str, QPushButton]] = []
+            self._mod_readouts: list[QLabel] = []
+        tips = {
+            "HD": tr("MainWindow", "Hidden: notes fade out as they come in, gone after 37.5% of the scroll"),
+            "NC": tr("MainWindow", "Nightcore: 1.5x speed, pitch raised with it"),
+            "DT": tr("MainWindow", "Double Time: 1.5x speed, pitch kept"),
+            "DC": tr("MainWindow", "Daycore: 0.75x speed, pitch lowered with it"),
+            "HT": tr("MainWindow", "Half Time: 0.75x speed, pitch kept"),
+            "HR": tr("MainWindow", "Hard Rock: notes scroll faster (SliderMultiplier x1.87)"),
+            "EZ": tr("MainWindow", "Easy: notes scroll slower (SliderMultiplier x0.8)"),
+            "FL": tr("MainWindow", "Flashlight: only a circle around the hit target is visible, smaller as combo grows"),
+        }
+        buttons: dict[str, QPushButton] = {}
+        for mod in MOD_ORDER:
+            button = QPushButton(mod)
+            button.setCheckable(True)
+            button.setToolTip(tips[mod])
+            button.clicked.connect(lambda checked=False, m=mod: self._toggle_mod(m))
+            buttons[mod] = button
+        for group in (("HD",), ("NC", "DT", "DC", "HT"), ("HR", "EZ"), ("FL",)):
+            strip.addWidget(segmented([buttons[mod] for mod in group]))
+        readout = QLabel()
+        readout.setStyleSheet("color: #aeb8c5; font-weight: 600;")
+        strip.addWidget(readout)
+        self._mod_buttons.append(buttons)
+        self._mod_readouts.append(readout)
+
+    def _rate_mod(self) -> str | None:
+        return next((mod for mod in MOD_ORDER if mod in self._mods and mod in RATE_MODS), None)
+
+    def _choose_speed(self, rate: float) -> None:
+        """A speed button. It replaces any rate mod: the song plays at one rate."""
+        if self._rate_mod():
+            self._mods = frozenset(mod for mod in self._mods if mod not in RATE_MODS)
+            self._store_mods()
+        self.player.set_pitch_shift(False)
+        self._change_playback_speed(rate)
+
+    def _toggle_mod(self, mod: str) -> None:
+        """One click on a mod pill. The rate mods are one choice among
+        themselves, and so are HR/EZ; the rest combine freely (HDHR, HDDT)."""
+        mods = set(self._mods)
+        if mod in mods:
+            mods.discard(mod)
+        else:
+            for group in (tuple(RATE_MODS), SCROLL_MODS):
+                if mod in group:
+                    mods.difference_update(group)
+            mods.add(mod)
+        self._set_mods(mods)
+
+    def _set_mods(self, mods) -> None:
+        previous_rate_mod = self._rate_mod()
+        self._mods = frozenset(mod for mod in mods if mod in MOD_ORDER)
+        self._store_mods()
+        rate_mod = self._rate_mod()
+        if rate_mod != previous_rate_mod:
+            rate, pitch = RATE_MODS[rate_mod] if rate_mod else (1.0, False)
+            # Pitch first: the engine reads both on its next grain, in order.
+            self.player.set_pitch_shift(pitch)
+            self._change_playback_speed(rate)
+        for view in self._gameplay_views:
+            view.set_mods(self._mods)
+        self._sync_mod_controls()
+
+    def _store_mods(self) -> None:
+        self.settings.set_value("playback/mods", mod_string(self._mods))
+
+    def _restore_mods(self) -> None:
+        text = self.settings.string_value("playback/mods", "")
+        mods = {text[i:i + 2] for i in range(0, len(text), 2)} & set(MOD_ORDER)
+        if mods:
+            self._set_mods(mods)
+
+    def _sync_mod_controls(self) -> None:
+        for buttons in getattr(self, "_mod_buttons", []):
+            for mod, button in buttons.items():
+                button.blockSignals(True)
+                button.setChecked(mod in self._mods)
+                button.blockSignals(False)
+        rate = self.player.playbackRate()
+        rate_mod = self._rate_mod()
+        shift = round((rate - 1.0) * 100) if rate_mod and RATE_MODS[rate_mod][1] else 0
+        pitch = "±0" if shift == 0 else f"{shift:+d}%"
+        text = tr("MainWindow", "{rate}x · pitch {pitch}").format(rate=f"{rate:.2f}", pitch=pitch)
+        for readout in getattr(self, "_mod_readouts", []):
+            readout.setText(text)
+        chip = getattr(self, "mods_chip", None)
+        if chip is not None:
+            chip.setText(mod_string(self._mods))
+            chip.setVisible(bool(self._mods))
+
     def _change_playback_speed(self,rate:float)->None:
         # Re-anchor from *our own* playhead, sampled before the rate changes --
         # never from self.player.position(). That value is whole milliseconds
@@ -16103,8 +16252,9 @@ class MainWindow(QMainWindow):
             + getattr(self,"editor_playback_speed_buttons",[])
             + getattr(self,"gimmick_playback_speed_buttons",[])
         ):
-            active=abs(float(button.property("playbackRate"))-rate)<0.0001
+            active=not self._rate_mod() and abs(float(button.property("playbackRate"))-rate)<0.0001
             button.blockSignals(True);button.setChecked(active);button.blockSignals(False)
+        self._sync_mod_controls()
 
     def _set_views_playing(self, playing: bool) -> None:
         """Tell every time-axis view whether the song is running.

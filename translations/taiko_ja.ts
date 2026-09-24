@@ -1445,6 +1445,42 @@ Every beatmap in it is checked once for taiko difficulties, and the result is re
             <translation>{count}個のオブジェクトを再スナップしました。</translation>
         </message>
         <message>
+            <source>Hidden: notes fade out as they come in, gone after 37.5% of the scroll</source>
+            <translation>Hidden: ノーツは流れてくる途中でフェードアウトし、スクロールの37.5%で見えなくなります</translation>
+        </message>
+        <message>
+            <source>Nightcore: 1.5x speed, pitch raised with it</source>
+            <translation>Nightcore: 1.5倍速、ピッチも上がります</translation>
+        </message>
+        <message>
+            <source>Double Time: 1.5x speed, pitch kept</source>
+            <translation>Double Time: 1.5倍速、ピッチはそのまま</translation>
+        </message>
+        <message>
+            <source>Daycore: 0.75x speed, pitch lowered with it</source>
+            <translation>Daycore: 0.75倍速、ピッチも下がります</translation>
+        </message>
+        <message>
+            <source>Half Time: 0.75x speed, pitch kept</source>
+            <translation>Half Time: 0.75倍速、ピッチはそのまま</translation>
+        </message>
+        <message>
+            <source>Hard Rock: notes scroll faster (SliderMultiplier x1.87)</source>
+            <translation>Hard Rock: ノーツが速く流れます（SliderMultiplier ×1.87）</translation>
+        </message>
+        <message>
+            <source>Easy: notes scroll slower (SliderMultiplier x0.8)</source>
+            <translation>Easy: ノーツが遅く流れます（SliderMultiplier ×0.8）</translation>
+        </message>
+        <message>
+            <source>Flashlight: only a circle around the hit target is visible, smaller as combo grows</source>
+            <translation>Flashlight: 判定位置の周りの円だけが見え、コンボが増えると小さくなります</translation>
+        </message>
+        <message>
+            <source>{rate}x · pitch {pitch}</source>
+            <translation>{rate}x · ピッチ {pitch}</translation>
+        </message>
+        <message>
             <source>Pasted {count} notes.</source>
             <translation>{count}個のノートを貼り付けました。</translation>
         </message>
