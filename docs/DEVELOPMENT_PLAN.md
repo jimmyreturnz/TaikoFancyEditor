@@ -55,7 +55,16 @@ backlog 2/3/4/6/8/9, view height and note sizing, Shift and New Combo fixes,
 multi-difficulty charts and the Play combo, cross-group view moves, the
 hermetic test settings, and the downmix fix below. 40 of 41 test files pass.
 
-### 1. `tests/test_gimmick_editor.py` hangs -- pre-existing, not tonight's code
+### 1. ~~`tests/test_gimmick_editor.py` hangs~~ -- FIXED 2026-09-24
+
+A closed window's 4ms `PreciseTimer` render loop was never stopped. WINMM's
+multimedia-timer thread posted every tick into the main queue, and by the 33rd
+uncollected window it was spinning in `compressEvent` under the main thread's
+post-event lock. Found with `py-spy dump --native` (main thread in
+`QBasicMutex::lockInternal`) plus a dbghelp stack walk of the one busy native
+thread. `closeEvent` stops the timers; 230 tests in 88s. The notes below are
+how it was narrowed down.
+
 
 **State.** Run as a whole module, it blocks forever in
 `ScrollBarWheelTests.setUp` at the `QApplication.processEvents()` after
@@ -85,7 +94,7 @@ is a tool rather than a dependency, so that is the owner's call. Use
 unittest's own runner -- **not** a loop calling `test.run()` per test, which
 skips `setUpModule` and builds no QApplication, and looks like a hang itself.
 
-### 2. CLAUDE.md "Measure first" row
+### 2. ~~CLAUDE.md "Measure first" row~~ -- added 2026-09-24
 
 The multi-chart finding below belongs in CLAUDE.md's table ("six charts cost a
 third of all frames" -> "the harness measured the audio decode after load").
@@ -760,20 +769,21 @@ selection in the fake slider layer (Shift selects both); omit the barline at
 each note's position (these three are uncommitted as of this date); Ctrl+S
 saves every changed difficulty; negative-length fake sliders render to scale;
 Red Line refuses a millisecond that already has one; SV graph floor is 0.01x.
-Vertical SV drag in 0.01 steps: `SV_DRAG_STEP` exists but only some paths
-round to it -- find the one the owner is hitting.
+~~Vertical SV drag in 0.01 steps~~ -- **fixed 2026-09-24**: the drag already
+rounded; green-line click placement and its ghost did not. Both do now.
 
 **Still to do:**
 
-1. Barline Don default: only the +1ms red line at the current BPM, not
-   mirrored to -1ms (`mirror_don_lines` defaults to True).
+1. ~~Barline Don default: only the +1ms red line~~ -- **done** (98b786e).
 2. Separate "invisible note" BPM and red line BPM settings for the barline
    and fake slider layers.
 3. At most one note, green line and red line per millisecond. Duplicated
    green lines are the known SV bug on heavy gimmick sections.
 4. Paste lands exactly on the snap in every layer (fake sliders fixed in
    3.3.3).
-5. Auto-snap to each object's own nearest snap, not the current divisor.
+5. ~~Auto-snap to each object's own nearest snap~~ -- **done 2026-09-24**: an
+   object off the current grid moves along its own (`time_axis.own_divisor`),
+   and Resnap (Ctrl+R) puts objects 1-2ms off their own grid back on it.
 6. Option to put a red line on the first fake slider (current or custom BPM),
    with the chart's speed restored 1ms later. Also fixes the known issue
    that a red line cannot be placed under, or moved after landing on, a
@@ -782,7 +792,13 @@ round to it -- find the one the owner is hitting.
    a rising SV.
 8. Opt-in exp(x>=1) curve in the SV generator.
 9. Separate "open view" lists for the regular editor and the gimmick editor.
-10. Smoother fast scrolling -- measure with `tools/profile_playback.py` first.
+10. ~~Smoother fast scrolling~~ -- **measured and improved 2026-09-24**. The
+    wheel was never the cost: on Nbt-Hwt's hidden anti-barline wall the
+    Gimmick page ran 100-109 of 240 frames late with *no* wheel at all, and
+    fast scrolling is just the quickest way there. `_draw_snap_grid` works per
+    section instead of per tick now: 16-20 of 269 late. The median frame
+    there is still ~11ms, so the next step is the next profile entry, not a
+    guess. Harness: `tools/measure_wheel_seek.py --gimmick --from MS`.
 11. Larger items: UI and assets rework, song library rework, updater rework,
     Thai localization.
 
