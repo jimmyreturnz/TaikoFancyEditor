@@ -284,6 +284,25 @@ class GreenLineModeTests(WindowTestCase):
         _press(view, view.x_for_time(30040.0), y=60.0)
         self.assertEqual(added, [30000.0])
 
+    def test_placement_and_ghost_sv_land_on_the_drag_step(self):
+        """A click lands on the same 0.01 grid a drag does, and the ghost
+        shows the value the click will write, at every height tried."""
+        view = self._sv_view()
+        view.resize(800, 200)
+        view.window_ms = 4000.0
+        view.current_time = 30000.0
+        view.tool = "green_line"
+        added: list[float] = []
+        view.point_add_requested.connect(lambda _time, sv: added.append(sv))
+        # A column each: a click on a line already placed drags it instead.
+        for x, y in ((200.0, 37.0), (350.0, 61.3), (500.0, 88.9), (650.0, 120.4)):
+            _move(view, x, y=y, buttons=Qt.MouseButton.NoButton)
+            ghost = view._hover_sv
+            _press(view, x, y=y)
+            self.assertAlmostEqual(added[-1], ghost, places=9)
+            self.assertAlmostEqual(added[-1] / gui.SV_DRAG_STEP,
+                                   round(added[-1] / gui.SV_DRAG_STEP), places=6)
+
     def test_hover_sets_the_ghost_time_and_paints_without_raising(self):
         view = self._sv_view()
         view.resize(800, 200)

@@ -3990,7 +3990,11 @@ class SVEditorView(TimeAxisMixin, QWidget):
                 event.accept()
                 return
             time_ms = self._placement_time(event.position().x())
-            sv = self._y_to_sv(event.position().y(), self._graph_top(), self._graph_bottom())
+            # Quantized like a drag (SV_DRAG_STEP): a placed line otherwise
+            # landed at whatever float the pixel mapped to -- 1.2371... -- and
+            # the ghost promised a rounder value than the click delivered.
+            sv = round(self._y_to_sv(event.position().y(), self._graph_top(), self._graph_bottom())
+                       / SV_DRAG_STEP) * SV_DRAG_STEP
             self.point_add_requested.emit(time_ms, sv)
             event.accept()
             return
@@ -4104,7 +4108,8 @@ class SVEditorView(TimeAxisMixin, QWidget):
         # the cursor millisecond is drawn in every mode -- see
         # TimelineGameplay.mouseMoveEvent for why the repaint is unconditional.
         self._hover_time = self.time_for_x(event.position().x())
-        self._hover_sv = self._y_to_sv(event.position().y(), self._graph_top(), self._graph_bottom())
+        self._hover_sv = round(self._y_to_sv(event.position().y(), self._graph_top(), self._graph_bottom())
+                               / SV_DRAG_STEP) * SV_DRAG_STEP
         self.update()
 
     def leaveEvent(self, event) -> None:
