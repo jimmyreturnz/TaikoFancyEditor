@@ -22,7 +22,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QImageReader, QColor, QFont, QFontDatabase, QFontMetrics, QKeySequence, QPainter, QPen, QPixmap, QPolygonF, QShortcut, QIcon
 from PySide6.QtMultimedia import QMediaPlayer
 from PySide6.QtWidgets import (
-    QAbstractSlider, QAbstractSpinBox, QApplication, QButtonGroup, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
+    QAbstractItemView, QAbstractSlider, QAbstractSpinBox, QApplication, QButtonGroup, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
     QBoxLayout, QGraphicsOpacityEffect, QGridLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QMainWindow, QMessageBox,
     QProgressBar, QPushButton, QScrollArea,
@@ -62,7 +62,8 @@ from osu_io.timing import (
 )
 from osu_io.writer import write_osu
 from song_library import (
-    group_by_song, load_cache, matches_search, save_cache, scan, songs_from_cache,
+    group_by_song, load_cache, matches_search, read_header, save_cache, scan,
+    songs_from_cache,
 )
 from time_axis import (
     KIAI_OPEN_END_MS, SNAP_DIVISORS, TimeAxisMixin, osu_round, osu_snap_ms, snap_time,
@@ -72,6 +73,7 @@ from gimmick_session import (
     DEFAULT_RED_LINE_BPM,
     DEFAULT_SHINY_COUNT,
     FAKE_SLIDER_MAX_LENGTH,
+    FAKE_SLIDER_RESTORE_OFFSET_MS,
     GimmickConfig,
     GimmickConfigError,
     GimmickPairing,
@@ -432,6 +434,24 @@ def equalize_button_widths(buttons, heights: bool = False, widths: bool = True) 
             button.setMinimumWidth(button_text_width(button))
         if heights:
             button.setFixedHeight(height)
+
+
+def shift_is_held() -> bool:
+    """Is Shift physically down **now**, outside of an event?
+
+    `QApplication.keyboardModifiers()` is not that: it is the modifier state as
+    of the last event Qt processed, and it goes stale. A Shift release that
+    lands while this window is not focused, or that a shortcut consumes, leaves
+    it reporting Shift held until some later key event happens to correct it --
+    so one tap of Shift turned every note placed afterwards into a finisher,
+    which is what "it should be hold" was. `queryKeyboardModifiers` asks the
+    platform for the real state instead.
+
+    **Inside a mouse handler, use the event's own modifiers.** Those are the
+    truth at the instant of the click and cannot go stale; OR-ing the cached
+    global into them is what let the stale bit through in the first place.
+    """
+    return bool(QApplication.queryKeyboardModifiers() & Qt.ShiftModifier)
 
 
 def pink_spin_buttons(root: QWidget) -> None:
@@ -1600,10 +1620,33 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
     # to which structure is its knowledge and not the view's.
     objects_move_requested = Signal(object, object, float)
 
-    # The height every fixed pixel size in paintEvent was measured at, and the
-    # smallest a standalone view is allowed to get. The gimmick page's layers
-    # drop their minimum and are drawn scaled against this instead.
+    # The height every fixed pixel size in paintEvent was measured at. The
+    # gimmick page's layers are drawn scaled against it, and so is a standalone
+    # view now that MIN_HEIGHT is below it.
     DESIGN_HEIGHT = 180
+    # The smallest a standalone view is allowed to get. Its own number rather
+    # than DESIGN_HEIGHT because the two are different jobs: one is what the
+    # artwork was measured at, the other is how much room a view demands on a
+    # page that stacks several of them. Tied together, asking for a shorter
+    # view also rescaled every tick and label in it.
+    MIN_HEIGHT = 80
+    # What the height control opens on. Not MIN_HEIGHT: the floor is how short
+    # a view may be pushed, and lowering it should not shorten everybody's
+    # views by itself.
+    DEFAULT_VIEW_HEIGHT = 120
+
+    # Note radius as a fraction of the view height, (full row, split row), and
+    # its ceiling. A chart view is read as a row of timestamps rather than as
+    # gameplay, so these are well under the sizes the view was first drawn at
+    # -- tuned by eye against a stack of views rather than derived.
+    NOTE_HEIGHT_FRACTIONS = (0.204, 0.141)
+    NOTE_RADIUS_MAX = 25.0
+    # The gimmick page keeps the pre-halving numbers: a band is 88px, so its
+    # notes are already scaled down by the same height that scales everything
+    # else there, and halving them again leaves less circle than the lines
+    # drawn beside it.
+    GIMMICK_NOTE_HEIGHT_FRACTIONS = (0.22, 0.15)
+    GIMMICK_NOTE_RADIUS_MAX = 31.0
 
     def __init__(self) -> None:
         super().__init__()
@@ -1848,8 +1891,18 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
             pen.width() for pen, _height in self._tick_styles.values()
         ) + 1
 
-        self.setMinimumHeight(self.DESIGN_HEIGHT)
+        self.setMinimumHeight(self.MIN_HEIGHT)
         self.setFocusPolicy(Qt.StrongFocus)
+        # paintEvent opens with an opaque fill of the whole rect, so nothing
+        # behind this widget is ever seen. Without the attribute Qt did not
+        # know that, and on every frame repainted what sits underneath --
+        # the EditorViewFrame's stylesheet (a rounded, bordered rect drawn
+        # through QStyleSheetStyle) and the scroll viewport -- only to cover
+        # it again. Measured: over half of a six-chart Editor frame was Qt's
+        # own work in processEvents, not these paintEvents. If a paintEvent
+        # here ever stops filling its whole rect, this has to go with it, or
+        # stale pixels show through.
+        self.setAttribute(Qt.WA_OpaquePaintEvent, True)
 
     def _draw_skinned_roll_body(self, painter, x, end_x, center_y, radius) -> bool:
         """A drumroll's stretched body and its tail cap, from the skin.
@@ -2008,14 +2061,28 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
         draws two rows of objects instead of one, and at the full radius the
         two overlap and the pair reads as a single smear.
 
-        The finisher is the ruleset's own ratio (`TAIKO_STRONG_SCALE`, 1.538x)
-        rather than the 1.35x this was drawn at, so a big note reads as big
-        here and at the same proportion the gameplay preview draws it. No
-        second cap on it: `normal` is already capped, and the old 42.0 was
-        only ever that cap times the ratio.
+        The finisher ratio here is **not** the ruleset's. `TAIKO_STRONG_SCALE`
+        (1.538x) is what a player sees and is what `GameplayViewerView` draws;
+        on a timestamp row that far apart reads as two different kinds of
+        object rather than one note and its louder twin, and the normal note
+        has to shrink to absurdity for the big one to fit. `EDITOR_STRONG_SCALE`
+        puts the normal note at 75% of the big one, which is the proportion the
+        editor is read at. The gimmick page's bands keep
+        the ruleset ratio along with their own sizes. No second cap on the
+        finisher: `normal` is already capped.
         """
-        normal = min(31.0, self.height() * (0.15 if self.split_rows else 0.22))
-        return normal, normal * TAIKO_STRONG_SCALE
+        fractions, ceiling = (
+            (self.GIMMICK_NOTE_HEIGHT_FRACTIONS, self.GIMMICK_NOTE_RADIUS_MAX)
+            if getattr(self, "gimmick_layer", None) is not None
+            else (self.NOTE_HEIGHT_FRACTIONS, self.NOTE_RADIUS_MAX)
+        )
+        normal = min(ceiling, self.height() * fractions[bool(self.split_rows)])
+        strong = (
+            TAIKO_STRONG_SCALE
+            if getattr(self, "gimmick_layer", None) is not None
+            else EDITOR_STRONG_SCALE
+        )
+        return normal, normal * strong
 
     def _note_near_x(self, x: float, radius_px: float | None = None, y: float | None = None):
         """Nearest note whose drawn circle covers `x`, for grabbing and deleting.
@@ -2160,7 +2227,9 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
 
         if self.tool != "select":
             time_ms = self.snap_ms(self.time_for_x(event.position().x()))
-            big = bool((event.modifiers() | QApplication.keyboardModifiers()) & Qt.ShiftModifier)
+            # The event's own modifiers, never the cached global -- see
+            # `shift_is_held`. A tap of Shift used to stick.
+            big = bool(event.modifiers() & Qt.ShiftModifier)
             # Pressing on something that is already there starts a move, even
             # with a placement tool in hand. Dragging is how a gimmick object
             # gets nudged, and having to switch back to Select first is the
@@ -2401,7 +2470,7 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
         True for the lower one -- or None where selection spans the whole view:
         off a split layer, with Shift held, or with no y to go by."""
         y = self._drag_y if y is None else y
-        if not self.split_rows or y is None or QApplication.keyboardModifiers() & Qt.ShiftModifier:
+        if not self.split_rows or y is None or shift_is_held():
             return None
         return y > self._baseline_y()
 
@@ -2446,7 +2515,9 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
             # as wheelEvent elsewhere in this class: the global state alone
             # can be stale, and (for synthetic/test events especially) the
             # event's own modifiers may be the only place Shift shows up.
-            big = bool((event.modifiers() | QApplication.keyboardModifiers()) & Qt.ShiftModifier)
+            # The event's own modifiers, never the cached global -- see
+            # `shift_is_held`. A tap of Shift used to stick.
+            big = bool(event.modifiers() & Qt.ShiftModifier)
             self._placing_tool = None
             self._placing_start_time = None
             self._placing_end_time = None
@@ -3094,7 +3165,10 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
         painter.drawEllipse(QPointF(x1, note_center_y), radius, radius)
 
     def _draw_placement_ghost(self, painter: QPainter, baseline_y: int, normal_radius: float, finisher_radius: float) -> None:
-        shift_held = bool(QApplication.keyboardModifiers() & Qt.ShiftModifier)
+        # Paint time, so there is no event to read: the live hardware state
+        # rather than Qt's cached one, or a stale Shift bit draws every
+        # ghost at finisher size. See `shift_is_held`.
+        shift_held = shift_is_held()
 
         if self._placing_tool in ("slider", "spinner") and self._placing_start_time is not None:
             self._draw_extend_ghost(
@@ -3375,8 +3449,11 @@ class SVEditorView(TimeAxisMixin, QWidget):
     MAX_WINDOW_MS = 120000.0
 
     # See TimelineGameplay.DESIGN_HEIGHT: the height the graph's margins were
-    # measured at, and this view's minimum outside the gimmick page.
+    # measured at. MIN_HEIGHT is this view's floor outside the gimmick page,
+    # and is below it, so a short view scales its margins down rather than
+    # keeping 56 designed pixels of them in a 120px band.
     DESIGN_HEIGHT = TimelineGameplay.DESIGN_HEIGHT
+    MIN_HEIGHT = TimelineGameplay.MIN_HEIGHT
 
     def __init__(self) -> None:
         super().__init__()
@@ -3472,8 +3549,18 @@ class SVEditorView(TimeAxisMixin, QWidget):
         self.label_pen = QPen(QColor(225, 230, 240, 235), 1)
         self.cursor_pen = QPen(QColor("#ffffff"), 2)
 
-        self.setMinimumHeight(self.DESIGN_HEIGHT)
+        self.setMinimumHeight(self.MIN_HEIGHT)
         self.setFocusPolicy(Qt.StrongFocus)
+        # paintEvent opens with an opaque fill of the whole rect, so nothing
+        # behind this widget is ever seen. Without the attribute Qt did not
+        # know that, and on every frame repainted what sits underneath --
+        # the EditorViewFrame's stylesheet (a rounded, bordered rect drawn
+        # through QStyleSheetStyle) and the scroll viewport -- only to cover
+        # it again. Measured: over half of a six-chart Editor frame was Qt's
+        # own work in processEvents, not these paintEvents. If a paintEvent
+        # here ever stops filling its whole rect, this has to go with it, or
+        # stale pixels show through.
+        self.setAttribute(Qt.WA_OpaquePaintEvent, True)
 
     # -- data ----------------------------------------------------------------
 
@@ -4329,6 +4416,13 @@ TAIKO_NOTE_SIZE = 0.475
 # `TaikoStrongableHitObject.STRONG_SCALE = 1 / 0.65f`, i.e. a finisher is about
 # 1.538x a normal note, not the 1.4x assumed here before.
 TAIKO_STRONG_SCALE = 1.0 / 0.65
+# The editor timeline's own finisher ratio: a normal note is 75% of a big one.
+# Deliberately not the ruleset's 1.538x (which is 65%) -- see
+# `TimelineGameplay.note_radii`. Between the two: far enough apart that a
+# finisher reads as one at a glance, close enough that the normal note does not
+# have to shrink for it. The gameplay preview and the gimmick bands are
+# unaffected and keep the ruleset's own number.
+EDITOR_STRONG_SCALE = 1.0 / 0.75
 
 
 # --- Playfield geometry, in osu!'s own units --------------------------------
@@ -5585,11 +5679,14 @@ class EditorViewFrame(QWidget):
         # chrome buttons render small and low-contrast unless styled here
         # explicitly.
         #
-        # Compact trims the padding for the gimmick page, where six frames of
-        # chrome are stacked in one screen and the buttons cost more room than
-        # the layers they belong to. Padding rather than a typed size: the glyph
-        # still decides how much space it needs.
-        chrome_padding = "2px 5px" if compact else "6px 10px"
+        # One padding for both pages. It was trimmed for the gimmick page,
+        # where six frames of chrome are stacked in one screen and the buttons
+        # cost more room than the layers they belong to -- and the Editor page
+        # is now the same shape, with a view height that goes down to 90px and
+        # a chart per difficulty stacked in it. Padding rather than a typed
+        # size: the glyph still decides how much space it needs, which is what
+        # stops a font change from drawing blank pink squares.
+        chrome_padding = "2px 5px"
         chrome_button_style = (
             "QPushButton { background: #f3a6bd; color: #17191f; border: 0;"
             f" border-radius: 6px; font-weight: 600; padding: {chrome_padding}; }}"
@@ -5663,9 +5760,20 @@ class EditorViewFrame(QWidget):
 
 
 class AddViewDialog(QDialog):
-    """Choose a view type and difficulty for a new Editor-page view."""
+    """Choose a view type and difficulty for a new view.
 
-    def __init__(self, difficulties: list[tuple[str, Path]], parent=None, current: Path | None = None) -> None:
+    The two editors offer their own lists. The layer-restricted types -- one
+    gimmick layer's objects, as a chart or as a preview -- only answer a
+    question the gimmick page asks, and on the Editor page they were eight
+    entries between the five that page is actually for. The plain views of a
+    whole chart are offered in both, since reading the real chart is as useful
+    beside a gimmick layer as it is on its own.
+    """
+
+    def __init__(
+        self, difficulties: list[tuple[str, Path]], parent=None,
+        current: Path | None = None, gimmick: bool = False,
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle(tr("MainWindow", "Add view"))
         icon = application_icon()
@@ -5679,38 +5787,155 @@ class AddViewDialog(QDialog):
         # scans for tr("context", "constant") pairs and would silently miss a
         # dynamic VIEW_TYPE_LABELS[key] lookup here.
         self.type_combo.addItem(tr("MainWindow", "Chart"), "chart")
-        self.type_combo.addItem(tr("MainWindow", "Regular Chart Only"), "chart_regular")
-        self.type_combo.addItem(tr("MainWindow", "Fake Sliders Only"), "chart_fake_slider")
-        self.type_combo.addItem(tr("MainWindow", "Barlines Only"), "chart_barline")
+        if gimmick:
+            self.type_combo.addItem(tr("MainWindow", "Regular Chart Only"), "chart_regular")
+            self.type_combo.addItem(tr("MainWindow", "Fake Sliders Only"), "chart_fake_slider")
+            self.type_combo.addItem(tr("MainWindow", "Barlines Only"), "chart_barline")
         self.type_combo.addItem(tr("MainWindow", "SV Editor"), "sv")
         self.type_combo.addItem(tr("MainWindow", "Kiai and Sound Volume"), "kiai_sound")
         self.type_combo.addItem(tr("MainWindow", "Gameplay Viewer"), "gameplay")
-        self.type_combo.addItem(tr("MainWindow", "Gameplay: Regular Chart Only"), "gameplay_regular")
-        self.type_combo.addItem(tr("MainWindow", "Gameplay: Fake Sliders Only"), "gameplay_fake_slider")
-        self.type_combo.addItem(tr("MainWindow", "Gameplay: Barlines Only"), "gameplay_barline")
+        if gimmick:
+            self.type_combo.addItem(tr("MainWindow", "Gameplay: Regular Chart Only"), "gameplay_regular")
+            self.type_combo.addItem(tr("MainWindow", "Gameplay: Fake Sliders Only"), "gameplay_fake_slider")
+            self.type_combo.addItem(tr("MainWindow", "Gameplay: Barlines Only"), "gameplay_barline")
         self.type_combo.addItem(tr("MainWindow", "Density"), "density")
         layout.addRow(tr("MainWindow", "View type"), self.type_combo)
 
-        self.difficulty_combo = QComboBox()
-        for label, path in difficulties:
-            self.difficulty_combo.addItem(label, str(path))
-        # The difficulty being edited, not whichever one sorts first: adding a
-        # view is nearly always about the one already open.
-        found = self.difficulty_combo.findData(str(current)) if current is not None else -1
-        if found >= 0:
-            self.difficulty_combo.setCurrentIndex(found)
-        layout.addRow(tr("MainWindow", "Difficulty"), self.difficulty_combo)
+        # The gimmick page edits exactly one difficulty, so it keeps the plain
+        # combo it always had -- one entry, disabled by the caller. Only the
+        # Editor page gets the list below.
+        self.difficulty_combo: QComboBox | None = None
+        self.difficulty_list: QListWidget | None = None
+        self.all_difficulties_check: QCheckBox | None = None
+        if gimmick:
+            self.difficulty_combo = QComboBox()
+            for label, path in difficulties:
+                self.difficulty_combo.addItem(label, str(path))
+            found = (
+                self.difficulty_combo.findData(str(current))
+                if current is not None else -1
+            )
+            if found >= 0:
+                self.difficulty_combo.setCurrentIndex(found)
+            layout.addRow(tr("MainWindow", "Difficulty"), self.difficulty_combo)
+            self._add_buttons(layout)
+            return
 
+        # A checkable list rather than a combo: a mapset is several
+        # difficulties of one song, and opening a chart for each of them meant
+        # walking this dialog once per difficulty. Ticking is also how "all of
+        # them" is expressed, so there is no separate All entry competing with
+        # the real ones for a slot in the list.
+        self.difficulty_list = QListWidget()
+        self.difficulty_list.setSelectionMode(QAbstractItemView.NoSelection)
+        for label, path in difficulties:
+            item = QListWidgetItem(label)
+            item.setData(Qt.UserRole, str(path))
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Unchecked)
+            self.difficulty_list.addItem(item)
+        # The difficulty being edited, not whichever one sorts first: adding a
+        # view is nearly always about the one already open. Falls back to the
+        # first, so the dialog never opens with nothing to add.
+        self._check_default(str(current) if current is not None else None)
+        self._size_difficulty_list()
+        self.difficulty_list.itemChanged.connect(self._difficulty_checked)
+
+        self.all_difficulties_check = QCheckBox(
+            tr("MainWindow", "All taiko difficulties"))
+        self.all_difficulties_check.toggled.connect(self._toggle_all_difficulties)
+
+        difficulty_box = QWidget()
+        difficulty_rows = QVBoxLayout(difficulty_box)
+        difficulty_rows.setContentsMargins(0, 0, 0, 0)
+        difficulty_rows.setSpacing(4)
+        difficulty_rows.addWidget(self.all_difficulties_check)
+        difficulty_rows.addWidget(self.difficulty_list)
+        layout.addRow(tr("MainWindow", "Difficulty"), difficulty_box)
+        self._add_buttons(layout)
+
+    def _add_buttons(self, layout: QFormLayout) -> None:
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addRow(buttons)
 
+    def _size_difficulty_list(self) -> None:
+        """Tall enough to show every difficulty, up to most of the screen.
+
+        Derived from the rows rather than a typed height: a typed 140px showed
+        four difficulties and made a mapset of twelve a scrolling exercise in a
+        dialog whose whole job is ticking them. Bounded by the screen the
+        dialog opens on, so a set of forty still leaves the OK button on it.
+        """
+        rows = self.difficulty_list.count()
+        row_height = max(
+            self.difficulty_list.sizeHintForRow(0) if rows else 0,
+            self.fontMetrics().height() + 6,
+        )
+        frame = 2 * self.difficulty_list.frameWidth() + 4
+        wanted = rows * row_height + frame
+        screen = self.screen() or QApplication.primaryScreen()
+        ceiling = (
+            int(screen.availableGeometry().height() * 0.6) if screen is not None
+            else wanted
+        )
+        self.difficulty_list.setMinimumHeight(min(wanted, ceiling))
+
+    def _items(self):
+        if self.difficulty_list is None:
+            return []
+        return [
+            self.difficulty_list.item(index)
+            for index in range(self.difficulty_list.count())
+        ]
+
+    def _check_default(self, wanted: str | None) -> None:
+        """Tick the difficulty being edited, or the first one."""
+        items = self._items()
+        if not items:
+            return
+        match = next(
+            (item for item in items if item.data(Qt.UserRole) == wanted), items[0])
+        match.setCheckState(Qt.Checked)
+
+    def _toggle_all_difficulties(self, checked: bool) -> None:
+        # Blocked because itemChanged fires per row and would otherwise untick
+        # this box again on the first one it sets.
+        self.difficulty_list.blockSignals(True)
+        for item in self._items():
+            item.setCheckState(Qt.Checked if checked else Qt.Unchecked)
+        self.difficulty_list.blockSignals(False)
+
+    def _difficulty_checked(self, _item) -> None:
+        """Unticking one row is no longer "all of them"."""
+        every = all(item.checkState() == Qt.Checked for item in self._items())
+        if every != self.all_difficulties_check.isChecked():
+            self.all_difficulties_check.blockSignals(True)
+            self.all_difficulties_check.setChecked(every)
+            self.all_difficulties_check.blockSignals(False)
+
     def selected_view_type(self) -> str:
         return str(self.type_combo.currentData())
 
+    def selected_difficulty_paths(self) -> list[Path]:
+        if self.difficulty_combo is not None:
+            return [Path(self.difficulty_combo.currentData())]
+        return [
+            Path(item.data(Qt.UserRole))
+            for item in self._items()
+            if item.checkState() == Qt.Checked
+        ]
+
     def selected_difficulty_path(self) -> Path:
-        return Path(self.difficulty_combo.currentData())
+        """The first ticked difficulty.
+
+        Kept for the callers that only ever want one -- the gimmick page, which
+        offers a single entry, and the tests that pin which difficulty the
+        dialog opens on.
+        """
+        paths = self.selected_difficulty_paths()
+        return paths[0] if paths else Path(self._items()[0].data(Qt.UserRole))
 
 
 class GimmickEntryDialog(QDialog):
@@ -5858,7 +6083,34 @@ class GimmickConfigDialog(QDialog):
         self.bpm_spin.setDecimals(0)
         self.bpm_spin.setValue(config.gimmick_bpm)
         if not sv:
-            layout.addRow(tr("MainWindow", "Gimmick BPM"), self.bpm_spin)
+            layout.addRow(tr("MainWindow", "Invisible note BPM"), self.bpm_spin)
+
+        # The other half of the pair the owner asked to separate: the BPM
+        # above is how invisible the note is, this one is how fast the chart
+        # runs once the structure has given it back. Unchecked is the
+        # chart's own BPM at that millisecond, which is what every structure
+        # written before this dial existed used. Same shape as the two BPM
+        # boxes below it.
+        self.restore_bpm_check = QCheckBox(tr("MainWindow", "Custom"))
+        self.restore_bpm_check.setChecked(config.restore_bpm is not None)
+        self.restore_bpm_spin = QDoubleSpinBox()
+        self.restore_bpm_spin.setRange(0.001, 1000000.0)
+        self.restore_bpm_spin.setDecimals(3)
+        self.restore_bpm_spin.setValue(
+            config.restore_bpm if config.restore_bpm is not None
+            else DEFAULT_RED_LINE_BPM
+        )
+        self.restore_bpm_spin.setEnabled(self.restore_bpm_check.isChecked())
+        self.restore_bpm_check.toggled.connect(self.restore_bpm_spin.setEnabled)
+        restore_bpm_row = QHBoxLayout()
+        restore_bpm_row.setContentsMargins(0, 0, 0, 0)
+        restore_bpm_row.addWidget(self.restore_bpm_check)
+        restore_bpm_row.addWidget(self.restore_bpm_spin, 1)
+        self.restore_bpm_widget = QWidget()
+        self.restore_bpm_widget.setLayout(restore_bpm_row)
+        if not sv:
+            layout.addRow(
+                tr("MainWindow", "Structure red line BPM"), self.restore_bpm_widget)
 
         self.sv_offset_spin = QSpinBox()
         self.sv_offset_spin.setRange(-5000, 5000)
@@ -5996,6 +6248,14 @@ class GimmickConfigDialog(QDialog):
         # turn off when the shiny decorates a note already in the chart --
         # the note alone still identifies it. A shiny with no note of its own
         # loses the only thing that told it apart from a plain fake slider.
+        # The other half of that line: without a restore it governs the rest
+        # of the map, and the second line a mapper would place by hand is
+        # exactly the one the Red Line tool refuses, since the slider's own
+        # line already owns that millisecond.
+        self.fake_restore_after_check = QCheckBox(
+            tr("MainWindow", "Restore the chart BPM 1 ms later"))
+        self.fake_restore_after_check.setChecked(config.fake_slider_restore_after)
+
         self.shiny_red_line_check = QCheckBox(
             tr("MainWindow", "Write a red line for shiny notes")
         )
@@ -6091,6 +6351,7 @@ class GimmickConfigDialog(QDialog):
             layout.addRow(tr("MainWindow", "Omit barline"), self.omit_barline_check)
             layout.addRow(tr("MainWindow", "Fake slider redline BPM"), self.fake_slider_bpm_spin)
             layout.addRow("", self.fake_red_line_check)
+            layout.addRow("", self.fake_restore_after_check)
             layout.addRow(tr("MainWindow", "Shiny offset (ms)"), self.shiny_offset_spin)
             layout.addRow(tr("MainWindow", "Shiny note count"), self.shiny_count_spin)
             layout.addRow(tr("MainWindow", "Shiny redline BPM"), self.shiny_bpm_spin)
@@ -6177,6 +6438,7 @@ class GimmickConfigDialog(QDialog):
             fake_slider_offset_ms=self.fake_offset_spin.value(),
             fake_slider_sv=self.fake_sv_spin.value(),
             fake_slider_red_line=self.fake_red_line_check.isChecked(),
+            fake_slider_restore_after=self.fake_restore_after_check.isChecked(),
             anti_lines_per_beat=self.anti_density_spin.value(),
             anti_wall_bpm=(
                 self.anti_bpm_spin.value() if self.anti_bpm_check.isChecked() else None
@@ -6197,6 +6459,10 @@ class GimmickConfigDialog(QDialog):
             shiny_bpm_multiplier=self.shiny_bpm_spin.value(),
             shiny_red_line=self.shiny_red_line_check.isChecked(),
             fake_slider_bpm_multiplier=self.fake_slider_bpm_spin.value(),
+            restore_bpm=(
+                self.restore_bpm_spin.value()
+                if self.restore_bpm_check.isChecked() else None
+            ),
         )
 
 
@@ -7280,10 +7546,17 @@ def sv_ease(
         return math.sin(t * math.pi / 2)
     if function_id == "sin_out":
         return 1 - math.cos(t * math.pi / 2)
-    if function_id == "exp1.3":
-        return t ** 1.3
-    if function_id == "exp1.6":
-        return t ** 1.6
+    if function_id.startswith("exp") and function_id != "true_exp":
+        # The exponent is carried *in the id* ("exp1.3", "exp2.5"), so a typed
+        # one needs no extra argument threaded through every caller -- the
+        # preview, the generator and a stored choice all take the same string
+        # they always did. Floored at 1: below it the curve bends the other
+        # way, which is what the two fixed tiles above 1 were there to avoid.
+        try:
+            exponent = float(function_id[3:])
+        except ValueError:
+            return t
+        return t ** max(1.0, exponent)
     if function_id == "true_exp":
         return _true_exp_ease(t, initial, final)
     if function_id == "sin":
@@ -7706,6 +7979,7 @@ class SVFunctionDialog(QDialog):
             ("exp1.6", tr("MainWindow", "Exp 1.6")),
             ("true_exp", tr("MainWindow", "True Exp")),
             ("sin", tr("MainWindow", "Sin")),
+            ("exp_x", tr("MainWindow", "Exp x")),
         )
         self.function_buttons: dict[str, QToolButton] = {}
         self._function_group = QButtonGroup(self)
@@ -7728,6 +8002,25 @@ class SVFunctionDialog(QDialog):
             self.function_buttons[function_id] = button
             grid.addWidget(button, index // 3, index % 3)
         right.addLayout(grid)
+
+        # The exponent behind the "Exp x" tile. The two fixed exp curves are
+        # the shapes that get used most and stay as one click each; this is the
+        # same curve with the number exposed, for a sweep that wants to bend
+        # harder than 1.6 or softer than 1.3. Floored at 1, because below it
+        # the curve bends the other way and the tile would stop being an exp
+        # tile. Re-plots every tile on change, so the graph under the tile is
+        # the curve this number actually produces.
+        self.exp_spin = QDoubleSpinBox()
+        self.exp_spin.setRange(1.0, 10.0)
+        self.exp_spin.setDecimals(2)
+        self.exp_spin.setSingleStep(0.1)
+        self.exp_spin.setValue(2.0)
+        self.exp_spin.valueChanged.connect(self._update_preview)
+        exp_row = QHBoxLayout()
+        exp_row.setContentsMargins(0, 0, 0, 0)
+        exp_row.addWidget(QLabel(tr("MainWindow", "Exp x")))
+        exp_row.addWidget(self.exp_spin, 1)
+        right.addLayout(exp_row)
         right.addStretch(1)
 
         # Not in the layout: each tile carries its own graph now, so this only
@@ -7750,29 +8043,51 @@ class SVFunctionDialog(QDialog):
         self._update_bpm_filter_row()
         self._update_length_filter_row()
 
+    def _resolved_function(self, key: str) -> str:
+        """The curve id a tile stands for.
+
+        Every tile but one is its own id. "Exp x" is the exponent box's current
+        value spelled as an id (`sv_ease` parses it back out), which is what
+        lets one tile be any exponent without a second argument on every call
+        that takes a function.
+        """
+        if key == "exp_x":
+            return f"exp{self.exp_spin.value():g}"
+        return key
+
     def selected_function(self) -> str:
-        for function_id, button in self.function_buttons.items():
+        for key, button in self.function_buttons.items():
             if button.isChecked():
-                return function_id
+                return self._resolved_function(key)
         return "linear"
 
     def set_selected_function(self, function_id: str) -> None:
         button = self.function_buttons.get(function_id)
+        if button is None and function_id.startswith("exp") and function_id != "true_exp":
+            # A typed exponent comes back as its own id; put the number back in
+            # the box and light the tile it belongs to.
+            try:
+                self.exp_spin.setValue(float(function_id[3:]))
+            except ValueError:
+                return
+            button = self.function_buttons.get("exp_x")
         if button is not None:
             button.setChecked(True)
 
     def _update_preview(self) -> None:
         """Re-plot every tile against the current rates.
 
-        All seven, not just the selected one: the tiles *are* the preview, and
+        Every tile, not just the selected one: the tiles *are* the preview, and
         their whole job is to be compared against each other for the range you
-        actually typed -- a 1.10x -> 0.90x sweep has to show all seven curves
-        descending.
+        actually typed -- a 1.10x -> 0.90x sweep has to show every curve
+        descending. Driven by the exponent box as well as by the two rates, so
+        "Exp x" shows the curve the number in it produces rather than a
+        placeholder.
         """
         self.preview.set_range(self.initial_rate_spin.value(), self.final_rate_spin.value())
         self.preview.set_oscillate(str(self.mode_combo.currentData()))
-        for function_id, button in self.function_buttons.items():
-            self.preview.set_function(function_id)
+        for key, button in self.function_buttons.items():
+            self.preview.set_function(self._resolved_function(key))
             button.setIcon(QIcon(self.preview.grab()))
         self.preview.set_function(self.selected_function())
 
@@ -8504,8 +8819,26 @@ class ToolStateController:
             self.sv_tool_buttons[sv_tools[digit]].setChecked(True)
 
     def set_active_tool(self, tool_id: str) -> None:
+        if self.active_chart_view is None:
+            return
+        self.active_chart_view.set_tool(tool_id)
+        # New Combo applies until another tool is chosen -- the rule the
+        # gimmick row has followed since its own version of this was fixed
+        # (see `_set_gimmick_tool`), and the one this row was missing. Off the
+        # tool group, the button latched: pressed once, every note placed
+        # afterwards carried the flag, through any number of tool changes.
+        #
+        # Not cleared after a single placement: a run of notes that all start
+        # a combo is a real thing to want, and one press per note is not.
+        self.set_new_combo_checked(False)
+
+    def set_new_combo_checked(self, value: bool) -> None:
+        """Set the flag and the button together, without re-entering."""
         if self.active_chart_view is not None:
-            self.active_chart_view.set_tool(tool_id)
+            self.active_chart_view.set_new_combo(value)
+        self.new_combo_button.blockSignals(True)
+        self.new_combo_button.setChecked(value)
+        self.new_combo_button.blockSignals(False)
 
     def set_active_new_combo(self, value: bool) -> None:
         if self.active_chart_view is not None:
@@ -8658,7 +8991,15 @@ class MainWindow(QMainWindow):
         # Zoom (window_ms) is per difficulty, shared by every view of that
         # difficulty: a chart and an SV editor showing different time spans
         # cannot stay visually aligned while the playhead moves.
-        self._difficulty_zoom: dict[Path, float] = {}
+        # One zoom for the whole Editor page. The difficulties open there
+        # are the same song out of the same folder on the same timing, so
+        # two of them on different scales put the same x at two different
+        # times -- which is the thing the per-difficulty dict this replaces
+        # was already preventing *within* one difficulty.
+        self._editor_zoom_ms = self.DEFAULT_EDITOR_WINDOW_MS
+        # Which difficulty's hit objects are sounded. None follows the
+        # active one, which is what this did before the choice existed.
+        self._hitsound_source_path: Path | None = None
         # Non-None only inside `_refresh_cycle`; see `_cached`.
         self._doc_cache: dict | None = None
         # Ctrl+C / Ctrl+V payloads, kept as plain data (time offset + the
@@ -8667,6 +9008,11 @@ class MainWindow(QMainWindow):
         self._note_clipboard: list[dict] = []
         # Red lines copied alongside the notes -- a gimmick object is both.
         self._timing_clipboard: list[dict] = []
+        # The snap divisor the clipboard was copied at. A paste rebuilds
+        # its objects on that grid rather than on whatever divisor happens
+        # to be selected now, so changing the divisor between Ctrl+C and
+        # Ctrl+V cannot re-snap a pattern onto a coarser one.
+        self._clipboard_divisor = 0
         self._sv_clipboard: list[dict] = []
         # Every open Editor-page density view, broadcast separately since
         # DensityOverview.set_time has a different signature than
@@ -9667,6 +10013,10 @@ class MainWindow(QMainWindow):
             button.setChecked(True)
         # Which toolbox owns the number keys is a property of the page.
         self._refresh_tool_shortcut_scope()
+        # So is which difficulty is heard: the Play choice is the Editor
+        # page's, and `_hitsound_state` reads the page to decide.
+        if getattr(self, "state", None) is not None:
+            self._apply_hitsound_source()
         if index == PAGE_LIBRARY and self.player.playbackState() == QMediaPlayer.PlayingState:
             self.toggle_playback()
 
@@ -9949,8 +10299,13 @@ class MainWindow(QMainWindow):
         strip.addWidget(self.timing_bar, 1)
         self._timing_bars.append(self.timing_bar)
 
+        # Tool-row padding, not the window sheet's 8px/16px: this strip now
+        # carries a snap combo, the readout, the timing bar, play, four speeds,
+        # the Play difficulty and the view height, and the speed buttons were
+        # the widest things on it for the least information.
         self.editor_play_button = QPushButton("▶")
         self.editor_play_button.setFocusPolicy(Qt.NoFocus)
+        self.editor_play_button.setStyleSheet(TOOL_BUTTON_STYLE)
         self.editor_play_button.clicked.connect(self.toggle_playback)
         strip.addWidget(self.editor_play_button)
 
@@ -9958,6 +10313,7 @@ class MainWindow(QMainWindow):
         for label, rate in (("25%", .25), ("50%", .5), ("75%", .75), ("100%", 1.0)):
             button = QPushButton(label)
             button.setCheckable(True)
+            button.setStyleSheet(TOOL_BUTTON_STYLE)
             button.setProperty("playbackRate", rate)
             button.clicked.connect(lambda checked=False, r=rate: self._change_playback_speed(r))
             self.editor_playback_speed_buttons.append(button)
@@ -9965,6 +10321,43 @@ class MainWindow(QMainWindow):
         # Widths for this row are equalized in showEvent (see there): derived
         # from the polished labels instead of hard-coded pixels, which stopped
         # fitting the moment the UI font grew.
+
+        # Every open view at once rather than a grip on each frame: the page
+        # stacks views of one song and reading them together only works while
+        # they share a scale, which is the same argument that makes zoom
+        # page-level (see _zoom_changed). Fixed rather than minimum, so a view
+        # cannot quietly grow past the size that was asked for.
+        self.editor_view_height_spin = QSpinBox()
+        self.editor_view_height_spin.setRange(TimelineGameplay.MIN_HEIGHT, 600)
+        self.editor_view_height_spin.setSingleStep(10)
+        self.editor_view_height_spin.setToolTip(tr("MainWindow", "View height"))
+        self.editor_view_height_spin.setValue(self.settings.int_value(
+            "editor/view_height", TimelineGameplay.DEFAULT_VIEW_HEIGHT))
+        self.editor_view_height_spin.valueChanged.connect(self._editor_view_height_changed)
+        # Which difficulty is sounded, separate from which one is active: a
+        # mapset is one song, so reading Oni while hearing Muzukashii is a
+        # real thing to want. Only the hit objects follow it -- see
+        # `_hitsound_state` for what deliberately does not.
+        strip.addWidget(QLabel(tr("MainWindow", "Play:")))
+        self.hitsound_source_combo = QComboBox()
+        self.hitsound_source_combo.addItem(tr("MainWindow", "Active"), "")
+        self.hitsound_source_combo.currentIndexChanged.connect(
+            self._hitsound_source_changed)
+        strip.addWidget(self.hitsound_source_combo)
+
+        # Its own container so `pink_spin_buttons` has a layout to swap the
+        # spin out of -- run on the strip itself it would wrap every other
+        # spin box on the page as well. The label is here rather than in the
+        # tooltip because a bare number box beside the speed buttons says
+        # nothing about what it is a number of.
+        height_box = QWidget()
+        height_row = QHBoxLayout(height_box)
+        height_row.setContentsMargins(0, 0, 0, 0)
+        height_row.setSpacing(4)
+        height_row.addWidget(QLabel(tr("MainWindow", "View size")))
+        height_row.addWidget(self.editor_view_height_spin)
+        strip.addWidget(height_box)
+        pink_spin_buttons(height_box)
 
         add_view_button = QPushButton("+")
         add_view_button.setToolTip(tr("MainWindow", "open new view"))
@@ -10287,7 +10680,8 @@ class MainWindow(QMainWindow):
             )
             return
         label = tr("MainWindow", "Gimmick") + f": {pairing.target.name}"
-        dialog = AddViewDialog([(label, pairing.target)], self, pairing.target)
+        dialog = AddViewDialog(
+            [(label, pairing.target)], self, pairing.target, gimmick=True)
         dialog.difficulty_combo.setEnabled(False)
         if dialog.exec() != QDialog.Accepted:
             return
@@ -10691,6 +11085,12 @@ class MainWindow(QMainWindow):
             heads.add(head)
             all_lines.add(head)
             all_lines.add(at)
+            # ...and the restore a millisecond later, where the layer writes
+            # one. Gated on the dial rather than claimed unconditionally: at
+            # +1ms an unrelated line is entirely possible, and taking it for
+            # this structure would hand another layer's material to this one.
+            if config.fake_slider_restore_after:
+                all_lines.add(at + FAKE_SLIDER_RESTORE_OFFSET_MS)
         return heads, all_lines
 
     def _gimmick_bpms(self) -> set[float]:
@@ -10768,10 +11168,17 @@ class MainWindow(QMainWindow):
             # red line in the map is another layer's business and just clutters
             # this one.
             view.timing_line_times_for = lambda document: self._fake_slider_lines(document)[0]
-            # Right click on the line removes that line alone; on the slider it
-            # still removes both. Not `timing_edit_enabled`: dragging a line out
-            # from under its slider would still dismantle the structure.
+            # Right click on the line removes that line alone; on the slider
+            # it still removes both.
             view.timing_delete_enabled = True
+            # Dragging one moves the whole structure with it. This was off on
+            # the grounds that a line pulled out from under its slider
+            # dismantles the gimmick -- but a drag goes through `_expand_move`,
+            # which grows whatever was grabbed into the structure around it, so
+            # the slider travels with its line. Off, a red line that landed on
+            # a fake slider was adopted by this layer and then could not be
+            # moved at all, which is the reported dead end.
+            view.timing_edit_enabled = True
             # ...and double-clicking that line opens it, the same dialog and
             # the same one-step EditTimingPoint the barline layer's lines get.
             # Its BPM is what squashes the object beside it, so it is as much
@@ -10861,6 +11268,11 @@ class MainWindow(QMainWindow):
                 # A Don/Kat also has the squash line hiding its note; a plain
                 # fake slider has only its own line, which is `at_time` itself.
                 head_times = (squash_at, at_time) if squashed else (at_time,)
+                if fake_config.fake_slider_restore_after:
+                    # The restore line is part of the structure, so it travels
+                    # with it -- left behind, it retimes whatever the slider
+                    # moved away from. See `fake_slider_restore_after`.
+                    head_times += (at_time + FAKE_SLIDER_RESTORE_OFFSET_MS,)
             for at in head_times:
                 for point in red_at.get(at, ()):
                     points.setdefault(point.uid, point)
@@ -10886,10 +11298,19 @@ class MainWindow(QMainWindow):
                 if point.bpm in gimmick_bpms:
                     points.setdefault(point.uid, point)
 
+        # Which milliseconds carry a fake-slider-layer line, whatever BPM they
+        # carry. A plain fake slider's own line is the chart's own BPM, so the
+        # gimmick-BPM test below never recognised it and a drag on it moved the
+        # line alone -- which is why editing was disabled in that layer instead
+        # of fixed. The layer already answers this question for its own drawing.
+        fake_slider_line_times = self._fake_slider_lines(document)[1]
+
         for point in list(points.values()):
-            if not point.uninherited or point.bpm not in gimmick_bpms:
+            if not point.uninherited:
                 continue
             at = round(point.time)
+            if point.bpm not in gimmick_bpms and at not in fake_slider_line_times:
+                continue
             # Both shapes at once: Don writes +/-`spacing_ms` and Kat writes
             # +/- each of its three independent spacings, all tried here
             # because there is no longer a formula relating one to the
@@ -10910,6 +11331,20 @@ class MainWindow(QMainWindow):
                 for note in notes_at.get(at + offset, ()):
                     if self.is_fake_slider(note):
                         notes.setdefault(note.uid, note)
+            # The restore line and the slider it belongs to, in both
+            # directions: grabbing the slider's line has to bring the restore
+            # after it, and grabbing the restore has to bring the slider one
+            # millisecond before it. See `fake_slider_restore_after`.
+            if fake_config.fake_slider_restore_after:
+                for neighbour in red_at.get(at + FAKE_SLIDER_RESTORE_OFFSET_MS, ()):
+                    points.setdefault(neighbour.uid, neighbour)
+                before = at - FAKE_SLIDER_RESTORE_OFFSET_MS
+                if any(self.is_fake_slider(note) for note in notes_at.get(before, ())):
+                    for neighbour in red_at.get(before, ()):
+                        points.setdefault(neighbour.uid, neighbour)
+                    for note in notes_at.get(before, ()):
+                        if self.is_fake_slider(note):
+                            notes.setdefault(note.uid, note)
 
         # Green lines ride along with the red line they are stacked on, or the
         # SV layers would be left pointing at a millisecond the structure has
@@ -11105,7 +11540,7 @@ class MainWindow(QMainWindow):
         # Same reason as _place_gimmick: a thousand generated lines with kiai
         # off is a thousand ways to kill the section they were drawn across.
         carry_active_state(points, state.document.timing_points)
-        state.history.push(InsertTimingPoints(points), state)
+        state.history.push(self._insert_points_command(state.document, points), state)
         with self._refresh_cycle():
             self._refresh_difficulty_views(difficulty_path)
             self._refresh_difficulty_sv_views(difficulty_path)
@@ -11852,7 +12287,9 @@ class MainWindow(QMainWindow):
         for note in notes:
             note.original_index = next(indices)
 
-        commands = [InsertTimingPoints(points)] if points else []
+        commands = (
+            [self._insert_points_command(state.document, points)] if points else []
+        )
         if notes:
             # Same "one object per millisecond" rule every other placement path
             # follows (_insert_notes). This path used to skip it, so a Kat
@@ -12104,7 +12541,7 @@ class MainWindow(QMainWindow):
         # Same reason as every other generator: a thousand lines with kiai off
         # is a thousand ways to kill the section they were drawn across.
         carry_active_state(points, state.document.timing_points)
-        state.history.push(InsertTimingPoints(points), state)
+        state.history.push(self._insert_points_command(state.document, points), state)
         with self._refresh_cycle():
             self._refresh_difficulty_views(pairing.target)
             self._refresh_difficulty_sv_views(pairing.target)
@@ -12153,7 +12590,7 @@ class MainWindow(QMainWindow):
             self.show_toast(tr("MainWindow", "There is already a gimmick here."))
             return
         carry_active_state(points, state.document.timing_points)
-        state.history.push(InsertTimingPoints(points), state)
+        state.history.push(self._insert_points_command(state.document, points), state)
         with self._refresh_cycle():
             self._refresh_difficulty_views(pairing.target)
             self._refresh_difficulty_sv_views(pairing.target)
@@ -12490,14 +12927,49 @@ class MainWindow(QMainWindow):
 
     DEFAULT_EDITOR_WINDOW_MS = 2000.0
 
-    def _difficulty_window_ms(self, difficulty_path: Path) -> float:
-        """The time span every view of this difficulty shows.
+    def _editor_window_ms(self) -> float:
+        """The time span every view on the Editor page shows.
 
-        A new view adopts whatever zoom that difficulty is already at, so
-        opening an SV editor next to a zoomed-in chart doesn't put the two on
-        different scales.
+        A new view adopts the page's current zoom, so opening an SV editor --
+        or another difficulty of the same song -- next to a zoomed-in chart
+        does not put the two on different scales.
         """
-        return self._difficulty_zoom.setdefault(difficulty_path, self.DEFAULT_EDITOR_WINDOW_MS)
+        return self._editor_zoom_ms
+
+    def _editor_view_height_changed(self, height: int) -> None:
+        """Resize every open Editor-page view, and remember the size."""
+        self.settings.set_value("editor/view_height", int(height))
+        self._apply_editor_view_height()
+
+    def _apply_editor_view_height(self) -> None:
+        """Both view kinds, at one height.
+
+        Gameplay and density views are left out on purpose: a density strip is
+        a 58px bar by design and the gameplay preview has a floor of its own,
+        so folding them in would mean either clipping them or letting the
+        smallest of them decide the number.
+        """
+        height = self.editor_view_height_spin.value()
+        for view in self._all_editor_views():
+            view.setFixedHeight(height)
+
+    def _all_editor_views(self):
+        """Every chart/SV view on the Editor page, whatever difficulty.
+
+        `_editor_views` also holds the bands the gimmick page's "+" adds --
+        they go through the same wiring, which is what makes them editable
+        rather than read-only copies. A band is a fixed GIMMICK_LAYER_HEIGHT
+        slice of a six-layer stack, so neither the page zoom nor the height
+        control has any business reaching one; `compact` is the chrome those
+        frames already carry and is what tells them apart.
+        """
+        for frame in self._editor_views:
+            if getattr(frame, "compact", False):
+                continue
+            for attribute in ("chart_view", "sv_view"):
+                view = getattr(frame, attribute, None)
+                if view is not None:
+                    yield view
 
     def _editor_views_for(self, difficulty_path: Path):
         """Every chart/SV view currently open for one difficulty."""
@@ -12510,15 +12982,22 @@ class MainWindow(QMainWindow):
                     yield view
 
     def _zoom_changed(self, difficulty_path: Path, window_ms: float, origin=None) -> None:
-        """Ctrl+wheel on one view zooms every view of the same difficulty.
+        """Ctrl+wheel on one view zooms every view on the Editor page.
 
-        Zoom is difficulty-level rather than view-level because the SV editor
-        has to stay aligned with the chart it annotates -- if one is showing
-        2 seconds and the other 4, the same x position means two different
-        times and following the playhead together stops meaning anything.
+        Page-level rather than view-level because the SV editor has to stay
+        aligned with the chart it annotates -- if one is showing 2 seconds and
+        the other 4, the same x position means two different times and
+        following the shared playhead together stops meaning anything. Every
+        difficulty open here is the same song from the same folder on the same
+        timing, so that argument does not stop at a difficulty boundary and the
+        audio file they each name has nothing to do with it.
+
+        `difficulty_path` is still taken: it is what the per-view lambda has to
+        hand, and dropping it would mean touching every connection for nothing.
         """
-        self._difficulty_zoom[difficulty_path] = window_ms
-        for view in self._editor_views_for(difficulty_path):
+        del difficulty_path
+        self._editor_zoom_ms = window_ms
+        for view in self._all_editor_views():
             if view is origin or abs(view.window_ms - window_ms) < 0.01:
                 continue
             view.window_ms = window_ms
@@ -12545,6 +13024,28 @@ class MainWindow(QMainWindow):
         self._editor_view_groups[source_path] = group_layout
         return group_layout
 
+    def _taiko_difficulty_entries(self) -> list[tuple[str, Path]]:
+        """(label, path) for every taiko difficulty of the open song.
+
+        `song_difficulties` is a bare `*.osu` glob of the folder, so a mapset
+        that also ships osu!standard or mania difficulties would offer charts of
+        files whose hit objects are not taiko notes at all. `read_header` is the
+        song library's own mode check and stops before `[Difficulty]`, so this
+        costs a few hundred bytes per file and only on opening a dialog.
+
+        The difficulty currently open is kept whatever its mode says: a file
+        opened by hand must never vanish from its own dialog.
+        """
+        current = self.difficulty_combo.currentData()
+        entries = []
+        for index in range(self.difficulty_combo.count()):
+            path = Path(self.difficulty_combo.itemData(index))
+            header = read_header(path)
+            taiko = header is not None and header.get("mode") == "1"
+            if taiko or str(path) == str(current):
+                entries.append((self.difficulty_combo.itemText(index), path))
+        return entries
+
     def _open_add_view_dialog(self) -> None:
         if not self.song_difficulties:
             QMessageBox.information(
@@ -12553,15 +13054,23 @@ class MainWindow(QMainWindow):
                 tr("MainWindow", "Open a beatmap before adding a view."),
             )
             return
-        entries = [
-            (self.difficulty_combo.itemText(i), Path(self.difficulty_combo.itemData(i)))
-            for i in range(self.difficulty_combo.count())
-        ]
+        entries = self._taiko_difficulty_entries()
         current = self.difficulty_combo.currentData()
         dialog = AddViewDialog(entries, self, Path(current) if current else None)
         if dialog.exec() != QDialog.Accepted:
             return
-        self._add_editor_view(dialog.selected_view_type(), dialog.selected_difficulty_path())
+        view_type = dialog.selected_view_type()
+        for difficulty_path in dialog.selected_difficulty_paths():
+            # Idempotent: ticking every difficulty a second time must not stack
+            # a second chart on each of them. A view type is asked for once per
+            # difficulty; a second one is what the type combo is for.
+            if any(
+                getattr(frame, "difficulty_path", None) == difficulty_path
+                and frame.view_type == view_type
+                for frame in self._editor_views
+            ):
+                continue
+            self._add_editor_view(view_type, difficulty_path)
 
     def _add_editor_view(
         self, view_type: str, difficulty_path: Path, container: QVBoxLayout | None = None,
@@ -12633,8 +13142,11 @@ class MainWindow(QMainWindow):
                 )
             view.load_document(state.document)
             view.set_snap_divisor(int(self.editor_snap_combo.currentData()))
-            view.current_time = state.playhead_ms
-            view.window_ms = self._difficulty_window_ms(difficulty_path)
+            # The shared playhead, not this difficulty's stored one: every
+            # open view rides one clock, so a new view starting at its own
+            # difficulty's first note opened misaligned with all of them.
+            view.current_time = self.timeline.current_time
+            view.window_ms = self._editor_window_ms()
             view.zoom_changed.connect(
                 lambda window_ms, dp=difficulty_path, v=view: self._zoom_changed(dp, window_ms, v)
             )
@@ -12684,6 +13196,8 @@ class MainWindow(QMainWindow):
                 )
             frame.set_content(view)
             frame.chart_view = view
+            if not band:
+                view.setFixedHeight(self.editor_view_height_spin.value())
             self._register_chart_view(view)
             self._share_kiai_bands(view, sv=False)
             self._editor_snap_views.append(view)
@@ -12718,8 +13232,11 @@ class MainWindow(QMainWindow):
             view.timing_bar = self.gimmick_timing_bar if band else self.timing_bar
             view.load_document(state.document)
             view.set_snap_divisor(int(self.editor_snap_combo.currentData()))
-            view.current_time = state.playhead_ms
-            view.window_ms = self._difficulty_window_ms(difficulty_path)
+            # The shared playhead, not this difficulty's stored one: every
+            # open view rides one clock, so a new view starting at its own
+            # difficulty's first note opened misaligned with all of them.
+            view.current_time = self.timeline.current_time
+            view.window_ms = self._editor_window_ms()
             view.zoom_changed.connect(
                 lambda window_ms, dp=difficulty_path, v=view: self._zoom_changed(dp, window_ms, v)
             )
@@ -12755,6 +13272,8 @@ class MainWindow(QMainWindow):
             )
             frame.set_content(view)
             frame.sv_view = view
+            if not band:
+                view.setFixedHeight(self.editor_view_height_spin.value())
             self._sv_views.append(view)
             self._share_kiai_bands(view, sv=True)
             self._editor_snap_views.append(view)
@@ -12850,6 +13369,10 @@ class MainWindow(QMainWindow):
                 break
             target += delta
         else:
+            # Nothing further this way inside the group. On the Editor page
+            # that is the difficulty group's edge, and the move goes to the
+            # group as a whole -- see `_move_difficulty_group`.
+            self._move_difficulty_group(layout, delta)
             return
         if not 0 <= target < layout.count():
             return
@@ -12874,6 +13397,35 @@ class MainWindow(QMainWindow):
             for slot, moved in zip(slots, ordered):
                 views[slot] = moved
             break
+
+    def _move_difficulty_group(self, group_layout, delta: int) -> None:
+        """Move a whole difficulty group past its neighbour on the Editor page.
+
+        The Editor page keeps each difficulty's views in a group of their own,
+        and a move never crosses into another group -- that would file a view
+        under the wrong difficulty. But stopping dead at the group's edge left
+        a difficulty with a single view (one chart per difficulty is exactly
+        what "tick all difficulties" produces) with two buttons that did
+        nothing. At the edge, the group moves instead: the view goes where it
+        was asked to, and it stays filed under its own difficulty.
+
+        A no-op on the gimmick page, whose frames share one column with no
+        groups, and at either end of the page.
+        """
+        group = group_layout.parentWidget()
+        page = self.editor_views_layout
+        if group is None or page.indexOf(group) < 0:
+            return
+        index = page.indexOf(group)
+        target = index + delta
+        # Skip anything that is not a group -- the trailing stretch that pins
+        # the column to the top is a layout item with no widget.
+        while 0 <= target < page.count() and page.itemAt(target).widget() is None:
+            target += delta
+        if not 0 <= target < page.count():
+            return
+        page.removeWidget(group)
+        page.insertWidget(target, group)
 
     def _insert_into_group(self, group_layout: QVBoxLayout, frame: EditorViewFrame) -> None:
         """Place `frame` in its difficulty group, keeping density bottommost.
@@ -12930,6 +13482,14 @@ class MainWindow(QMainWindow):
 
     def _editor_view_focus_changed(self, _old, new) -> None:
         self._tool_state.editor_view_focus_changed(_old, new)
+        # Re-sent only when the heard difficulty actually changes: focus moves
+        # on every click into a spin box, and a gimmick map's schedule is a
+        # sort of thousands of objects.
+        if (
+            getattr(self, "state", None) is not None
+            and self._hitsound_state() is not getattr(self, "_sounded_state", None)
+        ):
+            self._apply_hitsound_source()
 
     def _sync_global_tool_row(self) -> None:
         self._tool_state.sync_global_tool_row()
@@ -13117,9 +13677,31 @@ class MainWindow(QMainWindow):
         # Plain data, not the HitObjects themselves: a paste has to produce
         # new identities, and holding live objects would let a later edit (or
         # an undo) mutate what the clipboard "contains".
+        # How far each object sits off its own snap, measured here rather than
+        # recomputed on paste: a gimmick object is deliberately 1-2ms off the
+        # grid (a fake slider's line, a barline restore) and that offset is the
+        # structure, while the *snap* it is measured from has to be the
+        # destination's. Storing both is what lets a paste land on the snap
+        # without flattening the structure onto it. See `_paste_notes`.
+        divisor = int(view.snap_divisor)
+        self._clipboard_divisor = divisor
+
+        def _off_grid(time_ms: float) -> int:
+            return int(time_ms) - osu_snap_ms(
+                snap_time(view.snap_points, float(time_ms), divisor))
+
+        # Relative to the anchor's own, because the anchor is pasted *onto* the
+        # destination snap: its offset from the source grid is spent by the
+        # paste itself, and counting it again moved the whole clipboard by it.
+        base_off_grid = _off_grid(base)
+
+        def residual(time_ms: float) -> int:
+            return _off_grid(time_ms) - base_off_grid
+
         self._note_clipboard = [
             {
                 "offset": note.time - base,
+                "residual": residual(note.time),
                 "x": note.x, "y": note.y, "type": note.type, "hit_sound": note.hit_sound,
                 "extras": tuple(note.extras), "hit_sample": note.hit_sample,
             }
@@ -13128,6 +13710,7 @@ class MainWindow(QMainWindow):
         self._timing_clipboard = [
             {
                 "offset": point.time - base,
+                "residual": residual(point.time),
                 "beat_length": point.beat_length, "meter": point.meter,
                 "sample_set": point.sample_set, "sample_index": point.sample_index,
                 "volume": point.volume, "effects": point.effects,
@@ -13159,11 +13742,44 @@ class MainWindow(QMainWindow):
         # was at least .5, which is why a pattern pasted a few beats along kept
         # ending up one millisecond off the grid it was copied from.
         base = osu_snap_ms(max(0.0, snap_time(view.snap_points, view.current_time, view.snap_divisor)))
+
+        divisor = getattr(self, "_clipboard_divisor", 0) or int(view.snap_divisor)
+
+        def landing(entry) -> int:
+            """Where one clipboard entry goes, on the destination's grid.
+
+            `base + offset` alone is off by a millisecond or two, and always
+            was: both ends truncate their own beat positions to whole
+            milliseconds (`osu_snap_ms`), so shifting a pattern by an integer
+            carries the *source's* truncation to a destination whose fractional
+            beat positions are different. That is the "pasted +-1 or 2 ms off
+            the snap" report.
+
+            So: strip the object's deliberate offset from its snap, snap what
+            is left to the grid actually in force there, and put the offset
+            back. Nearest rather than down, because the error being corrected
+            goes both ways. Across a BPM change this lands on that section's
+            real snap, which is the grid a mapper pasting there is looking at.
+
+            Bailing out when the residual is half a division or more: at an
+            absurd BPM (a gimmick wall's 12345) a division is shorter than the
+            1-2ms a structure is offset by, so snapping would pull the object
+            onto the wrong division entirely. There the raw shift is right,
+            since such a section has no grid a mapper is aligning to.
+            """
+            raw = base + int(entry["offset"])
+            residual = int(entry.get("residual", 0))
+            timing = active_uninherited_at(view.snap_points, float(raw))
+            if timing is not None and abs(residual) * 2 >= timing.beat_length / divisor:
+                return raw
+            return osu_snap_ms(
+                snap_time(view.snap_points, float(raw - residual), divisor)) + residual
+
         next_index = self._next_original_index(state)
         pasted = []
         for entry in self._note_clipboard:
             pasted.append(HitObject(
-                x=entry["x"], y=entry["y"], time=base + int(entry["offset"]),
+                x=entry["x"], y=entry["y"], time=landing(entry),
                 type=entry["type"], hit_sound=entry["hit_sound"],
                 extras=entry["extras"], hit_sample=entry["hit_sample"],
                 original_index=next_index,
@@ -13182,13 +13798,13 @@ class MainWindow(QMainWindow):
         }
         lines = [
             TimingPoint(
-                time=float(base + entry["offset"]), beat_length=entry["beat_length"],
+                time=float(landing(entry)), beat_length=entry["beat_length"],
                 meter=entry["meter"], sample_set=entry["sample_set"],
                 sample_index=entry["sample_index"], volume=entry["volume"],
                 uninherited_flag=entry["uninherited_flag"], effects=entry["effects"],
             )
             for entry in self._timing_clipboard
-            if base + entry["offset"] not in taken[bool(entry["uninherited_flag"])]
+            if landing(entry) not in taken[bool(entry["uninherited_flag"])]
         ]
         commands = []
         if pasted:
@@ -13368,25 +13984,60 @@ class MainWindow(QMainWindow):
         else:
             state.history.push(InsertHitObjects(notes), state)
 
-    def _insert_sv_points(self, state: DifficultyState, points: list, label_id: str) -> None:
-        """Insert inherited points, replacing any that share a millisecond.
+    def _insert_points_command(self, document, points: list, label_id: str = "insert_timing_points"):
+        """One command inserting `points`, with at most one green line per ms.
 
-        Uninherited (BPM) points are never touched: an SV point and a BPM
-        point legitimately share a timestamp, which is exactly the case the
-        SV editor paints yellow.
+        osu! resolves a shared timestamp by file order and the **last** point
+        wins (`active_point_at` walks to the last point at or before the time),
+        so a green line stacked on another is not wrong in game -- it is simply
+        a line that does nothing, which the editor still draws, hit-tests,
+        drags and sweeps from. A pile of those is what "the SV looks weird
+        where there are many gimmick objects" is.
+
+        Every generator had its own idea of the rule: the SV editor replaced
+        what it landed on, the red-line generator dropped duplicate *red* lines
+        and stacked the green ones beside them, and both anti-barline
+        converters did the same. One place now, so a new generator cannot
+        reintroduce it. Keeping the last of a tie and removing what it lands on
+        leaves exactly the speed the stack had, written once.
+
+        Replacing rather than skipping, which is what placing a note or
+        dragging one onto an occupied millisecond already does -- the newer
+        line is the one the mapper just asked for.
+
+        Uninherited points are deliberately untouched here: a red and a green
+        legitimately share a millisecond (the case the SV editor paints
+        yellow), and which red lines a generator may write against the chart's
+        own timing is that generator's decision, not this one's.
         """
-        wanted = {round(point.time) for point in points}
+        # Last of a tie, so `kept` carries the value that was in force. Walked
+        # backwards for that reason and re-reversed, rather than letting the
+        # first one win and silently changing the speed a batch produces.
+        kept: list = []
+        seen: set[int] = set()
+        for point in reversed(points):
+            if point.uninherited:
+                kept.append(point)
+                continue
+            at = round(point.time)
+            if at in seen:
+                continue
+            seen.add(at)
+            kept.append(point)
+        kept.reverse()
         displaced = [
-            point for point in state.document.timing_points
-            if not point.uninherited and round(point.time) in wanted
+            point for point in document.timing_points
+            if not point.uninherited and round(point.time) in seen
         ]
-        if displaced:
-            state.history.push(
-                CompositeCommand([RemoveTimingPoints(displaced), InsertTimingPoints(points)], label_id),
-                state,
-            )
-        else:
-            state.history.push(InsertTimingPoints(points), state)
+        insert = InsertTimingPoints(kept)
+        if not displaced:
+            return insert
+        return CompositeCommand([RemoveTimingPoints(displaced), insert], label_id)
+
+    def _insert_sv_points(self, state: DifficultyState, points: list, label_id: str) -> None:
+        """Insert inherited points, replacing any that share a millisecond."""
+        state.history.push(
+            self._insert_points_command(state.document, points, label_id), state)
 
     def _build_hit_object(self, note_kind: str, time_ms: int, new_combo: bool, big: bool = False) -> HitObject:
         """don/kat only. Slider/spinner carry a duration this signature has
@@ -13546,6 +14197,116 @@ class MainWindow(QMainWindow):
                 selected.clear()
         self._refresh_difficulty_views(difficulty_path)
 
+    def _hitsound_state(self):
+        """The difficulty whose hit objects are sounded.
+
+        Its own choice rather than `self.state`, so a mapper can read one
+        difficulty while hearing another. Everything else -- the timing bars,
+        the kiai bands, the volume graph, both other pages -- stays on the
+        active difficulty deliberately: those describe what is being *edited*,
+        and following two different difficulties at once is how an overlay
+        starts disagreeing with the chart under it.
+        """
+        # The Editor page's choice, and only there. That page is where several
+        # difficulties are open side by side; the gimmick page edits exactly
+        # one, and sounding some other difficulty's notes over it would be
+        # hearing a chart that is not on screen. The choice survives a visit
+        # to the gimmick page -- `_show_page` re-applies on the way back.
+        if (
+            hasattr(self, "page_stack")
+            and self.page_stack.currentIndex() != PAGE_EDITOR
+        ):
+            return self.state
+        pinned = (
+            self._states.get(self._hitsound_source_path)
+            if self._hitsound_source_path is not None else None
+        )
+        if pinned is not None:
+            return pinned
+        # "Active" here means the view last clicked into, not the window's
+        # active difficulty: with several difficulties side by side, the one
+        # being edited is the one worth hearing. Editor-page frames only -- a
+        # gimmick layer stays the last focused view after leaving that page.
+        # getattr: focus events start arriving before either exists.
+        focused = getattr(self, "_tool_state", None) and self._last_focused_editor_view
+        for frame in getattr(self, "_editor_views", ()):
+            if focused is not None and focused in (
+                getattr(frame, "chart_view", None), getattr(frame, "sv_view", None)
+            ):
+                state = self._states.get(getattr(frame, "difficulty_path", None))
+                if state is not None:
+                    return state
+                break
+        return self.state
+
+    def _apply_hitsound_source(self) -> None:
+        """Point the mixer at whichever difficulty is meant to be heard.
+
+        One place, because `_activate_state` used to call `set_schedule`
+        directly -- so switching the active difficulty silently threw away a
+        pinned choice.
+        """
+        state = self._hitsound_state()
+        self._sounded_state = state
+        if state is None:
+            return
+        self.hitsounds.set_schedule(
+            state.document.hit_objects, state.document.timing_points)
+
+    def _hitsound_source_changed(self, index: int) -> None:
+        value = self.hitsound_source_combo.itemData(index)
+        wanted = Path(value) if value else None
+        if wanted is not None:
+            # Parsed here, not left to whatever happens to have been opened:
+            # `_hitsound_state` falls back to the active difficulty when the
+            # chosen one has no state, so without this the combo moved and
+            # nothing changed -- silently, which is the worst version of it.
+            try:
+                self._ensure_state(wanted)
+            except Exception as error:
+                QMessageBox.critical(
+                    self, tr("MainWindow", "Open failed"), str(error))
+                self._refresh_hitsound_source_combo()
+                return
+        self._hitsound_source_path = wanted
+        state = self._hitsound_state()
+        active = self.state
+        # A difficulty naming a different audio file has its notes timed
+        # against a track that is not playing. Said rather than refused: a
+        # mapper pairing a gimmick copy may mean exactly this.
+        if (
+            state is not None and active is not None
+            and state is not active and state.audio_path != active.audio_path
+        ):
+            self.show_toast(tr(
+                "MainWindow",
+                "That difficulty uses a different audio file; its hitsounds "
+                "will not line up with what is playing.",
+            ))
+        self._apply_hitsound_source()
+
+    def _refresh_hitsound_source_combo(self) -> None:
+        """Rebuild the Play list. Keeps the current choice if it survived."""
+        if not hasattr(self, "hitsound_source_combo"):
+            return
+        wanted = self._hitsound_source_path
+        self.hitsound_source_combo.blockSignals(True)
+        self.hitsound_source_combo.clear()
+        self.hitsound_source_combo.addItem(tr("MainWindow", "Active"), "")
+        for label, path in self._taiko_difficulty_entries():
+            self.hitsound_source_combo.addItem(label, str(path))
+        found = (
+            self.hitsound_source_combo.findData(str(wanted))
+            if wanted is not None else 0
+        )
+        if found < 0:
+            # The difficulty it named is gone; fall back rather than keep
+            # sounding a document nothing on screen shows.
+            self._hitsound_source_path = None
+            found = 0
+        self.hitsound_source_combo.setCurrentIndex(found)
+        self.hitsound_source_combo.blockSignals(False)
+
     def _reschedule_hitsounds(self, state) -> None:
         """`self.hitsounds.set_schedule`, once per refresh cycle.
 
@@ -13581,7 +14342,7 @@ class MainWindow(QMainWindow):
             # Placing or deleting a note must make it audible without reopening the
             # map, but only the difficulty actually being played is scheduled --
             # editing a sibling in another view changes nothing you can hear.
-            if self.state is state:
+            if self._hitsound_state() is state:
                 self._reschedule_hitsounds(state)
             for frame in self._editor_views:
                 if getattr(frame, "difficulty_path", None) != difficulty_path:
@@ -14108,12 +14869,14 @@ class MainWindow(QMainWindow):
             pairing = self._gimmick_pairing
             if pairing is not None and pairing.target == difficulty_path:
                 self._refresh_gimmick_views()
-            if self.state is state:
-                # A volume edit changes no note, so the note-refresh path never
-                # runs -- but it is exactly the edit that has to become audible
-                # at once, since hearing it is how you tell you have set it
-                # right.
+            # Two different difficulties now: what is heard and what the bars
+            # describe. A volume edit changes no note, so the note-refresh path
+            # never runs -- but it is exactly the edit that has to become
+            # audible at once, since hearing it is how you tell you have set it
+            # right.
+            if self._hitsound_state() is state:
                 self._reschedule_hitsounds(state)
+            if self.state is state:
                 self._reload_timing_bars(state)
 
     def _close_editor_view(self, frame: EditorViewFrame) -> None:
@@ -14521,8 +15284,6 @@ class MainWindow(QMainWindow):
             return cached
 
         document = parse_osu(source_path)
-        if not document.hit_objects:
-            raise ValueError("No hit objects were parsed.")
         audio_path = resolve_song_asset(
             source_path.parent,
             document.audio_filename,
@@ -14548,7 +15309,11 @@ class MainWindow(QMainWindow):
         )
         # Matches the cursor TimelineGameplay.load_document starts at, so
         # activating a freshly-parsed state doesn't jump the audio to 0:00.
-        state.playhead_ms = float(document.hit_objects[0].time)
+        # A difficulty with no notes yet is the file a mapper is about to
+        # map into, so it opens at 0 rather than being refused.
+        state.playhead_ms = float(
+            document.hit_objects[0].time if document.hit_objects else 0.0
+        )
         self._states[source_path] = state
         return state
 
@@ -14571,8 +15336,9 @@ class MainWindow(QMainWindow):
             self.player.setSource(QUrl.fromLocalFile(str(state.audio_path)))
 
         self.timeline.load_document(state.document)
-        self.hitsounds.set_schedule(
-            state.document.hit_objects, state.document.timing_points)
+        # Not `set_schedule` directly: a pinned playback difficulty outlives a
+        # change of active difficulty. See `_hitsound_state`.
+        self._apply_hitsound_source()
         self.timeline.set_snap_divisor(int(self.snap_combo.currentData()))
         self._reload_timing_bars(state)
         # Fancy Arranger's own density chart always reflects the active
@@ -14646,6 +15412,7 @@ class MainWindow(QMainWindow):
             self.difficulty_combo.setCurrentIndex(selected_index)
             self.difficulty_combo.setEnabled(bool(self.song_difficulties))
             self.difficulty_combo.blockSignals(False)
+            self._refresh_hitsound_source_combo()
 
     def _difficulty_changed(self, index: int) -> None:
         if index < 0:

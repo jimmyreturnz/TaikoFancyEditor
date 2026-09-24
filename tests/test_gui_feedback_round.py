@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -360,6 +361,347 @@ class BackgroundDropSaveTests(unittest.TestCase):
 
         reparsed = parse_osu(self.path)
         self.assertEqual(gui.extract_background_filename(reparsed), "bg.png")
+
+
+class _Mapset(unittest.TestCase):
+    """One folder, several difficulties on one audio file -- plus an
+    osu!standard one, which is what the mode filter exists for."""
+
+    def setUp(self) -> None:
+        self._temp = tempfile.TemporaryDirectory()
+        directory = Path(self._temp.name)
+        (directory / "audio.mp3").write_bytes(b"\x00")
+        self.path = write_fixture(directory, "full_v14")
+
+        source = self.path.read_bytes()
+        self.second = directory / "second.osu"
+        self.second.write_bytes(source.replace(b"Version:Oni", b"Version:Muzukashii"))
+        self.third = directory / "third.osu"
+        self.third.write_bytes(source.replace(b"Version:Oni", b"Version:Futsuu"))
+        # Same folder, same audio, not taiko: the file "all difficulties" must
+        # not offer, because its hit objects are not taiko notes.
+        self.standard = directory / "standard.osu"
+        self.standard.write_bytes(
+            source.replace(b"Mode: 1", b"Mode: 0").replace(b"Version:Oni", b"Version:Insane"))
+
+        self.window = gui.MainWindow()
+        self.window.show()
+        self.window._load_map_path(self.path, refresh_difficulties=True)
+        self.state = self.window.state
+
+    def tearDown(self) -> None:
+        self.window.close()
+        self._temp.cleanup()
+
+    def _charts(self):
+        return [f for f in self.window._editor_views if f.view_type == "chart"]
+
+    def _open_with(self, view_type, paths):
+        """Drive _open_add_view_dialog with a given set of ticks."""
+        def run(dialog_self):
+            dialog_self.type_combo.setCurrentIndex(
+                dialog_self.type_combo.findData(view_type))
+            for item in dialog_self._items():
+                item.setCheckState(
+                    Qt.CheckState.Checked
+                    if Path(item.data(Qt.ItemDataRole.UserRole)) in paths
+                    else Qt.CheckState.Unchecked
+                )
+            return gui.QDialog.Accepted
+
+        with patch.object(gui.AddViewDialog, "exec", run):
+            self.window._open_add_view_dialog()
+
+
+class AddViewDialogMultiSelectTests(_Mapset):
+    def _dialog(self):
+        return gui.AddViewDialog(
+            self.window._taiko_difficulty_entries(), self.window, self.path)
+
+    def test_the_open_difficulty_starts_ticked(self):
+        dialog = self._dialog()
+        self.assertEqual(dialog.selected_difficulty_paths(), [self.path])
+        self.assertEqual(dialog.selected_difficulty_path(), self.path)
+        dialog.deleteLater()
+
+    def test_ticking_several_returns_several(self):
+        dialog = self._dialog()
+        for item in dialog._items():
+            if Path(item.data(Qt.ItemDataRole.UserRole)) == self.second:
+                item.setCheckState(Qt.CheckState.Checked)
+        self.assertEqual(
+            set(dialog.selected_difficulty_paths()), {self.path, self.second})
+        dialog.deleteLater()
+
+    def test_the_all_checkbox_ticks_every_row(self):
+        dialog = self._dialog()
+        dialog.all_difficulties_check.setChecked(True)
+        self.assertEqual(
+            set(dialog.selected_difficulty_paths()),
+            {self.path, self.second, self.third},
+        )
+        dialog.all_difficulties_check.setChecked(False)
+        self.assertEqual(dialog.selected_difficulty_paths(), [])
+        dialog.deleteLater()
+
+    def test_unticking_one_row_clears_the_all_box(self):
+        dialog = self._dialog()
+        dialog.all_difficulties_check.setChecked(True)
+        dialog._items()[0].setCheckState(Qt.CheckState.Unchecked)
+        self.assertFalse(dialog.all_difficulties_check.isChecked())
+        dialog.deleteLater()
+
+    def test_a_non_taiko_difficulty_is_not_offered(self):
+        offered = {path for _label, path in self.window._taiko_difficulty_entries()}
+        self.assertEqual(offered, {self.path, self.second, self.third})
+        self.assertNotIn(self.standard, offered)
+
+
+class OpenChartsForEveryDifficultyTests(_Mapset):
+    def test_one_chart_each_and_no_sv_views(self):
+        before_sv = len([f for f in self.window._editor_views if f.view_type == "sv"])
+        self._open_with("chart", {self.path, self.second, self.third})
+
+        charted = {f.difficulty_path for f in self._charts()}
+        self.assertEqual(charted, {self.path, self.second, self.third})
+        self.assertEqual(
+            len([f for f in self.window._editor_views if f.view_type == "sv"]),
+            before_sv,
+            "opening charts must not open timing points as well",
+        )
+
+    def test_running_it_twice_adds_nothing(self):
+        self._open_with("chart", {self.path, self.second, self.third})
+        count = len(self._charts())
+        self._open_with("chart", {self.path, self.second, self.third})
+        self.assertEqual(len(self._charts()), count)
+
+    def test_a_different_view_type_is_still_added(self):
+        """Idempotence is per (difficulty, type), not per difficulty."""
+        self._open_with("chart", {self.second})
+        self._open_with("sv", {self.second})
+        types = {
+            f.view_type for f in self.window._editor_views
+            if f.difficulty_path == self.second
+        }
+        self.assertEqual(types, {"chart", "sv"})
+
+    def test_every_chart_opens_at_the_shared_zoom_and_playhead(self):
+        self.window._zoom_changed(self.path, 5500.0, None)
+        self.window.seek_audio(7000.0)
+        self._open_with("chart", {self.second, self.third})
+        for frame in self._charts():
+            self.assertEqual(frame.chart_view.window_ms, 5500.0)
+            self.assertAlmostEqual(
+                frame.chart_view.current_time,
+                self.window.timeline.current_time, places=3)
+
+
+class PlaybackDifficultyTests(_Mapset):
+    def _times(self):
+        return list(self.window.hitsounds.schedule[0])
+
+    def _pick(self, path):
+        combo = self.window.hitsound_source_combo
+        index = combo.findData(str(path)) if path is not None else 0
+        self.assertGreaterEqual(index, 0, f"{path} is not offered")
+        combo.setCurrentIndex(index)
+
+    def test_the_combo_offers_active_plus_every_taiko_difficulty(self):
+        combo = self.window.hitsound_source_combo
+        offered = [combo.itemData(i) for i in range(combo.count())]
+        self.assertEqual(offered[0], "", "the first entry follows the active difficulty")
+        self.assertEqual(
+            set(offered[1:]), {str(self.path), str(self.second), str(self.third)})
+
+    def test_choosing_one_sounds_its_notes(self):
+        other = self.window._ensure_state(self.second)
+        other.document.hit_objects[0].time = 4321
+        self._pick(self.second)
+        self.assertIn(4321, self._times())
+        self.assertNotIn(4321, [n.time for n in self.state.document.hit_objects])
+
+    def test_switching_the_active_difficulty_keeps_the_choice(self):
+        self._pick(self.second)
+        other = self.window._ensure_state(self.second)
+        other.document.hit_objects[0].time = 4321
+        self.window._apply_hitsound_source()
+
+        self.window._load_map_path(self.third, refresh_difficulties=False)
+        self.assertIs(self.window._hitsound_state(), other)
+        self.assertIn(4321, self._times())
+
+    def test_an_edit_in_the_chosen_difficulty_is_rescheduled(self):
+        self._pick(self.second)
+        self.window._place_note(self.second, "don", 9876.0, False)
+        self.assertIn(9876, self._times())
+
+    def test_an_edit_elsewhere_is_not(self):
+        self._pick(self.second)
+        self.window._place_note(self.third, "don", 9876.0, False)
+        self.assertNotIn(9876, self._times())
+
+    def test_the_timing_bars_stay_on_the_active_difficulty(self):
+        """Only the hit objects follow the Play combo -- an overlay describing
+        a difficulty other than the one being edited disagrees with the chart
+        under it."""
+        self._pick(self.second)
+        before = list(self.window.timing_bar.timing_markers)
+        other = self.window._ensure_state(self.second)
+        other.document.timing_points[0].time = 12345.0
+        self.window._refresh_difficulty_sv_views(self.second)
+        self.assertEqual(list(self.window.timing_bar.timing_markers), before)
+
+    def test_the_choice_is_the_editor_pages_only(self):
+        """The gimmick page edits one difficulty; sounding another over it is
+        hearing a chart that is not on screen. The choice survives the visit."""
+        other = self.window._ensure_state(self.second)
+        other.document.hit_objects[0].time = 4321
+        self._pick(self.second)
+        self.assertIn(4321, self._times())
+
+        self.window._show_page(gui.PAGE_GIMMICK)
+        self.assertIs(self.window._hitsound_state(), self.state)
+        self.assertNotIn(4321, self._times())
+
+        self.window._show_page(gui.PAGE_EDITOR)
+        self.assertIs(self.window._hitsound_state(), other)
+        self.assertIn(4321, self._times())
+
+    def test_active_is_the_default_and_can_be_returned_to(self):
+        self._pick(self.second)
+        self._pick(None)
+        self.assertIsNone(self.window._hitsound_source_path)
+        self.assertIs(self.window._hitsound_state(), self.state)
+
+
+    def _focus_chart_of(self, path):
+        """Open a chart view of `path` and focus it the way Qt would."""
+        self.window._add_editor_view("chart", path)
+        view = next(f.chart_view for f in reversed(self.window._editor_views)
+                    if f.difficulty_path == path and f.view_type == "chart")
+        self.window._editor_view_focus_changed(None, view)
+        return view
+
+    def test_active_follows_the_focused_views_difficulty(self):
+        other = self.window._ensure_state(self.second)
+        other.document.hit_objects[0].time = 4321
+        self._focus_chart_of(self.second)
+        self.assertIs(self.window._hitsound_state(), other)
+        self.assertIn(4321, self._times())
+
+        self._focus_chart_of(self.path)
+        self.assertIs(self.window._hitsound_state(), self.state)
+        self.assertNotIn(4321, self._times())
+
+    def test_a_pinned_choice_outranks_focus(self):
+        third = self.window._ensure_state(self.third)
+        self._pick(self.third)
+        self._focus_chart_of(self.second)
+        self.assertIs(self.window._hitsound_state(), third)
+
+    def test_focus_does_not_reach_the_gimmick_page(self):
+        self._focus_chart_of(self.second)
+        self.window._show_page(gui.PAGE_GIMMICK)
+        self.assertIs(self.window._hitsound_state(), self.state)
+
+class MoveAcrossDifficultiesTests(_Mapset):
+    """Up/down used to stop dead at a difficulty group's edge.
+
+    Each difficulty keeps its views in a group, and a move never files a view
+    under another difficulty. So a difficulty with a single view -- one chart
+    each is exactly what ticking every difficulty produces -- had two buttons
+    that did nothing. At the edge the group now moves instead.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.window.resize(1400, 1000)
+        self._open_with("chart", {self.second})
+        _APP.processEvents()
+
+    def _screen_order(self):
+        _APP.processEvents()
+        frames = [f for f in self.window._editor_views if not f.compact]
+        return [
+            (f.view_type, f.difficulty_path) for f in sorted(
+                frames, key=lambda f: f.mapTo(self.window, f.rect().topLeft()).y())
+        ]
+
+    def _frame(self, view_type, path):
+        return next(
+            f for f in self.window._editor_views
+            if f.view_type == view_type and f.difficulty_path == path)
+
+    def test_a_lone_view_moves_up_past_the_difficulty_above(self):
+        lone = self._frame("chart", self.second)
+        self.assertEqual(self._screen_order()[-1], ("chart", self.second))
+        lone.move_requested.emit(lone, -1)
+        self.assertEqual(self._screen_order()[0], ("chart", self.second))
+
+    def test_the_last_view_of_a_group_moves_its_group_down(self):
+        last_oni = [f for f in self.window._editor_views
+                    if f.difficulty_path == self.path][-1]
+        last_oni.move_requested.emit(last_oni, 1)
+        order = self._screen_order()
+        self.assertEqual(order[0], ("chart", self.second))
+
+    def test_a_view_is_never_filed_under_another_difficulty(self):
+        """Every group still holds one difficulty's views only."""
+        lone = self._frame("chart", self.second)
+        lone.move_requested.emit(lone, -1)
+        for path, group_layout in self.window._editor_view_groups.items():
+            for index in range(group_layout.count()):
+                widget = group_layout.itemAt(index).widget()
+                if isinstance(widget, gui.EditorViewFrame):
+                    self.assertEqual(widget.difficulty_path, path)
+
+    def test_inside_a_group_it_still_swaps_one_view(self):
+        chart = self._frame("chart", self.path)
+        before = self._screen_order()
+        chart.move_requested.emit(chart, 1)
+        after = self._screen_order()
+        self.assertEqual(after[:2], [before[1], before[0]])
+
+    def test_the_ends_of_the_page_are_no_ops(self):
+        order = self._screen_order()
+        top = self._frame(*order[0])
+        top.move_requested.emit(top, -1)
+        self.assertEqual(self._screen_order(), order)
+        bottom = self._frame(*order[-1])
+        bottom.move_requested.emit(bottom, 1)
+        self.assertEqual(self._screen_order(), order)
+
+
+class AddViewDialogPerPageTests(_Mapset):
+    def test_the_gimmick_page_keeps_its_single_difficulty_combo(self):
+        """It edits exactly one difficulty; a list of checkboxes there would
+        offer a choice the page does not have."""
+        dialog = gui.AddViewDialog(
+            [("Gimmick: oni", self.path)], self.window, self.path, gimmick=True)
+        self.assertIsNotNone(dialog.difficulty_combo)
+        self.assertIsNone(dialog.difficulty_list)
+        self.assertIsNone(dialog.all_difficulties_check)
+        self.assertEqual(dialog.selected_difficulty_paths(), [self.path])
+        dialog.deleteLater()
+
+    def test_the_editor_list_shows_every_difficulty_without_scrolling(self):
+        """Sized from its rows, not a typed 140px that showed four."""
+        entries = [(f"Diff {i}", Path(f"d{i}.osu")) for i in range(12)]
+        dialog = gui.AddViewDialog(entries, self.window, entries[0][1])
+        rows = dialog.difficulty_list.count()
+        row = dialog.difficulty_list.sizeHintForRow(0)
+        self.assertGreaterEqual(dialog.difficulty_list.minimumHeight(), rows * row)
+        dialog.deleteLater()
+
+    def test_a_huge_set_is_still_bounded_by_the_screen(self):
+        entries = [(f"Diff {i}", Path(f"d{i}.osu")) for i in range(400)]
+        dialog = gui.AddViewDialog(entries, self.window, entries[0][1])
+        screen = dialog.screen() or _APP.primaryScreen()
+        self.assertLessEqual(
+            dialog.difficulty_list.minimumHeight(),
+            screen.availableGeometry().height())
+        dialog.deleteLater()
 
 
 if __name__ == "__main__":

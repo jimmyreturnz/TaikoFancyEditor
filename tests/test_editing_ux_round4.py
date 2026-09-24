@@ -885,7 +885,11 @@ class FunctionPrefillTests(WindowTestCase):
 class FunctionChooserTests(unittest.TestCase):
     def test_every_function_gets_its_own_square_button(self):
         dialog = gui.SVFunctionDialog(1000.0, 2000.0)
-        expected = {"linear", "sin_in", "sin_out", "exp1.3", "exp1.6", "true_exp", "sin"}
+        expected = {
+            "linear", "sin_in", "sin_out", "exp1.3", "exp1.6", "true_exp", "sin",
+            # The same exp curve with its exponent typed rather than fixed.
+            "exp_x",
+        }
         self.assertEqual(set(dialog.function_buttons), expected)
         for button in dialog.function_buttons.values():
             self.assertTrue(button.isCheckable())
@@ -916,6 +920,36 @@ class FunctionChooserTests(unittest.TestCase):
         dialog = gui.SVFunctionDialog(1000.0, 2000.0)
         dialog.function_buttons["sin"].setChecked(True)
         self.assertEqual(dialog.preview.function_id, "sin")
+        dialog.deleteLater()
+
+    def test_the_exp_tile_carries_the_typed_exponent(self):
+        """One tile is any exponent: the number rides in the id, so the
+        generator and a stored choice take the string they always did."""
+        dialog = gui.SVFunctionDialog(1000.0, 2000.0)
+        dialog.exp_spin.setValue(3.0)
+        dialog.function_buttons["exp_x"].setChecked(True)
+        self.assertEqual(dialog.selected_function(), "exp3")
+        self.assertEqual(dialog.parameters()["function"], "exp3")
+        self.assertEqual(dialog.preview.function_id, "exp3")
+        dialog.deleteLater()
+
+    def test_a_stored_exponent_comes_back_into_the_box(self):
+        dialog = gui.SVFunctionDialog(1000.0, 2000.0)
+        dialog.set_selected_function("exp2.5")
+        self.assertTrue(dialog.function_buttons["exp_x"].isChecked())
+        self.assertAlmostEqual(dialog.exp_spin.value(), 2.5)
+        self.assertEqual(dialog.selected_function(), "exp2.5")
+        dialog.deleteLater()
+
+    def test_the_exp_tile_re_plots_when_the_exponent_changes(self):
+        """The graph under the tile has to be the curve that number makes,
+        or it is a picture of a different function."""
+        dialog = gui.SVFunctionDialog(1000.0, 2000.0, initial_rate=1.0, final_rate=2.0)
+        dialog.exp_spin.setValue(1.1)
+        before = dialog.function_buttons["exp_x"].icon().pixmap(128, 110).toImage()
+        dialog.exp_spin.setValue(8.0)
+        after = dialog.function_buttons["exp_x"].icon().pixmap(128, 110).toImage()
+        self.assertNotEqual(before, after)
         dialog.deleteLater()
 
     def test_each_tile_carries_its_own_graph_and_there_is_no_separate_preview(self):

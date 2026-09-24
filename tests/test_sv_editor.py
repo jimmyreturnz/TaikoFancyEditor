@@ -116,10 +116,31 @@ class SVEasingTests(unittest.TestCase):
     correctness matters beyond decoration."""
 
     def test_endpoints_are_0_and_1_for_every_function(self):
-        for function_id in ("linear", "sin_in", "sin_out", "exp1.3", "exp1.6", "true_exp", "sin"):
+        for function_id in (
+            "linear", "sin_in", "sin_out", "exp1.3", "exp1.6", "true_exp", "sin", "exp2.5",
+        ):
             with self.subTest(function_id=function_id):
                 self.assertAlmostEqual(gui.sv_ease(function_id, 0.0), 0.0, places=6)
                 self.assertAlmostEqual(gui.sv_ease(function_id, 1.0), 1.0, places=6)
+
+    def test_a_typed_exponent_is_carried_in_the_id(self):
+        """"Exp x" is the same curve with the number exposed, and the number
+        rides in the id so no caller needs a second argument for it."""
+        for exponent in (1.0, 1.5, 2.0, 3.7, 10.0):
+            with self.subTest(exponent=exponent):
+                for step in range(11):
+                    progress = step / 10
+                    self.assertAlmostEqual(
+                        gui.sv_ease(f"exp{exponent:g}", progress),
+                        progress ** exponent, places=12)
+
+    def test_an_exponent_below_one_is_floored_rather_than_inverted(self):
+        """Below 1 the curve bends the other way, which is the shape the two
+        fixed exp tiles exist above 1 to avoid."""
+        self.assertAlmostEqual(gui.sv_ease("exp0.5", 0.25), 0.25, places=12)
+
+    def test_a_malformed_exponent_falls_back_to_linear(self):
+        self.assertAlmostEqual(gui.sv_ease("expfoo", 0.5), 0.5)
 
     def test_out_of_range_progress_is_clamped(self):
         self.assertEqual(gui.sv_ease("linear", -1.0), 0.0)

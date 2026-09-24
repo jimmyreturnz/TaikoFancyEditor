@@ -21,7 +21,7 @@ import os
 import pstats
 import sys
 from pathlib import Path
-from time import perf_counter
+from time import perf_counter, sleep
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -75,6 +75,24 @@ if "--gameplay" in sys.argv:
     window._add_editor_view("gameplay", path)
     app.processEvents()
 
+if "--all-charts" in sys.argv:
+    # "Open a chart for every difficulty" multiplies the per-frame broadcast:
+    # _render_gameplay_frame calls set_time(force=True) on every entry of
+    # _chart_views and each one repaints. One or two views is what every
+    # earlier run here measured, so the cost of five to ten is a number this
+    # harness did not have.
+    for _label, difficulty in window._taiko_difficulty_entries():
+        if any(
+            getattr(frame, "difficulty_path", None) == difficulty
+            and frame.view_type == "chart"
+            for frame in window._editor_views
+        ):
+            continue
+        window._add_editor_view("chart", difficulty)
+    app.processEvents()
+    charts = len(window._chart_views)
+    print(f"     {charts} chart views open")
+
 if "--skin" in sys.argv:
     # The skinned path costs more than the built-in one (blits instead of
     # cached ellipses), so "is it fast enough" has to be asked with a skin on.
@@ -83,6 +101,37 @@ if "--skin" in sys.argv:
     window._apply_appearance_settings()
     print(f"     skin: {window.skin.name or '(built-in)'}")
     app.processEvents()
+
+# The track is still decoding when the window is ready, and the decode
+# delivers every buffer through Python on the engine thread -- array building
+# and a mono downmix, all holding the GIL -- while each one also re-announces
+# the growing duration to every timing bar. For about a second after a load,
+# every frame here competes with that. Measured: with six charts open, frames
+# 0-95 in a row ran over budget and 1 of the next 205 did, and every figure this
+# harness printed before this wait included that second -- "34% over budget"
+# for six charts was the load, not the charts. `--no-settle` measures it on
+# purpose.
+#
+# Settled on decoded *samples*, not on `player.duration()`: the decoder reports
+# the full duration from the file's metadata almost at once, so waiting for the
+# duration to stop changing waited for nothing while the decode ran on. Read
+# off the engine's own buffer -- a private attribute, and fine for a harness,
+# which exists to look at exactly what the app does not expose.
+if "--no-settle" not in sys.argv:
+    began = perf_counter()
+    import audio_engine
+    engine = window.player._engine
+    last, last_change = -1, perf_counter()
+    while perf_counter() - began < 60.0:
+        app.processEvents()
+        sleep(0.01)
+        decoded = len(engine._mono)
+        if decoded != last:
+            last, last_change = decoded, perf_counter()
+        elif perf_counter() - last_change >= 0.5:
+            break
+    print(f"     audio decoded: {last / audio_engine.SAMPLE_RATE:.1f}s of track, "
+          f"waited {perf_counter() - began:.1f}s")
 
 state = window.state
 print(f"map: {path.name}")

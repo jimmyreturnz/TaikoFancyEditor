@@ -653,6 +653,46 @@
             <translation>ギミック</translation>
         </message>
         <message>
+            <source>Invisible note BPM</source>
+            <translation>見えない音符のBPM</translation>
+        </message>
+        <message>
+            <source>Structure red line BPM</source>
+            <translation>構造の赤線BPM</translation>
+        </message>
+        <message>
+            <source>View height</source>
+            <translation>ビューの高さ</translation>
+        </message>
+        <message>
+            <source>Restore the chart BPM 1 ms later</source>
+            <translation>1ms後に譜面のBPMへ戻す</translation>
+        </message>
+        <message>
+            <source>Exp x</source>
+            <translation>指数 x</translation>
+        </message>
+        <message>
+            <source>View size</source>
+            <translation>ビューサイズ</translation>
+        </message>
+        <message>
+            <source>All taiko difficulties</source>
+            <translation>全ての太鼓難易度</translation>
+        </message>
+        <message>
+            <source>Play:</source>
+            <translation>再生:</translation>
+        </message>
+        <message>
+            <source>Active</source>
+            <translation>アクティブ</translation>
+        </message>
+        <message>
+            <source>That difficulty uses a different audio file; its hitsounds will not line up with what is playing.</source>
+            <translation>その難易度は別の音声ファイルを使用しているため、ヒットサウンドが再生中の音源と合いません。</translation>
+        </message>
+        <message>
             <source>Gimmick BPM</source>
             <translation>ギミックBPM</translation>
         </message>

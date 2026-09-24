@@ -186,6 +186,13 @@ DEFAULT_RED_LINE_BPM = 180.0
 DIRTY_BASE_BPM = 1000.0
 
 
+# How long after a plain fake slider's own red line the chart's BPM comes
+# back, when `GimmickConfig.fake_slider_restore_after` is on. One millisecond:
+# the shortest gap that is still a separate timestamp, so the retiming reaches
+# the slider and nothing past it.
+FAKE_SLIDER_RESTORE_OFFSET_MS = 1
+
+
 class GimmickConfigError(ValueError):
     """Raised for a configuration value that would produce a broken map."""
 
@@ -246,6 +253,21 @@ class GimmickConfig:
     # Defaults on, which is what every structure written before this dial
     # existed did.
     fake_slider_red_line: bool = True
+    # Whether that line is followed by a second one a millisecond later,
+    # carrying the chart's own BPM back.
+    #
+    # Without it the line governs the rest of the map: a red line's BPM is its
+    # scroll speed, so a plain fake slider retimed to hide something retimes
+    # everything after it too, and the mapper's fix was to place a second line
+    # by hand -- which the Red Line tool then refused, because the slider's own
+    # line was already on that millisecond (osu! honours one uninherited point
+    # per timestamp). Writing both as one structure is what makes the effect
+    # local to the slider, and is the standard shape the owner asked for.
+    #
+    # Off by default: every structure written before this dial existed had no
+    # restore, and turning it on for them would retime the map they were
+    # tuned against.
+    fake_slider_restore_after: bool = False
     # Whether a shiny writes the red line at its own note's millisecond. At
     # the default multiplier that line only restates the chart's own BPM, so
     # a run of shinies is a run of dead lines the same way a plain fake
@@ -320,6 +342,21 @@ class GimmickConfig:
     # nothing is drawn across the retimed section for this to keep looking the
     # same speed, so it is a plain speed change to the fake slider itself.
     fake_slider_bpm_multiplier: float = 1.0
+    # The BPM every *restore* line carries -- the line that gives the chart
+    # its speed back one offset after a squash, and the bars a barline note
+    # is drawn out of. None keeps what these structures always did: the
+    # chart's own BPM at that millisecond, times whichever multiplier the
+    # structure already had.
+    #
+    # Its own dial because `gimmick_bpm` and this are two different numbers
+    # that were only reachable as one: `gimmick_bpm` is how invisible the
+    # note is, and this is how fast the chart runs afterwards. A mapper who
+    # wanted a slower section under the structure had to reach it through a
+    # multiplier of the chart's BPM, which is not a number they can read off
+    # their own timing panel. Same shape as `red_line_bpm` and
+    # `anti_wall_bpm`, and for the same reason: a BPM is what the box asks
+    # for.
+    restore_bpm: float | None = None
     # Fake slider layer: set effects bit 3 (value 8) on the uninherited points
     # a fake slider writes, so its 60000 BPM line does not also draw a barline.
     # On by default -- a fake slider is decoration, and the bar it drew was
@@ -400,6 +437,8 @@ class GimmickConfig:
             raise GimmickConfigError("Shiny BPM multiplier must be positive")
         if self.fake_slider_bpm_multiplier <= 0:
             raise GimmickConfigError("Fake slider BPM multiplier must be positive")
+        if self.restore_bpm is not None and self.restore_bpm <= 0:
+            raise GimmickConfigError("Red line BPM must be positive")
         if self.anti_lines_per_beat < 1:
             raise GimmickConfigError("Anti-barline density must be at least 1 line per beat")
         if self.anti_wall_bpm is not None and self.anti_wall_bpm <= 0:
@@ -485,6 +524,25 @@ def base_bpm_at(base_timing: list[TimingPoint], time_ms: float) -> float:
 
 
 # -- pairing index ---------------------------------------------------------
+
+
+def restore_bpm_at(
+    base_timing: list[TimingPoint],
+    time_ms: float,
+    config: GimmickConfig,
+    multiplier: float = 1.0,
+) -> float:
+    """The BPM a structure's restore line carries.
+
+    One place, because a barline note's bars and a fake slider's restore are
+    the same line doing the same job, and they disagreed about where their BPM
+    came from: the fake slider had a multiplier of the chart's BPM and the
+    barline note had no dial at all. `config.restore_bpm` is the typed value
+    the owner asked for; None is what both did before it existed.
+    """
+    if config.restore_bpm is not None:
+        return config.restore_bpm
+    return base_bpm_at(base_timing, time_ms) * multiplier
 
 
 @dataclass(slots=True)
@@ -711,6 +769,8 @@ def fake_slider(
         # on which section it was dropped in, which is not what "shiny" is.
         # The retiming compensation goes with it, deliberately.
         if config.shiny_red_line:
+            # A shiny's line sits on its own note rather than restoring
+            # anything, so `restore_bpm` deliberately does not reach it.
             red_bpm = base_bpm_at(base_timing, time_ms) * config.shiny_bpm_multiplier
             points = [TimingPoint.uninherited_at(time_ms, red_bpm, omit_first_barline=omit)]
         else:
@@ -733,13 +793,24 @@ def fake_slider(
         # mark when that line goes; see `shiny_red_line`.
         slider_at = time_ms + config.fake_slider_offset_ms
         if config.fake_slider_red_line:
-            bpm = base_bpm_at(base_timing, slider_at) * config.fake_slider_bpm_multiplier
+            bpm = restore_bpm_at(
+                base_timing, slider_at, config, config.fake_slider_bpm_multiplier)
             points = [TimingPoint.uninherited_at(slider_at, bpm, omit_first_barline=omit)]
+            # ...and the chart's own speed back one millisecond later, so the
+            # line above governs the slider rather than the rest of the map.
+            # See `fake_slider_restore_after`.
+            if config.fake_slider_restore_after:
+                points.append(TimingPoint.uninherited_at(
+                    slider_at + FAKE_SLIDER_RESTORE_OFFSET_MS,
+                    base_bpm_at(base_timing, slider_at + FAKE_SLIDER_RESTORE_OFFSET_MS),
+                    omit_first_barline=omit,
+                ))
         else:
             points = []
     else:
         slider_at = time_ms + config.fake_slider_offset_ms
-        restore_bpm = base_bpm_at(base_timing, slider_at) * config.fake_slider_bpm_multiplier
+        restore_bpm = restore_bpm_at(
+            base_timing, slider_at, config, config.fake_slider_bpm_multiplier)
         # `hide_note` off keeps the note on screen, and both halves of the
         # squash have to go for that: the chart's own BPM in place of the
         # gimmick one, and the chart's own SV in place of `fake_slider_sv` --
@@ -853,7 +924,8 @@ def barline_note(
     ]
     for offset in offsets:
         at = time_ms + offset
-        points.append(TimingPoint.uninherited_at(at, base_bpm_at(base_timing, at)))
+        points.append(
+            TimingPoint.uninherited_at(at, restore_bpm_at(base_timing, at, config)))
     points.sort(key=lambda point: point.time)
     notes = [_circle(time_ms, _KIND_HITSOUND[kind])] if config.place_notes else []
     return points, notes

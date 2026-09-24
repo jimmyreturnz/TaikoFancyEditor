@@ -110,5 +110,58 @@ class TimelineGameplayTieBreakTests(unittest.TestCase):
         self.assertEqual(found.uid, new.uid)
 
 
+class OneGreenLinePerMillisecondTests(unittest.TestCase):
+    """`_insert_points_command` is the one rule every generator writes through.
+
+    Called unbound: it reads the document handed to it and nothing off `self`,
+    which is the point -- the rule needs no window, no state and no open view,
+    so no generator can end up on a path that skips it.
+    """
+
+    def _command(self, existing, inserting):
+        return gui.MainWindow._insert_points_command(
+            None, _Document(list(existing)), list(inserting))
+
+    def test_a_green_line_replaces_the_one_it_lands_on(self):
+        old = TimingPoint.inherited_at(1000, 1.5)
+        new = TimingPoint.inherited_at(1000, 2.5)
+        command = self._command([old], [new])
+        self.assertIsInstance(command, gui.CompositeCommand)
+        removed, inserted = command.commands
+        self.assertEqual([p.uid for p in removed.points], [old.uid])
+        self.assertEqual([p.uid for p in inserted.points], [new.uid])
+
+    def test_a_red_line_on_the_same_millisecond_is_left_alone(self):
+        """A red and a green legitimately share a timestamp -- that is the
+        yellow line the SV editor draws, not a duplicate."""
+        red = TimingPoint.uninherited_at(1000, 180.0)
+        new = TimingPoint.inherited_at(1000, 2.5)
+        command = self._command([red], [new])
+        self.assertIsInstance(command, gui.InsertTimingPoints)
+        self.assertEqual([p.uid for p in command.points], [new.uid])
+
+    def test_two_green_lines_in_one_batch_collapse_to_the_last(self):
+        """osu! honours the last of a tie, so keeping the first would change
+        the speed the batch produces as well as the line count."""
+        first = TimingPoint.inherited_at(1000, 1.5)
+        second = TimingPoint.inherited_at(1000, 2.5)
+        elsewhere = TimingPoint.inherited_at(2000, 3.0)
+        command = self._command([], [first, second, elsewhere])
+        self.assertIsInstance(command, gui.InsertTimingPoints)
+        self.assertEqual(
+            [p.uid for p in command.points], [second.uid, elsewhere.uid])
+
+    def test_the_surviving_order_is_still_by_time(self):
+        early = TimingPoint.inherited_at(500, 1.0)
+        late = TimingPoint.inherited_at(1500, 2.0)
+        command = self._command([], [early, late])
+        self.assertEqual([p.time for p in command.points], [500.0, 1500.0])
+
+    def test_nothing_is_removed_when_nothing_is_stacked(self):
+        command = self._command(
+            [TimingPoint.inherited_at(500, 1.0)], [TimingPoint.inherited_at(1500, 2.0)])
+        self.assertIsInstance(command, gui.InsertTimingPoints)
+
+
 if __name__ == "__main__":
     unittest.main()

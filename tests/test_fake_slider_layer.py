@@ -235,11 +235,26 @@ class RedLineDialogTests(_Layer2, unittest.TestCase):
     tuned.
     """
 
-    def test_the_line_opens_but_is_not_otherwise_editable_here(self) -> None:
+    def test_the_line_opens_and_can_be_dragged_here(self) -> None:
+        """Editing was off so that a line could not be pulled out from under
+        its slider -- but a drag goes through `_expand_move`, which takes the
+        slider with it. Off, a red line that landed on a fake slider was
+        adopted by this layer and then could not be moved at all."""
         self.assertTrue(self.layer.timing_dialog_enabled)
-        self.assertFalse(
-            self.layer.timing_edit_enabled,
-            "dragging or deleting the line alone would dismantle the structure",
+        self.assertTrue(self.layer.timing_edit_enabled)
+
+    def test_dragging_the_line_takes_its_slider_with_it(self) -> None:
+        self._place_pair()
+        reds = [
+            point for point in self.document.timing_points
+            if point.uninherited and round(point.time) in (self.slider_at, self.SNAP)
+        ]
+        line = reds
+        self.assertTrue(line, "the structure wrote no red line to drag")
+        notes, points = self.window._expand_move(self.state, set(), {line[0].uid})
+        self.assertTrue(
+            any(gui.MainWindow.is_fake_slider(note) for note in notes),
+            "a drag on the line must carry the object it belongs to",
         )
 
     def _double_click(self, at_ms) -> list:
@@ -385,11 +400,11 @@ class BigVariantTests(_Layer2, unittest.TestCase):
         self.layer.current_time = float(self.SNAP)
         self.layer._hover_time = float(self.SNAP)
         with patch.object(
-            gui.QApplication, "keyboardModifiers", staticmethod(lambda: Qt.ShiftModifier)
+            gui, "shift_is_held", staticmethod(lambda: True)
         ):
             big = self._ghost_radius()
         with patch.object(
-            gui.QApplication, "keyboardModifiers", staticmethod(lambda: Qt.NoModifier)
+            gui, "shift_is_held", staticmethod(lambda: False)
         ):
             small = self._ghost_radius()
         self.assertGreater(big, small)
@@ -422,7 +437,7 @@ class BigVariantTests(_Layer2, unittest.TestCase):
         self.layer.current_time = float(self.SNAP)
         self.layer._hover_time = float(self.SNAP)
         with patch.object(
-            gui.QApplication, "keyboardModifiers", staticmethod(lambda: Qt.NoModifier)
+            gui, "shift_is_held", staticmethod(lambda: False)
         ):
             ghosts = self._multi_ghosts()
         self.assertEqual(len(ghosts), 9, "0..16 step 2 is nine structures")
@@ -438,11 +453,11 @@ class BigVariantTests(_Layer2, unittest.TestCase):
         self.layer.current_time = float(self.SNAP)
         self.layer._hover_time = float(self.SNAP)
         with patch.object(
-            gui.QApplication, "keyboardModifiers", staticmethod(lambda: Qt.ShiftModifier)
+            gui, "shift_is_held", staticmethod(lambda: True)
         ):
             big = self._multi_ghosts()
         with patch.object(
-            gui.QApplication, "keyboardModifiers", staticmethod(lambda: Qt.NoModifier)
+            gui, "shift_is_held", staticmethod(lambda: False)
         ):
             small = self._multi_ghosts()
         self.assertEqual(len(big), len(small))

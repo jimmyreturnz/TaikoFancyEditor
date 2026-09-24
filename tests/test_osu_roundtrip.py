@@ -169,6 +169,10 @@ class FixtureShapeTests(unittest.TestCase):
                 with self.subTest(fixture=name):
                     document = parse_osu(write_fixture(Path(directory), name))
                     self.assertTrue(document.version, f"{name}: no version parsed")
+                    if name == "empty_chart":
+                        # Its whole hazard is having none.
+                        self.assertEqual(document.hit_objects, [])
+                        continue
                     self.assertTrue(document.hit_objects, f"{name}: no hit objects parsed")
 
     def test_full_fixture_contains_every_hazard(self):

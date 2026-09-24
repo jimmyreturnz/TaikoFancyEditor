@@ -861,8 +861,9 @@ class ShinyNoteTests(_Session, unittest.TestCase):
             layer.drag_anchor_time = 9990.0
             layer.drag_mouse_x = layer.x_for_time(10150.0)
             layer._drag_y = y
-            modifiers = gui.Qt.ShiftModifier if shift else gui.Qt.NoModifier
-            with patch.object(gui.QApplication, "keyboardModifiers", return_value=modifiers):
+            # `shift_is_held` asks the platform for the live key state: Qt's
+            # cached modifiers go stale and a tap used to stick. See gui.py.
+            with patch.object(gui, "shift_is_held", return_value=shift):
                 layer._update_drag_selection()
                 span = layer._row_span(y)
             return {round(n.time) for n in layer.selected_notes()}, span

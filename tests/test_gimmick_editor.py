@@ -1247,10 +1247,15 @@ class GimmickRedLineTests(_GimmickFixture, unittest.TestCase):
         self.window._refresh_gimmick_views()
         self.assertEqual(self._lines(self.barline, 54692), {54692: False})
 
-    def test_the_object_layers_show_red_lines_but_do_not_edit_them(self):
-        for view in (self.chart, self.fake):
-            self.assertTrue(view.show_timing_lines)
-            self.assertFalse(view.timing_edit_enabled)
+    def test_the_object_layers_show_red_lines_and_only_layer_2_edits_them(self):
+        """Layer 1 shows every red line for reference and edits none. Layer 2
+        edits its own: a drag there goes through `_expand_move`, which takes
+        the slider with the line, and without it a red line that landed on a
+        fake slider could not be moved again at all."""
+        self.assertTrue(self.chart.show_timing_lines)
+        self.assertFalse(self.chart.timing_edit_enabled)
+        self.assertTrue(self.fake.show_timing_lines)
+        self.assertTrue(self.fake.timing_edit_enabled)
         # The normal chart shows every red line; the fake slider layer shows
         # only the ones on its own objects, so the fixture's line at 0 -- which
         # is on no object at all -- reaches one and not the other.
@@ -1938,11 +1943,11 @@ class GimmickAddViewTests(_GimmickFixture, unittest.TestCase):
         self._enter(gui.GimmickEntryDialog.USE_CURRENT)
 
     def test_the_dialog_offers_the_three_chart_only_views(self):
-        dialog = gui.AddViewDialog([("Oni", self.path)], self.window, self.path)
+        dialog = gui.AddViewDialog([("Oni", self.path)], self.window, self.path, gimmick=True)
         offered = [dialog.type_combo.itemData(i) for i in range(dialog.type_combo.count())]
         self.assertEqual(
             set(gui.MainWindow.CHART_ONLY_VIEWS) - set(offered), set(),
-            "every chart-only type has to be reachable from the dialog",
+            "every chart-only type has to be reachable from the gimmick dialog",
         )
         dialog.deleteLater()
 
@@ -2019,10 +2024,30 @@ class GimmickAddViewTests(_GimmickFixture, unittest.TestCase):
         self.assertIs(frames[-1], added)
 
     def test_the_dialog_offers_the_three_gameplay_only_views(self):
-        dialog = gui.AddViewDialog([("Oni", self.path)], self.window, self.path)
+        dialog = gui.AddViewDialog([("Oni", self.path)], self.window, self.path, gimmick=True)
         offered = [dialog.type_combo.itemData(i) for i in range(dialog.type_combo.count())]
         self.assertEqual(set(gui.MainWindow.GAMEPLAY_ONLY_VIEWS) - set(offered), set())
         dialog.deleteLater()
+
+    def test_the_two_editors_offer_their_own_lists(self):
+        """The layer-restricted types answer a question only the gimmick page
+        asks; on the Editor page they were eight entries between the five that
+        page is for."""
+        layer_only = set(gui.MainWindow.CHART_ONLY_VIEWS) | set(gui.MainWindow.GAMEPLAY_ONLY_VIEWS)
+        plain = gui.AddViewDialog([("Oni", self.path)], self.window, self.path)
+        gimmick = gui.AddViewDialog([("Oni", self.path)], self.window, self.path, gimmick=True)
+        offered = {
+            name: [d.type_combo.itemData(i) for i in range(d.type_combo.count())]
+            for name, d in (("plain", plain), ("gimmick", gimmick))
+        }
+        self.assertEqual(set(offered["plain"]) & layer_only, set())
+        self.assertLessEqual(layer_only, set(offered["gimmick"]))
+        # The plain views of a whole chart stay in both.
+        for view_type in ("chart", "sv", "kiai_sound", "gameplay", "density"):
+            self.assertIn(view_type, offered["plain"], view_type)
+            self.assertIn(view_type, offered["gimmick"], view_type)
+        plain.deleteLater()
+        gimmick.deleteLater()
 
     def test_an_added_band_can_be_closed_again(self):
         target = self.window._gimmick_pairing.target
@@ -2109,7 +2134,11 @@ class GimmickLayoutTests(_GimmickFixture, unittest.TestCase):
         for button in (self.window.tool_buttons["select"], *self.window._gimmick_row_buttons):
             self.assertGreaterEqual(button.height(), button.sizeHint().height(), button.text())
 
-    def test_the_gimmick_frames_chrome_is_smaller_than_the_editor_s(self):
+    def test_both_pages_chrome_is_the_trimmed_size(self):
+        """The chrome padding was trimmed for the gimmick page, where six
+        frames of it stack in one screen. The Editor page is now the same
+        shape -- a view height down to 90px and a chart per difficulty -- so
+        both use it, and `compact` governs only the margins and spacing."""
         self.window.show()
         self.window._add_editor_view("chart", self.path)
         editor_frame = self.window._editor_views[-1]
@@ -2118,9 +2147,15 @@ class GimmickLayoutTests(_GimmickFixture, unittest.TestCase):
 
         self.assertTrue(gimmick_frame.compact)
         self.assertFalse(editor_frame.compact)
-        self.assertLess(
+        self.assertEqual(
             gimmick_frame.close_button.sizeHint().height(),
             editor_frame.close_button.sizeHint().height(),
+        )
+        # Still the thing the trimming was for: a band's chrome must not be
+        # taller than the layer it belongs to.
+        self.assertLess(
+            gimmick_frame.close_button.sizeHint().height(),
+            self.window.GIMMICK_LAYER_HEIGHT,
         )
 
 

@@ -12,7 +12,7 @@
 - Ctrl+C / Ctrl+V for both notes and SV points
 - function mode generates on note positions (default) or every N snaps,
   with a -5ms default position offset
-- SV views follow the playback clock, and zoom is shared per difficulty
+- SV views follow the playback clock, and zoom is shared across the page
 """
 from __future__ import annotations
 
@@ -491,6 +491,70 @@ class ClipboardTests(WindowTestCase):
                 f"beat {index}: paste must land on the playhead's own millisecond",
             )
 
+    def _at_172_bpm(self, divisor: int = 4):
+        """172 BPM: a 348.837ms beat, so consecutive beats truncate to whole
+        milliseconds differently and a paste shifted by an integer inherits
+        the *source's* truncation."""
+        view = self._chart_view()
+        self.window._editor_view_focus_changed(None, view)
+        beat = 60000 / 172.0
+        for point in view.base_timing or view.timing_points:
+            if point.uninherited:
+                point.beat_length = beat
+        view.set_base_timing(view.base_timing or view.timing_points)
+        view.set_snap_divisor(divisor)
+        return view, beat
+
+    def test_every_pasted_note_lands_on_a_real_snap(self):
+        view, beat = self._at_172_bpm()
+        # Two notes an exact number of 1/4 divisions apart, placed through the
+        # same snapping the editor places by, so the copy is on the grid.
+        division = beat / 4.0
+        for note, index in zip(self.state.document.hit_objects[:2], (0, 5)):
+            note.time = view.snap_ms(index * division)
+        view.refresh_notes(self.state.document)
+        view.selected = {n.original_index for n in self.state.document.hit_objects[:2]}
+        self.window.copy_selection()
+
+        grid = {
+            gui.osu_snap_ms(gui.snap_time(view.snap_points, index * division, 4))
+            for index in range(200)
+        }
+        for index in (7, 11, 13, 17, 23):
+            view.current_time = view.snap_ms(index * division)
+            before = {n.time for n in self.state.document.hit_objects}
+            self.window.paste_clipboard()
+            landed = {n.time for n in self.state.document.hit_objects} - before
+            self.assertEqual(len(landed), 2, f"division {index}")
+            for time_ms in landed:
+                self.assertIn(
+                    time_ms, grid,
+                    f"division {index}: {time_ms} is not a snap of this grid")
+
+    def test_an_object_off_the_snap_stays_the_same_distance_off_it(self):
+        """A gimmick object is deliberately 1-2ms off the grid and that offset
+        is the structure -- snapping a paste must not flatten it onto the
+        beat."""
+        view, beat = self._at_172_bpm()
+        division = beat / 4.0
+        first, second = self.state.document.hit_objects[:2]
+        first.time = view.snap_ms(0.0)
+        second.time = view.snap_ms(4 * division) + 2
+        view.refresh_notes(self.state.document)
+        view.selected = {first.original_index, second.original_index}
+        self.window.copy_selection()
+
+        view.current_time = view.snap_ms(9 * division)
+        before = {n.time for n in self.state.document.hit_objects}
+        self.window.paste_clipboard()
+        landed = sorted({n.time for n in self.state.document.hit_objects} - before)
+        self.assertEqual(len(landed), 2)
+        anchor, offset_note = landed
+        self.assertEqual(anchor, int(view.current_time))
+        on_grid = gui.osu_snap_ms(
+            gui.snap_time(view.snap_points, float(offset_note - 2), 4))
+        self.assertEqual(offset_note - on_grid, 2)
+
     def test_pasting_notes_is_one_undo_step(self):
         view = self._chart_view()
         self.window._editor_view_focus_changed(None, view)
@@ -686,7 +750,15 @@ class SVFollowsPlaybackTests(WindowTestCase):
         self.assertNotIn(view, self.window._sv_views)
 
 
-class ZoomIsPerDifficultyTests(WindowTestCase):
+class ZoomIsPageWideTests(WindowTestCase):
+    """One zoom for the Editor page, not one per difficulty.
+
+    Every difficulty open there is the same song from the same folder on the
+    same timing, so two of them on different spans put the same x at two
+    different times -- the argument that already made zoom difficulty-level
+    rather than view-level, which does not stop at a difficulty boundary.
+    """
+
     def test_chart_and_sv_open_at_the_same_span(self):
         self.assertEqual(self._chart_view().window_ms, self._sv_view().window_ms)
 
@@ -715,6 +787,109 @@ class ZoomIsPerDifficultyTests(WindowTestCase):
 
 
 # -- timing bar --------------------------------------------------------------
+
+
+class ZoomSpansDifficultiesTests(WindowTestCase):
+    def _second_difficulty(self) -> Path:
+        """A second .osu beside the first, same folder and same audio."""
+        other = self.path.with_name("second.osu")
+        other.write_bytes(self.path.read_bytes())
+        return other
+
+    def test_a_second_difficultys_view_opens_at_the_pages_zoom(self):
+        self.window._zoom_changed(self.path, 5500.0, None)
+        other = self._second_difficulty()
+        self.window._add_editor_view("chart", other)
+        newest = [f for f in self.window._editor_views if f.view_type == "chart"][-1]
+        self.assertEqual(newest.difficulty_path, other)
+        self.assertEqual(newest.chart_view.window_ms, 5500.0)
+
+    def test_zooming_one_difficulty_zooms_the_other(self):
+        other = self._second_difficulty()
+        self.window._add_editor_view("chart", other)
+        newest = [f for f in self.window._editor_views if f.view_type == "chart"][-1]
+        self.window._zoom_changed(other, 3200.0, newest.chart_view)
+        self.assertEqual(self._chart_view().window_ms, 3200.0)
+        self.assertEqual(self._sv_view().window_ms, 3200.0)
+
+    def test_a_second_difficultys_view_opens_on_the_shared_playhead(self):
+        """Every open view rides one clock, so a new one starting at its own
+        difficulty's first note opened misaligned with all of them."""
+        self.window.seek_audio(7000.0)
+        other = self._second_difficulty()
+        self.window._add_editor_view("chart", other)
+        newest = [f for f in self.window._editor_views if f.view_type == "chart"][-1]
+        self.assertAlmostEqual(
+            newest.chart_view.current_time, self.window.timeline.current_time, places=3)
+
+
+class ViewHeightTests(WindowTestCase):
+    """The control persists its value, so these have to put it back.
+
+    QSettings is the real user's, not a fixture: without this the suite left
+    whatever the last test typed as the height every future launch opened on,
+    which is how a profiling run came out measuring 260px views.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self._saved_height = self.window.settings.value("editor/view_height")
+
+    def tearDown(self) -> None:
+        if self._saved_height is None:
+            self.window.settings.set_value(
+                "editor/view_height", gui.TimelineGameplay.DEFAULT_VIEW_HEIGHT)
+        else:
+            self.window.settings.set_value("editor/view_height", self._saved_height)
+        super().tearDown()
+
+    def test_the_height_control_resizes_every_open_view(self):
+        self.window.editor_view_height_spin.setValue(260)
+        self.assertEqual(self._chart_view().height(), 260)
+        self.assertEqual(self._sv_view().height(), 260)
+
+    def test_a_view_opened_later_takes_the_current_height(self):
+        self.window.editor_view_height_spin.setValue(200)
+        self.window._add_editor_view("sv", self.path)
+        newest = [f for f in self.window._editor_views if f.view_type == "sv"][-1]
+        self.assertEqual(newest.sv_view.height(), 200)
+
+    def test_it_cannot_be_dragged_below_what_the_view_can_draw(self):
+        self.assertEqual(
+            self.window.editor_view_height_spin.minimum(), gui.TimelineGameplay.MIN_HEIGHT)
+
+
+class NoteSizeTests(WindowTestCase):
+    def test_a_normal_note_is_75_percent_of_a_big_one(self):
+        """Not the ruleset's 1.538x (65%). On a timestamp row that far apart
+        reads as two kinds of object rather than one note and its louder twin
+        -- see `TimelineGameplay.note_radii`."""
+        view = self._chart_view()
+        for height in (80, 120, 300):
+            view.setFixedHeight(height)
+            normal, finisher = view.note_radii()
+            self.assertLessEqual(normal, gui.TimelineGameplay.NOTE_RADIUS_MAX)
+            self.assertAlmostEqual(normal / finisher, 0.75, places=3)
+            self.assertAlmostEqual(finisher, normal * gui.EDITOR_STRONG_SCALE)
+
+    def test_the_floor_is_eighty_and_a_note_still_fits_in_it(self):
+        view = self._chart_view()
+        self.assertEqual(gui.TimelineGameplay.MIN_HEIGHT, 80)
+        view.setFixedHeight(gui.TimelineGameplay.MIN_HEIGHT)
+        _normal, finisher = view.note_radii()
+        self.assertLess(finisher * 2, gui.TimelineGameplay.MIN_HEIGHT)
+
+    def test_a_gimmick_band_keeps_its_own_sizes_and_the_ruleset_ratio(self):
+        """A band is 88px already, and it is read beside the lines a structure
+        is made of rather than as a row of timestamps."""
+        view = self._chart_view()
+        view.setFixedHeight(88)
+        before = view.note_radii()
+        view.gimmick_layer = "barline"
+        normal, finisher = view.note_radii()
+        self.assertNotAlmostEqual(finisher, before[1])
+        self.assertAlmostEqual(normal, 88 * 0.22)
+        self.assertAlmostEqual(finisher, normal * gui.TAIKO_STRONG_SCALE)
 
 
 class TimingBarMarkerTests(WindowTestCase):

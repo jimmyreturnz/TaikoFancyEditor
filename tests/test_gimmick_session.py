@@ -139,6 +139,23 @@ class BarlineStructureTests(unittest.TestCase):
         centre = next(point for point in points if point.time == 10000)
         self.assertAlmostEqual(centre.bpm, 30000.0)
 
+    def test_a_typed_restore_bpm_replaces_the_charts_own(self):
+        """`gimmick_bpm` is how invisible the note is; `restore_bpm` is how
+        fast the chart runs afterwards. They were one number."""
+        config = gs.GimmickConfig(gimmick_bpm=30000.0, restore_bpm=90.0)
+        points, _ = gs.barline_note(10000, BASE, config, kind="don")
+        centre = next(point for point in points if point.time == 10000)
+        restores = [point for point in points if point.time != 10000]
+        self.assertAlmostEqual(centre.bpm, 30000.0)
+        self.assertTrue(restores)
+        for point in restores:
+            self.assertAlmostEqual(point.bpm, 90.0)
+
+    def test_no_restore_bpm_is_still_the_charts_own(self):
+        points, _ = gs.barline_note(10000, BASE, gs.GimmickConfig(), kind="don")
+        for point in (p for p in points if p.time != 10000):
+            self.assertAlmostEqual(point.bpm, 180.0)
+
     def test_unknown_kind_is_rejected(self):
         with self.assertRaises(gs.GimmickConfigError):
             gs.barline_note(0, BASE, gs.GimmickConfig(), kind="slider")
@@ -232,6 +249,56 @@ class FakeSliderTests(unittest.TestCase):
 
         plain_points, _ = gs.fake_slider(10000, BASE, config)
         self.assertAlmostEqual(plain_points[0].bpm, 90.0)
+
+    def test_restore_bpm_outranks_the_multiplier_on_every_slider_line(self):
+        """A typed BPM is an absolute, so the multiplier -- which only ever
+        scaled the chart's own -- has nothing left to scale."""
+        config = gs.GimmickConfig(fake_slider_bpm_multiplier=0.5, restore_bpm=75.0)
+        points, _ = gs.fake_slider(10000, BASE, config, kind="don")
+        self.assertAlmostEqual(points[0].bpm, config.gimmick_bpm)
+        self.assertAlmostEqual(points[2].bpm, 75.0)
+
+        plain, _ = gs.fake_slider(10000, BASE, config)
+        self.assertAlmostEqual(plain[0].bpm, 75.0)
+
+    def test_a_shiny_keeps_its_own_multiplier(self):
+        """Its line sits on the note rather than restoring anything, so the
+        restore dial deliberately does not reach it."""
+        config = gs.GimmickConfig(shiny_bpm_multiplier=2.0, restore_bpm=75.0)
+        points, _ = gs.fake_slider(10000, BASE, config, shiny=True)
+        self.assertAlmostEqual(points[0].bpm, 360.0)  # 180 * 2
+
+    def test_a_restore_bpm_of_zero_or_less_is_refused(self):
+        with self.assertRaises(gs.GimmickConfigError):
+            gs.GimmickConfig(restore_bpm=0.0)
+
+    def test_a_plain_slider_can_hand_the_chart_bpm_back_one_ms_later(self):
+        """Without it the slider's line governs the rest of the map: a red
+        line's BPM is its scroll speed. The second line a mapper would add by
+        hand is the one the Red Line tool refuses, since the slider's own line
+        already owns that millisecond."""
+        config = gs.GimmickConfig(restore_bpm=90.0, fake_slider_restore_after=True)
+        points, notes = gs.fake_slider(10000, BASE, config)
+        slider_at = 10000 + config.fake_slider_offset_ms
+        self.assertEqual([round(p.time) for p in points],
+                         [slider_at, slider_at + gs.FAKE_SLIDER_RESTORE_OFFSET_MS])
+        self.assertAlmostEqual(points[0].bpm, 90.0)
+        self.assertAlmostEqual(points[1].bpm, 180.0)  # the chart's own
+        self.assertEqual(round(notes[0].time), slider_at)
+
+    def test_off_it_is_still_the_single_line_it_always_was(self):
+        config = gs.GimmickConfig(fake_slider_restore_after=False)
+        points, _ = gs.fake_slider(10000, BASE, config)
+        self.assertEqual(len(points), 1)
+
+    def test_no_line_at_all_means_no_restore_either(self):
+        """The restore restores what the line above it changed; with no line
+        there is nothing to hand back, and writing one would retime the chart
+        for no reason."""
+        config = gs.GimmickConfig(
+            fake_slider_red_line=False, fake_slider_restore_after=True)
+        points, _ = gs.fake_slider(10000, BASE, config)
+        self.assertEqual(points, [])
 
     def test_a_don_stacks_the_gimmick_sv_on_its_red_line(self):
         """The green line comes *after* the red one sharing the millisecond:

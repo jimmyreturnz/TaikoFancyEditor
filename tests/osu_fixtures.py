@@ -16,6 +16,9 @@ CP1252            a byte sequence that is not valid UTF-8, so the encoding
 COLOURS_BETWEEN   [Colours] sitting between [TimingPoints] and [HitObjects],
                   which any section-splicing writer must not disturb
 NO_TIMING_POINTS  no [TimingPoints] section at all
+EMPTY_CHART       a timed difficulty with an empty [HitObjects] section --
+                  the file a mapper starts from, which the editor refused
+                  to open until the loader stopped requiring a note
 """
 from __future__ import annotations
 
@@ -199,6 +202,38 @@ NO_TIMING_POINTS = (
     b"256,192,2000,1,8,0:0:0:0:\r\n"
 )
 
+# Timed, has audio, and not one note yet: what a mapper creates before
+# mapping anything. Nothing in the format makes this invalid, and every
+# duration and time range the app derives has to survive an empty
+# [HitObjects] rather than the loader refusing the file.
+EMPTY_CHART = (
+    b"osu file format v14\r\n"
+    b"\r\n"
+    b"[General]\r\n"
+    b"AudioFilename: audio.mp3\r\n"
+    b"PreviewTime: 3000\r\n"
+    b"Mode: 1\r\n"
+    b"\r\n"
+    b"[Metadata]\r\n"
+    b"Title:Unmapped\r\n"
+    b"Artist:Tester\r\n"
+    b"Creator:jimmyreturnz\r\n"
+    b"Version:Muzukashii\r\n"
+    b"\r\n"
+    b"[Difficulty]\r\n"
+    b"HPDrainRate:5\r\n"
+    b"CircleSize:5\r\n"
+    b"OverallDifficulty:5\r\n"
+    b"ApproachRate:5\r\n"
+    b"SliderMultiplier:1.4\r\n"
+    b"SliderTickRate:1\r\n"
+    b"\r\n"
+    b"[TimingPoints]\r\n"
+    b"500,500,4,1,0,60,1,0\r\n"
+    b"\r\n"
+    b"[HitObjects]\r\n"
+)
+
 # [Difficulty] AFTER [HitObjects], with no ApproachRate or CircleSize line.
 # write_osu inserts the missing keys at difficulty_index + 1 and then applies a
 # flat `shift` to every hit object's source_line_index, which assumes all
@@ -237,6 +272,7 @@ ALL_FIXTURES = {
     "cp1252": CP1252,
     "colours_between": COLOURS_BETWEEN,
     "no_timing_points": NO_TIMING_POINTS,
+    "empty_chart": EMPTY_CHART,
 }
 
 # Kept out of ALL_FIXTURES until the writer handles it, so the shared

@@ -353,13 +353,19 @@ class NoteGrabAreaTests(unittest.TestCase):
         return view
 
     def test_the_reach_is_the_drawn_radius(self):
+        """At two heights, so it is the drawn circle being tested and not a
+        constant that happens to match it. The reach used to be a flat 20px
+        against a note drawn up to 31, which is what left the outer two thirds
+        of every note looking draggable; the sizes have since been halved, so
+        pinning a number here would only re-fix them."""
         view = self._view()
-        normal, _finisher = view.note_radii()
-        self.assertGreater(normal, 20.0, "the view is too short to show the bug")
-        centre = view.x_for_time(1000.0)
         try:
-            self.assertIsNotNone(view._note_near_x(centre + normal - 1.0))
-            self.assertIsNone(view._note_near_x(centre + normal + 1.0))
+            for height in (180, 320):
+                view.resize(900, height)
+                normal, _finisher = view.note_radii()
+                centre = view.x_for_time(1000.0)
+                self.assertIsNotNone(view._note_near_x(centre + normal - 1.0), height)
+                self.assertIsNone(view._note_near_x(centre + normal + 1.0), height)
         finally:
             view.close()
 

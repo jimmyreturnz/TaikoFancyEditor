@@ -47,6 +47,139 @@ Turning the visual arranger into a full osu!taiko editor.
 
 ---
 
+## To be continued (2026-09-22)
+
+Carried over from the overnight session. Everything else from 2026-09-21/22
+is done and in the working tree (uncommitted): the empty-chart fix, README
+backlog 2/3/4/6/8/9, view height and note sizing, Shift and New Combo fixes,
+multi-difficulty charts and the Play combo, cross-group view moves, the
+hermetic test settings, and the downmix fix below. 40 of 41 test files pass.
+
+### 1. `tests/test_gimmick_editor.py` hangs -- pre-existing, not tonight's code
+
+**State.** Run as a whole module, it blocks forever in
+`ScrollBarWheelTests.setUp` at the `QApplication.processEvents()` after
+`resize(1200, 480)` (test_gimmick_editor.py:489). Established by measurement:
+
+- The class alone passes in 2.9s. The hang needs the classes that run before
+  it in the module -- something accumulates across windows.
+- **Last commit's code (HEAD, in a clean worktree) hangs at the same line.** So
+  none of the 2026-09-21/22 changes cause it; it passed in a full run earlier on
+  2026-09-21 and started failing overnight.
+- The event loop is *blocked*, not busy: 84 Python calls in 15s inside that
+  `processEvents` (the 16ms info timer fired 9 times instead of ~900). The wait
+  is in C++.
+- Not the audio device sleeping: `QMediaDevices.defaultAudioOutput()` answered
+  in 14ms and 20 `QAudioSink` start/stop cycles took 9-61ms each.
+- Not the Play re-apply in `_show_page`, not the hermetic settings: each
+  patched out, the module still hangs.
+
+**Next step.** Bisect the classes that precede `ScrollBarWheelTests` in the
+module (the loader runs them alphabetically) to find the one that sets it up,
+then look at what it leaves alive -- engine threads whose `shutdown` timed out
+(`TrackPlayer.shutdown` waits 2000ms and moves on), sample decoders, or a
+window that was never closed. A native stack of the blocked main thread would
+say it outright; py-spy `--native` would give one, but it is not installed and
+is a tool rather than a dependency, so that is the owner's call. Use
+`python -X faulthandler` with `faulthandler.dump_traceback_later(...)` and
+unittest's own runner -- **not** a loop calling `test.run()` per test, which
+skips `setUpModule` and builds no QApplication, and looks like a hang itself.
+
+### 2. CLAUDE.md "Measure first" row
+
+The multi-chart finding below belongs in CLAUDE.md's table ("six charts cost a
+third of all frames" -> "the harness measured the audio decode after load").
+Not added: CLAUDE.md is the owner's document.
+
+## Many charts open: the stutter was the audio decode -- FIXED 2026-09-22
+
+Opening a chart per difficulty (the Editor page's "+" dialog) looked like it
+cost a third of all frames: `tools/profile_playback.py --all-charts` reported
+six charts at **34% over the 8.33ms budget** against 4% for one. That number
+was the harness measuring the **first second after load**, not the charts.
+
+Found by elimination, each by an A/B rather than by reading code -- worth
+keeping, since every one of these was a reasonable first guess:
+
+| Hypothesis | Measured | Verdict |
+| --- | --- | --- |
+| Qt repaints each frame's stylesheet under the views | `WA_OpaquePaintEvent` on both views: 34% -> 33% | not it (kept: correct and free) |
+| the 16ms info timer relayouts the strip | timer stopped: 102 -> 105 slow frames | not it |
+| Python GC, six documents alive | `gc.disable()` / `gc.freeze()`: no change | not it |
+| the frame chrome's pink buttons | chrome hidden / stylesheets stripped: no change | not it |
+| the app re-broadcasts while paused | zero app-side `set_time` calls | not it |
+| offscreen-platform artifact | same on the real Windows display (31% vs 6%) | real |
+| **something right after load** | slow frames were **0-95 in a row**, then 1 in 205 | **yes** |
+
+The cause: `audio_engine.downmix_to_mono` was a Python generator over every
+stereo frame, run on the engine thread for each decoded buffer -- 5.8M
+iterations for a 131s track, holding the GIL in 5ms slices. It now calls
+`audioop.tomono(..., 0.5, 0.5)`, which floors `(l + r) * 0.5` in C and is
+**byte-identical** to the old `(l + r) // 2` (checked over a whole track, int16
+extremes included, by `tools/bench_downmix.py` before it times anything -- so
+no ear test is owed: the samples are the same). 960ms -> 70ms per track, longest
+single-buffer hold 1.39ms -> 0.08ms. A `map(add, ...)` version managed only
+1.6x: C loop, but every sample still boxed.
+
+Zekk - Libertas [Inner Oni], 300 frames, 120px views:
+
+| | median | p95 | over budget |
+| --- | --- | --- | --- |
+| right after load, 1 chart, before | 4.70ms | 8.06ms | 4.0% |
+| right after load, 1 chart, after | 1.74ms | 3.71ms | 0.3% |
+| right after load, 6 charts, before | 3.30ms | 12.87ms | 34.0% |
+| right after load, 6 charts, after | 4.03ms | 6.71ms | 2.7% |
+| steady state, 1 chart | 1.34ms | 1.52ms | 0.3% |
+| steady state, 6 charts | 3.16ms | 3.51ms | 0.3% |
+
+Steady state, six charts cost +1.8ms a frame and fit the budget with room to
+spare; nothing there needed optimising.
+
+**Harness fix**: `profile_playback.py` now waits for the decode to finish
+before timing -- settled on the engine's decoded sample count, *not* on
+`player.duration()`, which the decoder fills from metadata almost immediately
+(the first version of the wait waited on that and measured nothing).
+`--no-settle` measures the load period deliberately. Every figure this harness
+printed before 2026-09-22 includes up to a second of decode and should be read
+with that in mind. Worth a row in CLAUDE.md's "Measure first" table.
+
+Also found tonight: the test suite wrote to the **real** QSettings (the
+view-height tests left the owner's Editor opening at 90px). `tests/__init__.py`
+now gives every test process a private INI seeded from the real settings, so
+reads behave as before and writes vanish with the process.
+
+## Three pages, three purposes
+
+Recorded 2026-09-22 at the owner's request. The Fancy Arranger, the Editor and
+the Gimmick editor share a lot of machinery -- the same chart view class, the
+same frame chrome, the same "+" dialog, the same timing bar -- and that sharing
+is deliberate. **What they are for is not shared**, and a feature is judged by
+the page it lands on, not by the widget it happens to reuse.
+
+| Page | Purpose | So it... |
+| --- | --- | --- |
+| **Fancy Arranger** | Transforming notes into shapes. | works on one difficulty's note *positions*; timing is context, not material. |
+| **Editor** (regular) | Editing regular charts -- not gimmicks -- across **multiple difficulties** of one song. | offers one chart per difficulty from the "+" dialog, a page-wide zoom and view height, and a Play choice for which difficulty is heard. |
+| **Gimmick editor** | Pushing **one** difficulty to its extreme: lots of gimmicks, red lines, fake sliders. | stays single-difficulty: its "+" dialog keeps one fixed difficulty, its layers keep their own sizes and the ruleset's note ratio, and the Play choice does not reach it. |
+
+Consequences already built on this, 2026-09-21/22:
+
+- The "+" dialog's difficulty list with an **All taiko difficulties** box is
+  the Editor page's; the gimmick page keeps its disabled single-entry combo.
+- The layer-restricted view types (one gimmick layer's objects, as a chart or a
+  preview) are offered on the gimmick page only.
+- The **Play:** hitsound-difficulty combo is the Editor page's only.
+  `_hitsound_state()` ignores it on every other page and `_show_page`
+  re-applies it on the way back.
+- Page-wide zoom, the view-height control and the halved note sizes are the
+  Editor page's; the gimmick bands keep `GIMMICK_LAYER_HEIGHT` and 0.22/1.538.
+
+When a new feature could go on more than one page, ask which purpose it serves
+before sharing it -- two pages drifting into one another's jobs is how a page
+stops being good at its own.
+
+---
+
 ## Next: the audio backend (the real cause of inaccurate slow playback)
 
 Decided 2026-08-27, deferred out of v3.1.0 so the rest of it could ship.

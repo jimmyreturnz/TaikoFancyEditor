@@ -397,10 +397,25 @@ def downmix_to_mono(source: array.array) -> array.array:
     The splice search is the entire cost of `TimeStretcher`, and searching one
     channel instead of two halves it. Averaging rather than summing keeps it in
     16-bit range so the scores cannot overflow into nonsense on loud material.
+
+    No Python object per sample. This runs on the engine thread for every
+    buffer the decoder delivers, right after a map opens, and it used to be a
+    generator over every stereo frame -- 5.8 million iterations for a 131s
+    track, holding the GIL in 5ms slices (`sys.getswitchinterval`), so the UI
+    thread stalled for the whole decode: a third of all frames over budget for
+    the first second or so of every load.
+
+    `audioop.tomono` works on the raw bytes in C. With both factors 0.5 it
+    computes `floor((l + r) * 0.5)` in double precision, which is exact for any
+    two int16 samples and equals the `(l + r) // 2` this used to be --
+    `tools/bench_downmix.py` checks that over a whole track, the extremes of
+    the range included, before it times anything. A `map` over two builtins
+    was tried first and only managed 1.6x: the loop was C, but every sample
+    still became a Python int on the way through.
     """
-    return array.array("h", (
-        (source[i] + source[i + 1]) // 2 for i in range(0, len(source), CHANNELS)
-    ))
+    mono = array.array("h")
+    mono.frombytes(audioop.tomono(source.tobytes(), 2, 0.5, 0.5))
+    return mono
 
 
 def _clip(value: int) -> int:
