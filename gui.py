@@ -66,8 +66,8 @@ from song_library import (
     songs_from_cache,
 )
 from time_axis import (
-    KIAI_OPEN_END_MS, SNAP_DIVISORS, TimeAxisMixin, osu_round, osu_snap_ms, snap_time,
-    wheel_seek_time,
+    KIAI_OPEN_END_MS, SNAP_DIVISORS, TimeAxisMixin, osu_round, osu_snap_ms, own_divisor,
+    resnap_time, snap_time, wheel_seek_time,
 )
 from gimmick_session import (
     DEFAULT_RED_LINE_BPM,
@@ -1813,6 +1813,7 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
         self._move_anchor_time = 0.0
         self._move_delta = 0.0
         self._move_snaps = True
+        self._move_divisor: int | None = None
         # What to place instead, if a grab under a placement tool turns out to
         # be a plain click rather than a drag.
         self._move_fallback: tuple | None = None
@@ -2342,6 +2343,16 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
         self._move_snaps = note is not None or (
             point is not None and round(point.time) in self.gimmick_times
         )
+        # An object off the current grid moves along its own: a 1/3 note
+        # dragged with 1/4 selected stays a 1/3 note, instead of the first pixel
+        # of the drag throwing it onto a grid it was never on. One that *is* on
+        # the current grid (its own divisor divides the setting) moves exactly
+        # as before -- otherwise a note on a beat could only move by beats.
+        self._move_divisor = None
+        if self._move_snaps:
+            own = own_divisor(self.snap_points, self._move_origin)
+            if own is not None and self.snap_divisor % own:
+                self._move_divisor = own
         self._move_anchor_time = self.time_for_x(x)
         self._move_delta = 0.0
         self.grabMouse()
@@ -2360,7 +2371,7 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
         if self._move_origin is None:
             return
         wanted = self._move_origin + (self.time_for_x(x) - self._move_anchor_time)
-        target = self.snap_ms(wanted) if self._move_snaps else round(wanted)
+        target = self.snap_ms(wanted, self._move_divisor) if self._move_snaps else round(wanted)
         # Nothing may be dragged to a negative time; clamping the delta rather
         # than each object keeps the structure's own shape intact.
         self._move_delta = max(-self._move_origin, target - self._move_origin)
@@ -8668,6 +8679,19 @@ class ToolStateController:
         self.new_combo_button.toggled.connect(self.set_active_new_combo)
         layout.addWidget(self.new_combo_button)
 
+        # An action, not a tool: it does its work and leaves the tool alone.
+        self.resnap_button = QPushButton(tr("MainWindow", "Resnap"))
+        self.resnap_button.setStyleSheet(TOOL_BUTTON_STYLE)
+        self.resnap_button.setFixedHeight(self.window.TOOL_BUTTON_HEIGHT)
+        self.resnap_button.setFocusPolicy(Qt.NoFocus)
+        self.resnap_button.setToolTip(tr(
+            "MainWindow",
+            "Move the selected objects (or all of them, with nothing selected) onto the "
+            "nearest line of their own snap. Only objects a millisecond or two off move.",
+        ))
+        self.resnap_button.clicked.connect(self.window.resnap_selection)
+        layout.addWidget(self.resnap_button)
+
         layout.addStretch(1)
         self.global_tool_row = row
         self.global_tool_row.setEnabled(False)
@@ -9425,6 +9449,7 @@ class MainWindow(QMainWindow):
             ("save_all", self.save_shortcut),
             ("copy", self.copy_shortcut),
             ("paste", self.paste_shortcut),
+            ("resnap", self.resnap_shortcut),
             ("hitsound_offset_earlier", self.hitsound_earlier_shortcut),
             ("hitsound_offset_later", self.hitsound_later_shortcut),
             *self.tool_shortcuts.items(),
@@ -11406,6 +11431,49 @@ class MainWindow(QMainWindow):
         with self._refresh_cycle():
             self._refresh_difficulty_views(difficulty_path)
             self._refresh_difficulty_sv_views(difficulty_path)
+
+    def resnap_selection(self) -> None:
+        """Put each selected object -- every object, with nothing selected --
+        on the nearest line of its *own* grid, as one undo step.
+
+        Its own grid, not the current divisor: a 1/3 note stays 1/3 with 1/4
+        selected (`time_axis.own_divisor`). Only objects within
+        `RESNAP_TOLERANCE_MS` move, which is the millisecond another editor's
+        rounding leaves; anything farther off was put there on purpose.
+
+        Fake sliders never move -- a gimmick lives on millisecond offsets from
+        the grid -- and nothing is moved onto a millisecond another object
+        holds, since two objects on one millisecond is one the player never sees.
+        """
+        if should_ignore_shortcut_focus(QApplication.focusWidget()):
+            return
+        view = self._active_chart_view
+        if view is None:
+            return
+        path = self._difficulty_for_view(view)
+        state = self._states.get(path)
+        if state is None:
+            return
+        notes = view.selected_notes() or list(state.document.hit_objects)
+        occupied = {round(note.time) for note in state.document.hit_objects}
+        commands = []
+        for note in notes:
+            if self.is_fake_slider(note):
+                continue
+            target = resnap_time(view.snap_points, note.time)
+            if target is None or int(target) == note.time or int(target) in occupied:
+                continue
+            occupied.discard(round(note.time))
+            occupied.add(int(target))
+            commands.append(SetNoteFields(note.uid, {"time": (note.time, int(target))}))
+        if not commands:
+            self.show_toast(tr("MainWindow", "Everything is already on its snap."))
+            return
+        state.history.push(CompositeCommand(commands, "resnap"), state)
+        with self._refresh_cycle():
+            self._refresh_difficulty_views(path)
+            self._refresh_difficulty_sv_views(path)
+        self.status.setText(tr("MainWindow", "Resnapped {count} objects.").format(count=len(commands)))
 
     def _delete_gimmick_objects(self, difficulty_path: Path, note_uids=(), point_uids=()) -> None:
         """Delete a gimmick object with the structure around it, as one step.
@@ -13536,6 +13604,8 @@ class MainWindow(QMainWindow):
     @property
     def new_combo_button(self): return self._tool_state.new_combo_button
     @property
+    def resnap_button(self): return self._tool_state.resnap_button
+    @property
     def sv_tool_buttons(self): return self._tool_state.sv_tool_buttons
     @property
     def global_tool_row(self): return self._tool_state.global_tool_row
@@ -13594,6 +13664,9 @@ class MainWindow(QMainWindow):
         self.paste_shortcut = QShortcut(QKeySequence(self.shortcuts.sequence("paste")), self.editor_page)
         self.paste_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
         self.paste_shortcut.activated.connect(self.paste_clipboard)
+        self.resnap_shortcut = QShortcut(QKeySequence(self.shortcuts.sequence("resnap")), self.editor_page)
+        self.resnap_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
+        self.resnap_shortcut.activated.connect(self.resnap_selection)
         self.gimmick_copy_shortcut = QShortcut(QKeySequence(self.shortcuts.sequence("copy")), self.gimmick_page)
         self.gimmick_copy_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
         self.gimmick_copy_shortcut.activated.connect(self.copy_selection)
@@ -15049,6 +15122,9 @@ class MainWindow(QMainWindow):
         # Heights only -- see equalize_button_widths on why this row cannot
         # afford a uniform width any more.
         equalize_button_widths(self._gimmick_row_buttons, heights=True, widths=False)
+        # Resnap is an action beside the tools, not one of them: its own width,
+        # measured after the stylesheet the same as theirs.
+        equalize_button_widths([self.resnap_button], heights=True, widths=False)
         # Same reasoning for the two playback rows, and the same reason it
         # cannot happen at build time: the window's stylesheet (padding
         # included) is applied after the pages are built, so a button measured

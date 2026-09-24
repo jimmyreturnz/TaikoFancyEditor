@@ -101,6 +101,54 @@ def snap_time(timing_points: list[TimingPoint], time_ms: float, divisor: int) ->
     return timing.time + round((time_ms - timing.time) / snap_length) * snap_length
 
 
+# Where an object's *own* grid is looked for: coarsest first, so a note on a
+# beat reads as 1/1 rather than 1/16.
+OWN_DIVISORS = (1, 2, 3, 4, 6, 8, 12, 16)
+
+# How far a gridline may be from an object that is "on" it. osu! commits a
+# snapped position as a whole millisecond (`osu_snap_ms`), so an object written
+# on a gridline is always less than one millisecond from it.
+ON_GRID_TOLERANCE_MS = 1.0
+
+# Resnap's reach: one more millisecond than being on the grid at all, which is
+# the "a millisecond off" another editor's rounding leaves (osu! truncates, a
+# rounding editor puts half its notes one above). Anything farther away was put
+# there on purpose and is left alone.
+RESNAP_TOLERANCE_MS = 2.0 * ON_GRID_TOLERANCE_MS
+
+
+def own_divisor(
+    timing_points: list[TimingPoint],
+    time_ms: float,
+    tolerance_ms: float = ON_GRID_TOLERANCE_MS,
+    divisors: tuple[int, ...] = OWN_DIVISORS,
+) -> int | None:
+    """The coarsest divisor with a gridline within `tolerance_ms`, or None.
+
+    A grid whose lines are closer together than twice the tolerance matches
+    every time there is, so it says nothing about the object -- the search stops
+    before those instead of reporting them. That bound is what keeps a gimmick
+    section's 60000 BPM line (a 1ms beat) from calling every object on it
+    "snapped".
+    """
+    beat_length = active_uninherited_at(timing_points, time_ms).beat_length
+    for divisor in divisors:
+        if beat_length / divisor <= 2.0 * tolerance_ms:
+            break
+        if abs(time_ms - snap_time(timing_points, time_ms, divisor)) < tolerance_ms:
+            return divisor
+    return None
+
+
+def resnap_time(timing_points: list[TimingPoint], time_ms: float) -> float | None:
+    """Where Resnap puts an object: the millisecond osu! writes for the nearest
+    line of the object's own grid, or None when it is on no grid within reach."""
+    divisor = own_divisor(timing_points, time_ms, RESNAP_TOLERANCE_MS)
+    if divisor is None:
+        return None
+    return float(osu_snap_ms(snap_time(timing_points, time_ms, divisor)))
+
+
 def wheel_seek_time(
     timing_points: list[TimingPoint],
     current_time: float,
@@ -328,7 +376,7 @@ class TimeAxisMixin:
             f"{int(self.snap_ms(self._hover_time))} ms",
         )
 
-    def snap_ms(self, time_ms: float) -> float:
+    def snap_ms(self, time_ms: float, divisor: int | None = None) -> float:
         """Snap `time_ms` to the grid and round it to a whole millisecond.
 
         osu! stores hit objects and timing points as integer milliseconds, but
@@ -354,7 +402,8 @@ class TimeAxisMixin:
             # Nearest, not down: this one is not a beat position, it is the
             # millisecond the pointer is over.
             return float(osu_round(time_ms))
-        return max(0.0, float(osu_snap_ms(snap_time(self.snap_points, time_ms, self.snap_divisor))))
+        return max(0.0, float(osu_snap_ms(snap_time(
+            self.snap_points, time_ms, divisor or self.snap_divisor))))
 
     # -- pixels <-> time ---------------------------------------------------
 

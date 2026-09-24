@@ -116,6 +116,7 @@ SHORTCUT_DEFINITIONS: tuple[ShortcutDefinition, ...] = (
     ShortcutDefinition("redo", "Redo", "Editing", "Ctrl+Y"),
     ShortcutDefinition("copy", "Copy", "Editing", "Ctrl+C"),
     ShortcutDefinition("paste", "Paste", "Editing", "Ctrl+V"),
+    ShortcutDefinition("resnap", "Resnap to each object's own grid", "Editing", "Ctrl+R"),
     ShortcutDefinition("save_all", "Save all changed difficulties", "File", "Ctrl+S"),
     ShortcutDefinition("back_to_songs", "Back to the song list", "Navigation", "Esc"),
     ShortcutDefinition("tool_1", "Tool 1: Select", TOOLS_EDITOR_CATEGORY, "1", "editor"),

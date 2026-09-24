@@ -1429,6 +1429,22 @@ Every beatmap in it is checked once for taiko difficulties, and the result is re
             <translation>{count}個のノートをコピーしました。</translation>
         </message>
         <message>
+            <source>Resnap</source>
+            <translation>再スナップ</translation>
+        </message>
+        <message>
+            <source>Move the selected objects (or all of them, with nothing selected) onto the nearest line of their own snap. Only objects a millisecond or two off move.</source>
+            <translation>選択したオブジェクト（未選択なら全て）を、それぞれ自身のスナップの最も近い線に移動します。1〜2msずれているものだけが動きます。</translation>
+        </message>
+        <message>
+            <source>Everything is already on its snap.</source>
+            <translation>すべて既にスナップ上にあります。</translation>
+        </message>
+        <message>
+            <source>Resnapped {count} objects.</source>
+            <translation>{count}個のオブジェクトを再スナップしました。</translation>
+        </message>
+        <message>
             <source>Pasted {count} notes.</source>
             <translation>{count}個のノートを貼り付けました。</translation>
         </message>
@@ -2231,6 +2247,10 @@ Taiko Fancy Arranger を閉じて、そのフォルダーの TaikoFancyArranger.
         <message>
             <source>Hitsound offset: 1ms earlier</source>
             <translation>ヒットサウンドオフセット: 1ms早く</translation>
+        </message>
+        <message>
+            <source>Resnap to each object&apos;s own grid</source>
+            <translation>各オブジェクトを自身のグリッドに再スナップ</translation>
         </message>
         <message>
             <source>Hitsound offset: 1ms later</source>
