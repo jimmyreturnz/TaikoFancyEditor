@@ -676,6 +676,70 @@ class ReportedPositionTests(unittest.TestCase):
                     len({grain_offset_ms(rate) for _ in range(50)}), 1)
 
 
+class RateModTests(unittest.TestCase):
+    """The mods' rates: DT/HT stretch like the speed buttons do (pitch kept),
+    NC/DC resample (pitch moves with the rate, as a record would).
+
+    Only the numbers are checked here. How NC/DC *sound* is an ear test, and
+    that is the owner's.
+    """
+
+    def _pull(self, rate: float, pitch: bool, seconds: float = 1.0):
+        source = _sine(3.0)
+        stretcher = TimeStretcher()
+        stretcher.pitch = pitch
+        stretcher.reset(0.0)
+        out = _pull_seconds(stretcher, source, downmix_to_mono(source), seconds, rate)
+        return stretcher, out
+
+    def test_nightcore_raises_the_pitch_by_the_rate(self):
+        _stretcher, out = self._pull(1.5, pitch=True)
+        self.assertAlmostEqual(_pitch_hz(out), TONE_HZ * 1.5, delta=TONE_HZ * 0.03)
+
+    def test_daycore_lowers_it(self):
+        _stretcher, out = self._pull(0.75, pitch=True)
+        self.assertAlmostEqual(_pitch_hz(out), TONE_HZ * 0.75, delta=TONE_HZ * 0.03)
+
+    def test_double_time_keeps_the_pitch(self):
+        """1.5x through WSOLA: the first rate above 1 the UI has offered."""
+        _stretcher, out = self._pull(1.5, pitch=False)
+        self.assertAlmostEqual(_pitch_hz(out), TONE_HZ, delta=TONE_HZ * 0.03)
+
+    def test_resampled_output_maps_back_to_the_source_at_exactly_the_rate(self):
+        for rate in (1.5, 0.75):
+            with self.subTest(rate=rate):
+                stretcher, out = self._pull(rate, pitch=True)
+                emitted = len(out) // CHANNELS
+                self.assertAlmostEqual(stretcher.source_frame / emitted, rate, delta=0.01)
+
+    def test_notes_are_mixed_into_the_source_before_the_resample(self):
+        """So they change pitch with the song: the mixer is handed contiguous
+        source spans, never the resampled output."""
+        calls = []
+
+        class Recorder:
+            def mix(self, out, start, frames):
+                calls.append((start, frames, len(out) // CHANNELS))
+
+            def reset(self, _frame):
+                pass
+
+        source = _sine(2.0)
+        stretcher = TimeStretcher(Recorder())
+        stretcher.pitch = True
+        stretcher.reset(0.0)
+        _pull_seconds(stretcher, source, downmix_to_mono(source), 0.5, 1.5)
+        self.assertTrue(calls)
+        for (start, frames, length), (following, _f, _l) in zip(calls, calls[1:]):
+            self.assertEqual(length, frames, "mixed into the source chunk, not the output")
+            self.assertEqual(start + frames, following, "source spans are contiguous")
+
+    def test_the_1_5x_correction_is_the_measured_one(self):
+        """Not the -15.3ms the line through 0.75 and 1.0 extrapolates to; see
+        `_MEASURED_OFFSET_ANCHORS_MS`."""
+        self.assertAlmostEqual(grain_offset_ms(1.5), 0.12, places=6)
+
+
 class LookAheadTests(unittest.TestCase):
     """`ensure_grain`: the search costs ~20ms a grain and `_fill` runs on a 10ms
     tick, so a grain built on demand lands exactly when the sink has run dry."""

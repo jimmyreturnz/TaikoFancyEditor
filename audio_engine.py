@@ -327,7 +327,20 @@ def _centre_bias(frames: int) -> array.array:
 # does not have. Only 0.25/0.5/0.75 are ever asked for; the interpolation
 # exists so an out-of-table rate (a test, a future speed) gets something
 # continuous and reasonable rather than a lookup failure.
-_MEASURED_OFFSET_ANCHORS_MS = ((0.25, 10.72), (0.5, 8.71), (0.75, 7.67), (1.0, 0.0))
+#
+# **1.5x (DT) was added 2026-09-25**, when the mods made the UI offer a rate
+# above 1 for the first time. Extrapolating the line through 0.75 and 1.0 put it
+# at -15.3ms, which is not a measurement. Measured instead with the same
+# harness (`tools/measure_search_bias.py`, Libertas and Nbt-Hwt): the search
+# lands at 51% of its reach, 225.4 frames. Averaged across a grain the offset is
+# that displacement plus the sawtooth `(SEQUENCE_FRAMES - 1) / 2 * (1 - rate)`,
+# and above 1x the sawtooth is negative: 225.4 - 220.25 = +5 frames, +0.12ms.
+# The same arithmetic at 0.75 gives 8.3ms against the table's 7.67, so read it
+# as +/-0.7ms -- nearly nothing, against the 15ms the extrapolation would have
+# put on the DT playhead.
+_MEASURED_OFFSET_ANCHORS_MS = (
+    (0.25, 10.72), (0.5, 8.71), (0.75, 7.67), (1.0, 0.0), (1.5, 0.12),
+)
 
 
 def grain_offset_ms(rate: float) -> float:
@@ -349,7 +362,7 @@ def grain_offset_ms(rate: float) -> float:
         return 0.0
     anchors = _MEASURED_OFFSET_ANCHORS_MS
     # Whichever consecutive pair brackets `rate`, or the first/last pair to
-    # extrapolate outside [0.25, 1.0] -- no rate the UI offers ever needs that,
+    # extrapolate outside [0.25, 1.5] -- no rate the UI offers ever needs that,
     # but a test or a future speed should get a continuous line, not a crash.
     for (r0, m0), (r1, m1) in zip(anchors, anchors[1:]):
         if rate <= r1:
@@ -631,6 +644,9 @@ class TimeStretcher:
         # Rebuilt whenever the search width changes, which is whenever the rate
         # does; one array per rate, not per grain.
         self._bias = array.array("d")
+        # Nightcore/Daycore: resample instead of stretch, so pitch follows the
+        # rate (osu!'s AdjustableProperty.Frequency, where DT/HT are Tempo).
+        self.pitch = False
         self.reset(0.0)
 
     def reset(self, source_frame: float) -> None:
@@ -650,6 +666,9 @@ class TimeStretcher:
         self._tail_mono = array.array("h", bytes(2 * OVERLAP_FRAMES))
         self._pending = bytearray()
         self._pending_rate = 1.0
+        # audioop.ratecv's interpolation state, carried grain to grain so the
+        # joins are seamless. A jump anywhere starts it afresh.
+        self._ratecv_state = None
 
     @property
     def source_frame(self) -> float:
@@ -707,6 +726,8 @@ class TimeStretcher:
         """Append one grain's worth of output. False when the source runs out."""
         available = len(mono)
         start = int(self._read)
+        if self.pitch and rate != 1.0:
+            return self._produce_resampled(source, start, available, rate)
         if rate == 1.0:
             # Nothing to stretch: hand the decoded samples straight through, so
             # the rate the editor spends nearly all its time at has no splices
@@ -799,6 +820,34 @@ class TimeStretcher:
         # which is why WSOLA changes duration without changing the mapping from
         # output time back to source time.
         self._read += sequence * rate
+        return True
+
+    def _produce_resampled(self, source: array.array, start: int, available: int,
+                           rate: float) -> bool:
+        """One grain's worth of the source played faster or slower *as a
+        record would be*: pitch moves with the rate. No search and no splice,
+        so no `grain_offset_ms` either -- output frame i is source frame
+        `start + i * rate` exactly.
+
+        The notes are mixed into the *source* before it is resampled, so they
+        change pitch with the song, as they do under NC/DC in game.
+        `audioop.ratecv` does the interpolation in C; a Python loop over every
+        sample would be the cost the WSOLA search already was.
+        """
+        frames = min(available - start, max(1, round(SEQUENCE_FRAMES * rate)))
+        if frames <= 0:
+            return False
+        chunk = source[start * CHANNELS:(start + frames) * CHANNELS]
+        if self.mixer is not None:
+            self.mixer.mix(chunk, start, frames)
+        # ratecv takes the ratio as two integers; the rates on offer are 0.75
+        # and 1.5, and anything else is still close to exact at /1000.
+        in_rate = round(rate * 1000)
+        out, self._ratecv_state = audioop.ratecv(
+            chunk.tobytes(), 2, CHANNELS, in_rate, 1000, self._ratecv_state)
+        self._pending += out
+        self._pending_rate = rate
+        self._read = float(start + frames)
         return True
 
 
@@ -1098,6 +1147,12 @@ class _Engine(QObject):
         if playing:
             self._open_sink()
 
+    @Slot(bool)
+    def set_pitch(self, pitch: bool) -> None:
+        """Resample (pitch follows the rate) rather than stretch. Read by the
+        stretcher on its next grain, like a rate change."""
+        self._stretcher.pitch = bool(pitch)
+
     @Slot(float)
     def set_rate(self, rate: float) -> None:
         rate = float(rate)
@@ -1299,7 +1354,7 @@ class _Engine(QObject):
         # Clamped: during a seek hold the play cursor is still in the silence
         # before the first segment, and that is not song time.
         return (song_ms + max(0.0, played - start_frame) / SAMPLE_RATE * 1000.0 * rate
-                + grain_offset_ms(rate))
+                + (0.0 if self._stretcher.pitch else grain_offset_ms(rate)))
 
 
 class TrackPlayer(QObject):
@@ -1322,6 +1377,7 @@ class TrackPlayer(QObject):
     _seek = Signal(float)
     _seek_hold = Signal(float)
     _rate = Signal(float)
+    _pitch = Signal(bool)
     _volume = Signal(float)
     _hitsound_schedule = Signal(object, object, object)
     _hitsound_samples = Signal(object)
@@ -1344,6 +1400,7 @@ class TrackPlayer(QObject):
         self._seek.connect(self._engine.seek)
         self._seek_hold.connect(self._engine.set_seek_hold_ms)
         self._rate.connect(self._engine.set_rate)
+        self._pitch.connect(self._engine.set_pitch)
         self._volume.connect(self._engine.set_volume)
         self._hitsound_schedule.connect(self._engine.set_hitsound_schedule)
         self._hitsound_samples.connect(self._engine.set_hitsound_samples)
@@ -1431,6 +1488,11 @@ class TrackPlayer(QObject):
     def setPlaybackRate(self, rate) -> None:
         self._playback_rate = float(rate)
         self._rate.emit(float(rate))
+
+    def set_pitch_shift(self, pitch: bool) -> None:
+        """NC/DC: the next rate change resamples instead of stretching. Call
+        before `setPlaybackRate`; the two signals are queued in order."""
+        self._pitch.emit(bool(pitch))
 
     def setVolume(self, volume) -> None:
         self._volume.emit(float(volume))

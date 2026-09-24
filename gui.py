@@ -19,7 +19,7 @@ from PySide6.QtCore import (
     QTimer,
     QUrl, Signal,
 )
-from PySide6.QtGui import QImageReader, QColor, QFont, QFontDatabase, QFontMetrics, QKeySequence, QPainter, QPen, QPixmap, QPolygonF, QShortcut, QIcon
+from PySide6.QtGui import QImageReader, QBrush, QColor, QFont, QFontDatabase, QFontMetrics, QKeySequence, QPainter, QPen, QPixmap, QPolygonF, QRadialGradient, QShortcut, QIcon
 from PySide6.QtMultimedia import QMediaPlayer
 from PySide6.QtWidgets import (
     QAbstractItemView, QAbstractSlider, QAbstractSpinBox, QApplication, QButtonGroup, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
@@ -4489,6 +4489,49 @@ GAMEPLAY_STABLE_UNITS_PER_BEAT = 100.0 * 1.4 * SLIDER_MULTIPLIER_ASSUMED
 # a wider screen simply shows more -- one switch, pending the owner's call.
 GAMEPLAY_MAX_ASPECT = 16.0 / 9.0
 GAMEPLAY_LOCK_ASPECT = True
+
+# --- Mods, from ppy/osu's own TaikoMod* (read 2026-09-24) ------------------
+# Every string that lists mods uses this order, which is osu!'s: HD, the rate
+# mod, HR/EZ, FL -- "HDNCHR", never "NCHDHR".
+MOD_ORDER = ("HD", "NC", "DT", "DC", "HT", "HR", "EZ", "FL")
+# Rate mods: (song rate, whether pitch moves with it). DT/HT are osu!'s
+# AdjustableProperty.Tempo (pitch kept, the same WSOLA the speed buttons use);
+# NC/DC are Frequency (resampled, pitch follows the rate).
+RATE_MODS = {"NC": (1.5, True), "DT": (1.5, False), "DC": (0.75, True), "HT": (0.75, False)}
+SCROLL_MODS = ("HR", "EZ")
+# TaikoModEasy / TaikoModHardRock multiply the map's SliderMultiplier, so the
+# scroll speed and every drumroll's length change together, as in game.
+MOD_SLIDER_MULTIPLIER = {"EZ": 0.8, "HR": 1.4 * 4.0 / 3.0}
+# TaikoModHidden: a hit starts fading when it is a full scroll length out
+# (fade_out_start_time 1) and is gone 0.375 of that length later. Hits only:
+# drumrolls and swells are not in its list and stay visible.
+HD_FADE_START = 1.0
+HD_FADE_DURATION = 0.375
+# TaikoModFlashlight: a circle of radius 200 playfield units (the playfield's
+# height), black by 1.4x that (`CircularFlashlight`'s smoothstep, smoothness
+# 1.4). Centred at stable (208, 208): `new Vector2(208 * 1.6 * Scale.X)` sets
+# both axes. The playfield's top is at stable y 135
+# (`TaikoPlayfieldAdjustmentContainer.Y = 135 / 480`), so the centre sits
+# slightly right of the hit target and slightly below the lane's middle.
+# Not modelled: the 2.5x it opens to during a break (breaks are not parsed).
+FL_RADIUS_UNITS = 200.0
+FL_SMOOTHNESS = 1.4
+FL_CENTRE_STABLE = 208.0
+FL_PLAYFIELD_TOP_STABLE = 135.0
+
+
+def mod_string(mods) -> str:
+    """`mods` as osu! writes them: "HDDT", in MOD_ORDER, "" for none."""
+    return "".join(mod for mod in MOD_ORDER if mod in mods)
+
+
+def flashlight_combo_scale(combo: int) -> float:
+    """`ModFlashlight`'s combo scale: smaller from 100 combo and from 200."""
+    if combo >= 200:
+        return 0.625
+    if combo >= 100:
+        return 0.8125
+    return 1.0
 # Cap on how far the visible-note lookup will search either way. A near-zero SV
 # section makes one screen cover an unbounded amount of *time*, and scanning a
 # whole map for it would cost a frame.
@@ -4543,6 +4586,10 @@ class GameplayViewerView(QWidget):
         self.snap_divisor = 4
         self.wheel_accumulator = 0.0
         self.last_rendered_time = -1.0
+        # The mods in force (see MOD_ORDER). HR/EZ change the map's own
+        # SliderMultiplier, so the document is kept to re-derive from.
+        self.mods: frozenset[str] = frozenset()
+        self._document = None
 
         self.don_brush = QColor(*DON_COLOR)
         self.kat_brush = QColor(*KAT_COLOR)
@@ -4582,7 +4629,8 @@ class GameplayViewerView(QWidget):
             self.kiai_bands = self.kiai_bands_for(document)
         else:
             self.kiai_bands = kiai_spans(self.timing_points, KIAI_OPEN_END_MS)
-        self.slider_multiplier = document.slider_multiplier
+        self._document = document
+        self.slider_multiplier = document.slider_multiplier * self._mod_slider_factor()
         self.beat_points = uninherited_points(self.timing_points)
         self._beat_times = [point.time for point in self.beat_points]
         self._rebuild_velocities()
@@ -4816,6 +4864,75 @@ class GameplayViewerView(QWidget):
             return float(self.width())
         edge = self.height() * STABLE_UNIT_PER_PLAYFIELD * 480.0 * GAMEPLAY_MAX_ASPECT
         return min(float(self.width()), edge)
+
+    def _mod_slider_factor(self) -> float:
+        factor = 1.0
+        for mod in SCROLL_MODS:
+            if mod in self.mods:
+                factor *= MOD_SLIDER_MULTIPLIER[mod]
+        return factor
+
+    def set_mods(self, mods) -> None:
+        """Apply the mods the preview can show: HR/EZ, HD, FL. Rate mods move
+        the song, and the preview follows song time on its own."""
+        mods = frozenset(mods)
+        if mods == self.mods:
+            return
+        scroll_changed = (
+            {m for m in SCROLL_MODS if m in mods} != {m for m in SCROLL_MODS if m in self.mods}
+        )
+        self.mods = mods
+        if scroll_changed and self._document is not None:
+            self.refresh_notes(self._document)
+        self.update()
+
+    def _scroll_length_px(self) -> float:
+        """osu!'s scroll length on this view, hit target to screen edge --
+        what TaikoModHidden's preempt is a fraction of."""
+        if GAMEPLAY_LOCK_ASPECT:
+            edge = self.height() * STABLE_UNIT_PER_PLAYFIELD * 480.0 * GAMEPLAY_MAX_ASPECT
+        else:
+            edge = float(self.width())
+        return max(1.0, edge - self._hit_x())
+
+    def hidden_alpha(self, x: float) -> float:
+        """How visible a hit at `x` is under HD: 1 as it enters, 0 once it has
+        covered HD_FADE_DURATION of the scroll length. Linear, as the FadeOut
+        it copies is."""
+        if "HD" not in self.mods:
+            return 1.0
+        travelled = (x - self._hit_x()) / self._scroll_length_px()
+        gone_at = HD_FADE_START - HD_FADE_DURATION
+        return max(0.0, min(1.0, (travelled - gone_at) / HD_FADE_DURATION))
+
+    def flashlight_combo(self) -> int:
+        """The combo FL sizes itself by. Nobody is playing a preview, so this
+        is the full-combo count: every hit before the playhead."""
+        return sum(
+            1 for note in self.notes[:bisect_left(self.note_times, self.current_time)]
+            if note.is_circle
+        )
+
+    def _draw_flashlight(self, painter: QPainter) -> None:
+        if "FL" not in self.mods:
+            return
+        unit = self.height() * STABLE_UNIT_PER_PLAYFIELD
+        centre = QPointF(FL_CENTRE_STABLE * unit, (FL_CENTRE_STABLE - FL_PLAYFIELD_TOP_STABLE) * unit)
+        radius = (self.height() * FL_RADIUS_UNITS / PLAYFIELD_UNIT
+                  * flashlight_combo_scale(self.flashlight_combo()))
+        outer = radius * FL_SMOOTHNESS
+        inner = radius / outer
+        gradient = QRadialGradient(centre, outer)
+        gradient.setColorAt(0.0, QColor(0, 0, 0, 0))
+        gradient.setColorAt(inner, QColor(0, 0, 0, 0))
+        # The shader's smoothstep, sampled: a linear ramp between the two radii
+        # reads as a harder edge than osu! draws.
+        for step in range(1, 8):
+            t = step / 8.0
+            eased = t * t * (3.0 - 2.0 * t)
+            gradient.setColorAt(inner + (1.0 - inner) * t, QColor(0, 0, 0, round(255 * eased)))
+        gradient.setColorAt(1.0, QColor(0, 0, 0, 255))
+        painter.fillRect(self.rect(), QBrush(gradient))
 
     def _draw_past_osu_edge(self, painter: QPainter) -> None:
         """Cover what osu! would not show. Opaque: a faint note behind a tint
@@ -5104,8 +5221,13 @@ class GameplayViewerView(QWidget):
                 # A real roll past the target has lost its head, so only its
                 # cap lights from here on.
                 if not hit:
-                    draw_kiai_flash(
-                        painter, x, center_y, radius, pulse, strength, self.skin, big)
+                    alpha = self.hidden_alpha(x) if note.is_circle else 1.0
+                    if alpha > 0.0:
+                        painter.save()
+                        painter.setOpacity(alpha)
+                        draw_kiai_flash(
+                            painter, x, center_y, radius, pulse, strength, self.skin, big)
+                        painter.restore()
                 # A roll's cap is part of the object and pulses with it. Its own
                 # shape and its own anchor, or the light lands on the track
                 # rather than on the cap -- see draw_note_light.
@@ -5128,6 +5250,7 @@ class GameplayViewerView(QWidget):
                             painter, max(end_x, x), center_y, radius, pulse,
                             strength, self.skin, big, "taiko-roll-end", True,
                         )
+        self._draw_flashlight(painter)
         self._draw_past_osu_edge(painter)
 
     def _unfinished_pulse_anchor(self, band_start, band_end) -> float | None:
@@ -5229,11 +5352,19 @@ class GameplayViewerView(QWidget):
 
         if self._has_been_hit(note):
             return
+        alpha = self.hidden_alpha(x)
+        if alpha <= 0.0:
+            return
+        if alpha < 1.0:
+            painter.save()
+            painter.setOpacity(alpha)
         draw_note_sprite(
             painter, self.kat_brush if note.is_kat else self.don_brush, self.note_pen,
             x, center_y, radius, self.skin,
             big=note.is_finisher or note.is_spinner,
         )
+        if alpha < 1.0:
+            painter.restore()
 
     def _draw_playfield(self, painter, center_y, normal_radius, big_radius, pulse) -> None:
         """The skin's playfield, back to front, under everything else.
