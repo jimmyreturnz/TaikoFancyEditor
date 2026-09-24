@@ -253,6 +253,22 @@ SLIDER_MULTIPLIER_ASSUMED = 1.4
 
 
 @lru_cache(maxsize=None)
+def tick_kind(position_in_beat: int, divisor: int) -> str:
+    """Which tick style a grid line at `position_in_beat` of `divisor` gets."""
+    if position_in_beat == 0:
+        return "beat"
+    if divisor % 2 == 0 and position_in_beat == divisor // 2:
+        return "half"
+    if divisor % 4 == 0 and position_in_beat % (divisor // 4) == 0:
+        return "quarter"
+    if divisor % 8 == 0 and position_in_beat % (divisor // 8) == 0:
+        return "eighth"
+    for prime, kind in ((3, "third"), (5, "fifth"), (7, "seventh"), (11, "eleventh"), (13, "thirteenth")):
+        if divisor % prime == 0:
+            return kind
+    return "other"
+
+
 def divisors_descending(divisor: int) -> tuple[int, ...]:
     """`divisor`'s own divisors, coarsest last -- the grids that are subsets of it.
 
@@ -2696,6 +2712,19 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
             * snap_length
         )
 
+        # Everything below is per tick, and a heavy gimmick section still has
+        # ~470 of them per band after the coarsening above -- a band paint was
+        # 3.1ms, the grid most of it (tools/measure_wheel_seek.py --gimmick
+        # --from 117000 --profile, Nbt-Hwt's hidden anti-barline wall). So
+        # what only changes per *section* is worked out per section: which
+        # kind each position in the beat is, and the lines each kind draws
+        # into. Locals rather than attributes for the same reason.
+        x_for_time = self.x_for_time
+        right_edge = float(self.width() + 1)
+        height = self.height()
+        split_rows, symmetric = self.split_rows, self.symmetric
+        kinds: list[tuple[list[QLine], int]] = []
+
         while tick_time <= end_time + snap_length:
             at = tick_time + 0.001
             if at >= section_expires:
@@ -2707,6 +2736,13 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
                     if timing.beat_length / candidate >= min_snap_length:
                         grid_divisor = candidate
                         break
+                kinds = []
+                for position in range(grid_divisor):
+                    kind = tick_kind(position, grid_divisor)
+                    lines = batches.get(kind)
+                    if lines is None:
+                        lines = batches[kind] = []
+                    kinds.append((lines, tick_heights[kind]))
 
             snap_length = timing.beat_length / grid_divisor
             if snap_length < min_snap_length:
@@ -2716,35 +2752,7 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
                 tick_time = next_section
                 continue
 
-            snap_index = round(
-                (tick_time - timing.time)
-                / snap_length
-            )
-
-            position_in_beat = snap_index % grid_divisor
-
-            if position_in_beat == 0:
-                kind = "beat"
-            elif grid_divisor % 2 == 0 and position_in_beat == grid_divisor // 2:
-                kind = "half"
-            elif grid_divisor % 4 == 0 and position_in_beat % (grid_divisor // 4) == 0:
-                kind = "quarter"
-            elif grid_divisor % 8 == 0 and position_in_beat % (grid_divisor // 8) == 0:
-                kind = "eighth"
-            elif grid_divisor % 3 == 0:
-                kind = "third"
-            elif grid_divisor % 5 == 0:
-                kind = "fifth"
-            elif grid_divisor % 7 == 0:
-                kind = "seventh"
-            elif grid_divisor % 11 == 0:
-                kind = "eleventh"
-            elif grid_divisor % 13 == 0:
-                kind = "thirteenth"
-            else:
-                kind = "other"
-
-            tick_height = tick_heights[kind]
+            lines, tick_height = kinds[round((tick_time - timing.time) / snap_length) % grid_divisor]
             # Clamped to just off either edge before it reaches Qt: drawLine
             # takes a C int, and one 0.00001 BPM section puts the tick after
             # this one billions of pixels out. Handing that over raises
@@ -2759,30 +2767,28 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
             # only the drawn position is snapped, never accumulated back into
             # `tick_time`, which keeps the grid from drifting off its own beats
             # across a long section.
-            x = round(max(-1.0, min(float(self.width() + 1), self.x_for_time(osu_snap_ms(tick_time)))))
+            x = round(max(-1.0, min(right_edge, x_for_time(osu_snap_ms(tick_time)))))
 
-            lines = batches.get(kind)
-            if lines is None:
-                lines = batches[kind] = []
-            if self.split_rows:
+            if split_rows:
                 # Straddling the middle instead of growing in from the edges:
                 # this layer's objects are up against the top and bottom, and
                 # ticks there were drawn through them. See `_row_y`.
                 lines.append(QLine(x, baseline_y - tick_height // 2, x, baseline_y + tick_height // 2))
-            elif self.symmetric:
+            elif symmetric:
                 # Notes alone stay centered on the baseline; ticks anchor to
                 # the view's top and bottom edges and grow inward, framing
                 # the notes rather than straddling the middle with them.
                 lines.append(QLine(x, 0, x, tick_height))
-                lines.append(QLine(x, self.height(), x, self.height() - tick_height))
+                lines.append(QLine(x, height, x, height - tick_height))
             else:
                 lines.append(QLine(x, baseline_y, x, baseline_y - tick_height))
 
             tick_time += snap_length
 
         for kind, lines in batches.items():
-            painter.setPen(self._tick_styles[kind][0])
-            painter.drawLines(lines)
+            if lines:
+                painter.setPen(self._tick_styles[kind][0])
+                painter.drawLines(lines)
 
     def _owns_timing_point(self, point: TimingPoint) -> bool:
         """Whether this view's tools act on `point`, or merely show it.
@@ -15989,6 +15995,14 @@ class MainWindow(QMainWindow):
                 self._seek_hold_until_ns = (
                     self.gameplay_frame_clock.nsecsElapsed() + hold_ms * 1_000_000)
         self.player.setPosition(round(position))
+        # Playing, the frame loop carries the new position to every view on its
+        # next frame -- it reads the anchor reset above -- so a broadcast here
+        # painted every view a second time per notch. On the gimmick page's six
+        # bands that was most of a fast scroll's cost:
+        # tools/measure_wheel_seek.py --gimmick, Nbt-Hwt, a notch every 10ms,
+        # measured 86 of 305 frames late with it.
+        if self.player.playbackState() == QMediaPlayer.PlayingState:
+            return
         # Every chart view, not just the shared deck timeline: on the gimmick
         # page the six layers are chart views, and a seek that reached only
         # some of them left them disagreeing about where "now" is until the
