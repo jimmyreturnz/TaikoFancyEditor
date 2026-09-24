@@ -10138,6 +10138,14 @@ class MainWindow(QMainWindow):
         # programmatic close() is code tidying up, including every test's
         # teardown, and a modal prompt there has nobody to answer it.
         if not event.spontaneous() or self._confirm_leaving_editor():
+            # The render loop is a 4ms PreciseTimer, which Windows serves from
+            # WINMM's multimedia-timer thread posting into the main queue. A
+            # closed window whose object has not been collected yet kept
+            # rendering, and a few dozen of them starved the main thread of
+            # its own event-queue lock: test_gimmick_editor hung forever in
+            # ScrollBarWheelTests.setUp, the 33rd window of the module.
+            self.gameplay_render_timer.stop()
+            self.info_timer.stop()
             self._release_application_hooks()
             self._release_audio_file()
             event.accept()

@@ -100,6 +100,16 @@ class ApplicationHookReleaseTests(unittest.TestCase):
         self.assertFalse(seen, "a closed window must not filter application events")
         probe.deleteLater()
 
+    def test_closing_stops_the_render_loop(self):
+        """A closed window that has not been collected yet must not keep its
+        4ms PreciseTimer: WINMM posts every tick into the main queue, and a few
+        dozen of them starved the main thread of its own queue lock."""
+        window = self._window()
+        self.assertTrue(window.gameplay_render_timer.isActive())
+        window.close()
+        self.assertFalse(window.gameplay_render_timer.isActive())
+        self.assertFalse(window.info_timer.isActive())
+
     def test_releasing_twice_is_harmless(self):
         """closeEvent can run more than once -- a cancelled close, then a real
         one -- and removeEventFilter/disconnect must tolerate that."""

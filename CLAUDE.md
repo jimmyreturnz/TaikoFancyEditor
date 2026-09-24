@@ -19,6 +19,7 @@ diagnosis before anyone measured:
 | Slow playback needs better clock interpolation | The FFmpeg backend reports position in coarse steps. The clock was correct and starved of input. |
 | WMF's rate runs 1.8% fast, calibrate it out | A fixed ~12ms offset in the harness, divided by a short window. Real error 0.04%. |
 | Stutter is the big timeline views | A 28-pixel-tall overview bar cost more than the full timeline above it. |
+| Six open charts cost a third of all frames | The harness was timing the first second after load, while a Python downmix held the GIL. Steady state, six charts are +1.8ms a frame and inside budget. |
 
 So: **do not optimise, diagnose, or "fix" a performance or timing problem
 until a number says which thing to touch.** Write the harness, keep it in
