@@ -10802,19 +10802,30 @@ class MainWindow(QMainWindow):
         self.export_new_difficulty_button.setEnabled(False)
         header.addWidget(self.export_new_difficulty_button)
 
-        # Status/log line sits with the action buttons on the left, not wedged
-        # between them and Settings / the page tabs on the right: a long
-        # message there read as a caption belonging to those buttons.
-        # Takes the header's leftover width instead of a fixed 460px, which
-        # elided ordinary messages to "..." while empty space sat to its
-        # right. It still elides when the header genuinely runs out of room,
-        # and ElidedLabel keeps the full text as its tooltip either way.
+        # Quiet, not pink: a filled pink button is the page's one action (Save)
+        # or a choice that is on. With every header button filled, 49 controls
+        # on the Gimmick page were pink and none of them stood out.
+        for button in (open_button, self.undo_button, self.redo_button,
+                       self.export_new_difficulty_button):
+            button.setProperty("role", "ghost")
+
+        # Which chart this is, in the header: the difficulty in pink (it is
+        # what tells two charts of one song apart), then artist - title and
+        # mapper, which elide first when the header runs out of room. The
+        # status message that used to sit here moved to the status bar.
+        self.chart_version_label = QLabel()
+        self.chart_version_label.setStyleSheet(f"color: {ACCENT_PINK}; font-weight: 700; padding-left: 10px;")
+        header.addWidget(self.chart_version_label)
+        self.chart_title_label = ElidedLabel()
+        self.chart_title_label.setStyleSheet("color: #aeb8c5;")
+        header.addWidget(self.chart_title_label, 1)
+
+        # Status/log line: the status bar, where the eye goes after acting.
+        # ElidedLabel keeps the full text as its tooltip when it does not fit.
         self.status = ElidedLabel(tr("MainWindow", "Open a map to begin."))
-        self.status.setMinimumWidth(100)
         self.status.setAlignment(
             Qt.AlignLeft | Qt.AlignVCenter
         )
-        header.addWidget(self.status, 1)
         # The mods in force, in osu!'s order, visible from every page -- the
         # strip that sets them is on two of the four.
         self.mods_chip = QLabel()
@@ -10830,7 +10841,7 @@ class MainWindow(QMainWindow):
         self.settings_button.setObjectName("settingsButton")
         self.settings_button.setToolTip(tr("MainWindow", "Open application settings"))
         self.settings_button.setAccessibleName("Settings")
-        self.settings_button.setMinimumWidth(100)
+        self.settings_button.setProperty("role", "ghost")
         self.settings_button.setFocusPolicy(Qt.NoFocus)
         self.settings_button.clicked.connect(self.open_settings)
         header.addWidget(self.settings_button)
@@ -10847,21 +10858,6 @@ class MainWindow(QMainWindow):
         )
         for button in page_buttons:
             button.setCheckable(True)
-            button.setFocusPolicy(Qt.NoFocus)
-            # Wider than the label needs. These are the app's top-level
-            # navigation and they sat as four cramped boxes among the header's
-            # other controls; extra padding either side is what makes them read
-            # as tabs. Padding rather than a typed width, so a longer
-            # translation still fits (see equalize_button_widths).
-            button.setStyleSheet("QPushButton { padding-left: 30px; padding-right: 30px; }")
-            # Pinned to what the label costs *checked*, not left on sizeHint.
-            # These are checkable and the hint is taken in the unchecked state,
-            # which is two pixels of border and one font weight short of how
-            # the selected tab is actually painted -- so whichever page you
-            # were on had the last letter of its own name clipped. Per button
-            # rather than equalized, so the four keep their ragged widths and a
-            # longer translation still fits.
-            fit_button_width(button)
         self.page_button_group = QButtonGroup(self)
         self.page_button_group.setExclusive(True)
         self.page_button_group.addButton(self.library_page_button, PAGE_LIBRARY)
@@ -10870,8 +10866,16 @@ class MainWindow(QMainWindow):
         self.page_button_group.addButton(self.fancy_arranger_page_button, PAGE_FANCY)
         self.library_page_button.setChecked(True)
         self.page_button_group.idClicked.connect(self._switch_page)
-        for button in page_buttons:
-            header.addWidget(button)
+        # One segmented control, the same pill group as the speed and mod
+        # strips: four solid pink tabs read as four more actions. Wider
+        # padding than a segment's, since these are the app's navigation.
+        # Widths are pinned in showEvent, after the frame's sheet applies.
+        self.page_tabs = segmented(page_buttons)
+        self.page_tabs.setStyleSheet(
+            SEGMENT_STYLE
+            + "QFrame#segment QPushButton { padding: 5px 18px; font-size: 14px; }"
+        )
+        header.addWidget(self.page_tabs)
 
         root.addLayout(header)
 
@@ -10886,6 +10890,7 @@ class MainWindow(QMainWindow):
         self.page_stack.addWidget(self.fancy_arranger_page)
         self.page_stack.setCurrentIndex(PAGE_LIBRARY)
         root.addWidget(self.page_stack, 1)
+        self._build_status_bar()
 
         # A transient toast for a refusal (see show_toast). Parented to
         # page_stack rather than added through it, so it floats above
@@ -10918,6 +10923,19 @@ class MainWindow(QMainWindow):
                 background: #39414d;
                 color: #7d8794;
             }
+            /* Everything that is neither the page's action nor a choice
+               that is on: quiet until hovered. */
+            QPushButton[role="ghost"] {
+                background: transparent; color: #aeb8c5;
+                border: 1px solid transparent; padding: 5px 10px;
+            }
+            QPushButton[role="ghost"]:hover { background: #2a3341; color: #e8edf3; }
+            QPushButton[role="ghost"]:disabled { background: transparent; color: #4d5664; }
+            /* The window's own navy, so the widgets in it need no rule of
+               their own: a status bar a shade darker than its combo box's
+               parent painted every plain QWidget in it as a lighter block. */
+            QStatusBar { border-top: 1px solid #303947; color: #aeb8c5; }
+            QStatusBar::item { border: 0; }
             QComboBox, QSpinBox, QDoubleSpinBox {
                 background: #252d39;
                 border: 1px solid #3a4554;
@@ -10934,6 +10952,22 @@ class MainWindow(QMainWindow):
             QTabBar::tab:selected { background: #f3a6bd; color: #17191f; }
             """
         )
+
+    def _build_status_bar(self) -> None:
+        """Status message on the left, the current page's session settings
+        on the right. Built after the pages, which own those widgets."""
+        bar = self.statusBar()
+        bar.setSizeGripEnabled(False)
+        # The page's own 8px gutter, or the message sits on the window edge.
+        bar.setContentsMargins(8, 0, 8, 0)
+        bar.addWidget(self.status, 1)
+        bar.addPermanentWidget(self.gimmick_status_box)
+        bar.addPermanentWidget(self.editor_status_box)
+        self._sync_status_bar(self.page_stack.currentIndex())
+
+    def _sync_status_bar(self, index: int) -> None:
+        self.editor_status_box.setVisible(index == PAGE_EDITOR)
+        self.gimmick_status_box.setVisible(index == PAGE_GIMMICK)
 
     # -- toast ---------------------------------------------------------------
 
@@ -11378,6 +11412,7 @@ class MainWindow(QMainWindow):
         button = self.page_button_group.button(index)
         if button is not None:
             button.setChecked(True)
+        self._sync_status_bar(index)
         # Which toolbox owns the number keys is a property of the page.
         self._refresh_tool_shortcut_scope()
         # So is which difficulty is heard: the Play choice is the Editor
@@ -11720,26 +11755,39 @@ class MainWindow(QMainWindow):
         # mapset is one song, so reading Oni while hearing Muzukashii is a
         # real thing to want. Only the hit objects follow it -- see
         # `_hitsound_state` for what deliberately does not.
-        strip.addWidget(QLabel(tr("MainWindow", "Play:")))
+        #
+        # Both of these live in the status bar (see _build_status_bar), shown
+        # only while this page is: they are set once per session, and in the
+        # playback strip they crowded the controls used every few seconds.
+        # "Hitsounds from" rather than "Play:", which beside the speed buttons
+        # read as a transport control and out here reads as nothing.
+        self.editor_status_box = QWidget()
+        status_row = QHBoxLayout(self.editor_status_box)
+        status_row.setContentsMargins(0, 0, 0, 0)
+        status_row.setSpacing(4)
+        status_row.addWidget(QLabel(tr("MainWindow", "Hitsounds from:")))
         self.hitsound_source_combo = QComboBox()
         self.hitsound_source_combo.addItem(tr("MainWindow", "Active"), "")
         self.hitsound_source_combo.currentIndexChanged.connect(
             self._hitsound_source_changed)
-        strip.addWidget(self.hitsound_source_combo)
+        status_row.addWidget(self.hitsound_source_combo)
+        status_row.addSpacing(12)
 
         # Its own container so `pink_spin_buttons` has a layout to swap the
-        # spin out of -- run on the strip itself it would wrap every other
-        # spin box on the page as well. The label is here rather than in the
-        # tooltip because a bare number box beside the speed buttons says
-        # nothing about what it is a number of.
+        # spin out of -- run on the whole row it would wrap the combo's
+        # neighbours too. The label is here rather than in the tooltip because
+        # a bare number box says nothing about what it is a number of.
         height_box = QWidget()
         height_row = QHBoxLayout(height_box)
         height_row.setContentsMargins(0, 0, 0, 0)
         height_row.setSpacing(4)
         height_row.addWidget(QLabel(tr("MainWindow", "View size")))
         height_row.addWidget(self.editor_view_height_spin)
-        strip.addWidget(height_box)
+        status_row.addWidget(height_box)
         pink_spin_buttons(height_box)
+        # A stepper nobody reaches for often: quiet, like the rest of the bar.
+        for button in height_box.findChildren(QPushButton):
+            button.setProperty("role", "ghost")
 
         add_view_button = QPushButton("+")
         add_view_button.setToolTip(tr("MainWindow", "open new view"))
@@ -11832,19 +11880,24 @@ class MainWindow(QMainWindow):
 
         layout.addLayout(strip)
 
-        status_row = QHBoxLayout()
+        # Which file is edited and whose timing it follows: the status bar,
+        # shown only on this page (see _build_status_bar). It was a row of
+        # its own between the strip and the layers, and every pixel of this
+        # page's height is a layer's.
+        self.gimmick_status_box = QWidget()
+        status_row = QHBoxLayout(self.gimmick_status_box)
+        status_row.setContentsMargins(0, 0, 0, 0)
         status_row.setSpacing(6)
         self.gimmick_status = QLabel()
-        self.gimmick_status.setWordWrap(True)
-        status_row.addWidget(self.gimmick_status, 1)
+        status_row.addWidget(self.gimmick_status)
         # The entry question is asked once and then remembered forever, so
         # without this there was no way to correct the answer -- including the
         # common one of pairing before the properly-timed difficulty existed.
         self.gimmick_reference_button = QPushButton(tr("MainWindow", "Timing Reference..."))
         self.gimmick_reference_button.setFocusPolicy(Qt.NoFocus)
         self.gimmick_reference_button.clicked.connect(self._change_gimmick_reference)
+        self.gimmick_reference_button.setProperty("role", "ghost")
         status_row.addWidget(self.gimmick_reference_button)
-        layout.addLayout(status_row)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -16482,6 +16535,15 @@ class MainWindow(QMainWindow):
         # checked rule could make "100%" heavier -- five pixels short of its own
         # label, on the page this program is mostly used on.
         equalize_button_widths([self.gimmick_play_button, *self.gimmick_playback_speed_buttons])
+        # Page tabs: each pinned to what its label costs *checked* (bold), per
+        # button so the four keep their ragged widths. Measured here, under
+        # the segment's sheet -- at build time the frame's padding had not
+        # applied, and the selected page clipped the last letter of its name.
+        # Timing Reference... too: a permanent status bar widget is squeezed
+        # to whatever the message leaves it unless it has a width of its own.
+        for button in (*self.page_button_group.buttons(), self.gimmick_reference_button):
+            button.ensurePolished()
+            fit_button_width(button)
 
     def _snapshot_transform_group(self, group: str):
         ref = self._transform_page_refs[group]
@@ -16794,6 +16856,16 @@ class MainWindow(QMainWindow):
         self._ensure_default_editor_views(state)
 
         self.status.setText(f"{state.source_path.name} | drag notes, preview, then Apply to selection")
+        self._show_chart_identity(state)
+
+    def _show_chart_identity(self, state: DifficultyState) -> None:
+        """The header's "which chart": difficulty, then artist - title and mapper."""
+        header = read_header(state.source_path) or {}
+        self.chart_version_label.setText(state.document.version or state.source_path.stem)
+        title = " - ".join(part for part in (header.get("artist"), header.get("title")) if part)
+        creator = header.get("creator")
+        mapper = tr("MainWindow", "mapped by {name}").format(name=creator) if creator else ""
+        self.chart_title_label.setText("  ·  ".join(part for part in (title, mapper) if part))
 
     def _ensure_default_editor_views(self, state: DifficultyState) -> None:
         """Give `state` a chart + SV editor view if it has none.
@@ -17504,6 +17576,7 @@ class MainWindow(QMainWindow):
         """
         if not hasattr(self, "timeline_info"):
             return
+        self._refresh_save_label()
         duration = max(0, self.player.duration())
         for bar in getattr(self,"_timing_bars",()): bar.set_duration(duration)
         self._info_duration_ms = duration
@@ -17739,6 +17812,19 @@ class MainWindow(QMainWindow):
             text=f"{format_time(display)}   {percent:.1f}%"
             self.editor_timeline_strip.setText(text)
             self.gimmick_timeline_strip.setText(text)
+
+    def _refresh_save_label(self) -> None:
+        """Save says how many difficulties it would write.
+
+        Polled from the info timer rather than signalled: History has no change
+        signal, and counting a handful of flags is cheaper than growing one.
+        """
+        count = sum(1 for state in self._states.values() if state.history.dirty)
+        if count == getattr(self, "_save_label_count", None):
+            return
+        self._save_label_count = count
+        label = tr("MainWindow", "Save")
+        self.save_all_button.setText(f"{label} · {count}" if count else label)
 
     def save_all_states(self) -> None:
         """Write every changed difficulty's original file at once (global header's Save)."""

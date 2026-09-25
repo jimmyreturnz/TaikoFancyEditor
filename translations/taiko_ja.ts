@@ -685,6 +685,10 @@
             <translation>再生:</translation>
         </message>
         <message>
+            <source>Hitsounds from:</source>
+            <translation>ヒットサウンド元:</translation>
+        </message>
+        <message>
             <source>Active</source>
             <translation>アクティブ</translation>
         </message>

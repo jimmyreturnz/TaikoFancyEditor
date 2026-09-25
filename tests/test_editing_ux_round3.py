@@ -96,31 +96,36 @@ class WindowTestCase(unittest.TestCase):
 
 
 class HeaderStatusPositionTests(WindowTestCase):
-    def test_status_sits_left_of_settings_and_the_page_tabs(self):
-        header = self.window.status.parentWidget().layout()
-        # The header is the layout that holds all four; find their order in it.
-        order = {}
+    def _header_order(self):
         layout = self.window.settings_button.parentWidget().layout()
-        self.assertIsNotNone(layout)
-        header_layout = None
         for i in range(layout.count()):
-            item = layout.itemAt(i)
-            sub = item.layout()
+            sub = layout.itemAt(i).layout()
             if sub is None:
                 continue
-            widgets = {sub.itemAt(j).widget() for j in range(sub.count())}
+            widgets = [sub.itemAt(j).widget() for j in range(sub.count())]
             if self.window.settings_button in widgets:
-                header_layout = sub
-                break
-        self.assertIsNotNone(header_layout, "global header row not found")
-        for i in range(header_layout.count()):
-            widget = header_layout.itemAt(i).widget()
-            if widget is not None:
-                order[widget] = i
-        self.assertLess(order[self.window.status], order[self.window.settings_button])
-        self.assertLess(order[self.window.status], order[self.window.editor_page_button])
-        self.assertLess(order[self.window.status], order[self.window.fancy_arranger_page_button])
-        del header
+                return {widget: j for j, widget in enumerate(widgets) if widget is not None}
+        self.fail("global header row not found")
+
+    def test_status_message_is_in_the_status_bar(self):
+        # Not the header: a message there read as a caption of the buttons
+        # beside it, and the header now names the chart instead.
+        self.assertIs(self.window.status.parentWidget(), self.window.statusBar())
+
+    def test_chart_name_sits_left_of_settings_and_the_page_tabs(self):
+        order = self._header_order()
+        for label in (self.window.chart_version_label, self.window.chart_title_label):
+            self.assertLess(order[label], order[self.window.settings_button])
+            self.assertLess(order[label], order[self.window.page_tabs])
+        self.assertEqual(self.window.chart_version_label.text(), self.state.document.version)
+
+    def test_session_settings_follow_the_page(self):
+        self.window._show_page(gui.PAGE_EDITOR)
+        self.assertFalse(self.window.editor_status_box.isHidden())
+        self.assertTrue(self.window.gimmick_status_box.isHidden())
+        self.window._show_page(gui.PAGE_FANCY)
+        self.assertTrue(self.window.editor_status_box.isHidden())
+        self.assertTrue(self.window.gimmick_status_box.isHidden())
 
 
 class DifficultyLabelTests(WindowTestCase):

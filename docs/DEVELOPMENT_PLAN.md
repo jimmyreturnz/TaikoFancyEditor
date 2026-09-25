@@ -723,6 +723,35 @@ started.
 
 ## Owner requests, 2026-09-17
 
+### Editor shell: one pink thing per job -- APPROVED 2026-09-26, not started
+
+Mockup: https://claude.ai/artifact/VdtijCJLWtSMSzgpt6oG9e ("Editor Shell
+Redesign"). Counted on 0b3d48d at 1920x1040 with Nbt-Hwt open: 49 filled pink
+controls on the Gimmick page, 26 on the Editor. Pink is kept for the current
+page, tool, speed, play and Save (5); everything else is a ghost button.
+
+- **Header:** Open / Undo / Redo / Settings as ghost or icon buttons, Save
+  primary with an unsaved count, the chart named as artist · difficulty (pink)
+  · mapper, the four page tabs as one segmented control, still top right.
+- **Lane header on the left** of each view (148px) replaces `EditorViewFrame`'s
+  chrome row: kind, name, and move / lock / close shown on hover (lock always
+  shown, amber, when locked). Every lane loses the same width, so the centred
+  hit positions still line up. About 180px of height back on the Gimmick page.
+- **Focused lane is marked** (song select's pink rim and tint), and the tool
+  dock names it: "Tools for SV (barlines)". Tool digits as key caps.
+- **Snap is a slider on every editor** -- Editor, Gimmick and the Fancy
+  Arranger's Timeline dock -- over all of `SNAP_DIVISORS`, value in pink, ticks
+  under 1 2 3 4 6 8 12 16 32 64, wheel steps one divisor. Owner's call. A
+  `QSlider` over the index, replacing `editor_snap_combo`, `gimmick_snap_combo`
+  and `snap_combo`; each page keeps its own snap, as now.
+- **Status bar** (`QMainWindow.statusBar()`, `ElidedLabel` message): the status
+  text, "Timing from ... Change..." (was the Timing Reference row), "Hitsounds
+  from" (was Play:) and lane height (was View size).
+- **Add view** is a dashed row at the end of the stack instead of a "+".
+- Open: whether the Fancy Arranger's sub-toolbar takes the same ghost/primary
+  split. New strings need `taiko_ja.ts` entries; check widths with
+  `tools/check_button_widths.py` on the real platform.
+
 ### Song select redesign -- DONE 2026-09-26
 
 As the approved mockup: search and Group/Sort/原文 pills on one row, one quiet
