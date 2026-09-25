@@ -723,7 +723,17 @@ started.
 
 ## Owner requests, 2026-09-17
 
-### Fancy Arranger: every box customizable (not started)
+### Fancy Arranger: every box customizable -- DONE 2026-09-25 (34121ea, 05e0b3f)
+
+Canvas at osu!'s proportions (512x384 inside 640x480 at (64, 56), circles at
+the export's CS); Transform and Timeline as QDockWidgets around it, saved as
+`fancy/dock_state`, with a Layout menu. **Still open from the approved
+mockup:** shape tiles with line icons (the shape is still a combo), each
+parameter as a slider with its value beside it and the notes gliding, and the
+wheel hints as key caps. The docks commit also records a PySide crash worth
+knowing: a widget added to a filled-then-attached layout twice leaves a
+wrapper claiming freed memory (`OrphanedLayoutItemTests`).
+
 
 Asked for: drag each box (canvas, transform controls, timeline, density)
 somewhere else and have it fit the screen; close or hide single boxes; keep
@@ -802,7 +812,15 @@ rounded; green-line click placement and its ghost did not. Both do now.
 11. Larger items: UI and assets rework, song library rework, updater rework,
     Thai localization.
 
-### Gameplay preview: mods, and a range that matches osu! (not started)
+### Gameplay preview: mods, and a range that matches osu! -- DONE 2026-09-25
+
+Range: fc4874b (scale from the view height, hit target at 256 playfield units,
+covered past a 16:9 screen -- `GAMEPLAY_LOCK_ASPECT` switches to stable's
+wider-shows-more, the owner's call). Mods: c0e9d14 + ff97459 (HD | NC DT DC
+HT | HR EZ | FL strip, osu!'s order; HR/EZ/HD/FL from the ruleset; DT's grain
+offset measured at 1.5x). **Owed:** an ear test of NC/DC (resampled, pitch
+moves), and FL's 2.5x during breaks, which needs breaks parsed.
+
 
 **The visible range is wrong, and that comes first.** The preview shows far
 more of the chart than osu!taiko does, and the zoom has nothing to do with it
