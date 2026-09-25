@@ -533,9 +533,15 @@ class HitsoundMixer:
         """
         self._voiced_through = int(source_frame) - 1
 
-    def mix(self, out: array.array, source_start: int, frames: int) -> None:
+    def mix(self, out: array.array, source_start: int, frames: int,
+            source_frames: int | None = None, rate: float = 1.0) -> None:
         """Mix into `out`, which is `frames` frames of source from
         `source_start`.
+
+        Or, with `rate`, `frames` frames of *resampled* output covering
+        `source_frames` of source (NC/DC): a note at source frame `s` then
+        starts at output frame `(s - source_start) / rate`, and plays at its own
+        speed from there -- the song changes pitch, the notes do not.
 
         Called once per grain, from `TimeStretcher._produce`, with the grain's
         *real* source position -- wherever the splice search landed, not where
@@ -575,20 +581,21 @@ class HitsoundMixer:
             # Still advance: a note passed over while hitsounds are off has
             # been passed over, and turning them on mid-playback should start
             # from the playhead rather than replay the section behind it.
-            self._voiced_through = max(self._voiced_through,
-                                       source_start + frames - 1)
+            self._voiced_through = max(
+                self._voiced_through,
+                source_start + (frames if source_frames is None else source_frames) - 1)
             return
         first = bisect_left(self._frames, max(source_start,
                                               self._voiced_through + 1))
         index = first
-        end = source_start + frames
+        end = source_start + (frames if source_frames is None else source_frames)
         while index < len(self._frames) and self._frames[index] < end:
             pcm = self._samples.get(self._keys[index])
             gain = self._gains[index] * self.volume
             # Zero is a volume mappers set deliberately (see the Kiai and Sound
             # Volume layer), so it is obeyed rather than floored.
             if pcm and gain > 0.0 and len(self._voices) < self.MAX_VOICES:
-                offset = self._frames[index] - source_start
+                offset = min(frames - 1, round((self._frames[index] - source_start) / rate))
                 self._voices.append([pcm, 0, gain])
                 self._sound(out, frames, start_frame=offset,
                             voice=self._voices[-1])
@@ -825,12 +832,15 @@ class TimeStretcher:
     def _produce_resampled(self, source: array.array, start: int, available: int,
                            rate: float) -> bool:
         """One grain's worth of the source played faster or slower *as a
-        record would be*: pitch moves with the rate. No search and no splice,
-        so no `grain_offset_ms` either -- output frame i is source frame
-        `start + i * rate` exactly.
+        record would be*: the song's pitch moves with the rate. No search and
+        no splice, so no `grain_offset_ms` either -- output frame i is source
+        frame `start + i * rate` exactly.
 
-        The notes are mixed into the *source* before it is resampled, so they
-        change pitch with the song, as they do under NC/DC in game.
+        The notes are mixed into the *output*, after the resample, at the
+        output frame their source frame maps to, so they keep their own pitch.
+        Owner's call, 2026-09-26, after hearing both: only the song changes.
+        (They were mixed into the source first, which pitched them with it --
+        lazer's `ModRateAdjust.ApplyToSample` does that for every rate mod.)
         `audioop.ratecv` does the interpolation in C; a Python loop over every
         sample would be the cost the WSOLA search already was.
         """
@@ -838,14 +848,16 @@ class TimeStretcher:
         if frames <= 0:
             return False
         chunk = source[start * CHANNELS:(start + frames) * CHANNELS]
-        if self.mixer is not None:
-            self.mixer.mix(chunk, start, frames)
         # ratecv takes the ratio as two integers; the rates on offer are 0.75
         # and 1.5, and anything else is still close to exact at /1000.
         in_rate = round(rate * 1000)
-        out, self._ratecv_state = audioop.ratecv(
+        resampled, self._ratecv_state = audioop.ratecv(
             chunk.tobytes(), 2, CHANNELS, in_rate, 1000, self._ratecv_state)
-        self._pending += out
+        out = array.array("h")
+        out.frombytes(resampled)
+        if self.mixer is not None and out:
+            self.mixer.mix(out, start, len(out) // CHANNELS, source_frames=frames, rate=rate)
+        self._pending += out.tobytes()
         self._pending_rate = rate
         self._read = float(start + frames)
         return True

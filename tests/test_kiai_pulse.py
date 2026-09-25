@@ -215,7 +215,11 @@ class ShinyGlowTests(unittest.TestCase):
     def _view(self, stack: int, kiai: bool = False, note: bool = False,
               kat: bool = False):
         view = gui.GameplayViewerView()
-        view.resize(900, 200)
+        # 1366 wide is exactly an osu! screen at 200 tall, so the preview's
+        # own fit (height follows width) keeps the height these readings were
+        # measured at. At 900 it became 170, and the note's antialiased rim
+        # entered the sampled box, where stacked rims do compound.
+        view.resize(1366, 200)
         point = TimingPoint(time=0.0, beat_length=500.0, meter=4)
         view.timing_points = [point]
         view.beat_points = [point]

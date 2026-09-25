@@ -891,12 +891,21 @@ class OsuVisibleRangeTests(unittest.TestCase):
         view = self._view(600, 170)
         self.assertEqual(view.osu_edge_x(), 600.0)
 
-    def test_past_the_edge_is_shaded(self):
+    def test_the_view_takes_an_osu_screens_height(self):
+        """Height follows width, so the whole view is osu!'s 16:9 screen:
+        nothing dark past its edge, no chart osu! would not show. The owner's
+        call, against an osu!stable screenshot of the same frame."""
         view = self._view(1882, 170)
-        image = view.grab().toImage()
-        edge = int(view.osu_edge_x())
-        shade = QColor(image.pixel(edge + 40, 10))
-        self.assertLess(max(shade.red(), shade.green(), shade.blue()), 40)
+        view.show()  # a hidden widget's resize event waits until it is shown
+        self.addCleanup(view.close)
+        self.assertEqual(view.height(), round(1882 / (16 / 9 * 480 * 768 / 480 / 200)))
+        self.assertAlmostEqual(view.osu_edge_x(), view.width(), delta=3)
+
+    def test_a_narrow_view_keeps_its_floor(self):
+        view = self._view(600, 170)
+        view.show()
+        self.addCleanup(view.close)
+        self.assertEqual(view.height(), gui.GAMEPLAY_MIN_HEIGHT)
 
 
 class BarlineTests(unittest.TestCase):

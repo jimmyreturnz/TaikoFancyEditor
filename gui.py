@@ -4555,14 +4555,25 @@ GAMEPLAY_STABLE_UNITS_PER_BEAT = 100.0 * 1.4 * SLIDER_MULTIPLIER_ASSUMED
 # a wider screen simply shows more -- one switch, pending the owner's call.
 GAMEPLAY_MAX_ASPECT = 16.0 / 9.0
 GAMEPLAY_LOCK_ASPECT = True
+# The gameplay preview's height floor, below which a note is too small to read.
+GAMEPLAY_MIN_HEIGHT = 170
+
+
+def osu_screen_height_for(width: int) -> int:
+    """The preview height at which `width` is exactly a 16:9 osu! screen:
+    the screen is 480 stable units high and 16/9 of that wide, and the view's
+    height is the playfield's 200 units (`STABLE_UNIT_PER_PLAYFIELD`)."""
+    screen_width_per_height = STABLE_UNIT_PER_PLAYFIELD * 480.0 * GAMEPLAY_MAX_ASPECT
+    return max(GAMEPLAY_MIN_HEIGHT, round(width / screen_width_per_height))
 
 # --- Mods, from ppy/osu's own TaikoMod* (read 2026-09-24) ------------------
 # Every string that lists mods uses this order, which is osu!'s: HD, the rate
 # mod, HR/EZ, FL -- "HDNCHR", never "NCHDHR".
 MOD_ORDER = ("HD", "NC", "DT", "DC", "HT", "HR", "EZ", "FL")
-# Rate mods: (song rate, whether pitch moves with it). DT/HT are osu!'s
-# AdjustableProperty.Tempo (pitch kept, the same WSOLA the speed buttons use);
-# NC/DC are Frequency (resampled, pitch follows the rate).
+# Rate mods: (song rate, whether the song's pitch moves with it). DT/HT are
+# osu!'s AdjustableProperty.Tempo (pitch kept, the same WSOLA the speed buttons
+# use); NC/DC are Frequency (resampled, the song's pitch follows the rate). The
+# hitsounds keep their own pitch under all four -- the owner's call.
 RATE_MODS = {"NC": (1.5, True), "DT": (1.5, False), "DC": (0.75, True), "HT": (0.75, False)}
 SCROLL_MODS = ("HR", "EZ")
 # TaikoModEasy / TaikoModHardRock multiply the map's SliderMultiplier, so the
@@ -4670,8 +4681,25 @@ class GameplayViewerView(QWidget):
         self.hit_pen = QPen(QColor(255, 255, 255, 120), 2)
         self.lane_brush = QColor(28, 33, 43)
 
-        self.setMinimumHeight(170)
+        self.setMinimumHeight(GAMEPLAY_MIN_HEIGHT)
         self.setFocusPolicy(Qt.StrongFocus)
+
+    def resizeEvent(self, event) -> None:
+        """Take the height that makes this view exactly an osu! screen.
+
+        The playfield's width on a 16:9 screen is 6.83x its height (see
+        `osu_screen_height_for`), and a dock is usually much wider than that
+        against its height -- 1882x170 is 11:1 -- so the preview showed osu!'s
+        screen and then a dark band where osu! shows nothing. Owner's call,
+        2026-09-26, against an osu!stable screenshot of the same frame: fit the
+        view instead. Height follows width only, so setting it here settles in
+        one pass. The floor stays: a panel too narrow for it reads as a
+        narrower screen rather than shrinking to nothing.
+        """
+        super().resizeEvent(event)
+        height = osu_screen_height_for(self.width())
+        if height != self.height():
+            self.setFixedHeight(height)
 
     # -- document ------------------------------------------------------------
 

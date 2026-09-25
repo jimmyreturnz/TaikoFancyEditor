@@ -41,6 +41,10 @@ class _Window(unittest.TestCase):
         directory = Path(self._temp.name)
         (directory / "audio.mp3").write_bytes(b"\x00")
         self.path = write_fixture(directory, "full_v14")
+        # Test settings are seeded from the real ones, and a real session
+        # leaves its mods there -- start from none, whatever was last played.
+        import settings
+        settings.SettingsManager().set_value("playback/mods", "")
         self.window = gui.MainWindow()
         self.window.show()
         self.window._load_map_path(self.path, refresh_difficulties=True)

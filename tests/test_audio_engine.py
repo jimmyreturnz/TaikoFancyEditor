@@ -14,6 +14,7 @@ import math
 import unittest
 
 from audio_engine import (
+    HitsoundMixer,
     CHANNELS, CORRELATION_STEP, FADE_FRAMES, GRAIN_FRAMES, OVERLAP_FRAMES,
     SAMPLE_RATE, SEARCH_FRAMES, SEEK_COALESCE_MS, SEQUENCE_FRAMES,
     SEQUENCE_MS, TimeStretcher, _Engine, _centre_bias, downmix_to_mono,
@@ -712,27 +713,36 @@ class RateModTests(unittest.TestCase):
                 emitted = len(out) // CHANNELS
                 self.assertAlmostEqual(stretcher.source_frame / emitted, rate, delta=0.01)
 
-    def test_notes_are_mixed_into_the_source_before_the_resample(self):
-        """So they change pitch with the song: the mixer is handed contiguous
-        source spans, never the resampled output."""
-        calls = []
-
-        class Recorder:
-            def mix(self, out, start, frames):
-                calls.append((start, frames, len(out) // CHANNELS))
-
-            def reset(self, _frame):
-                pass
-
-        source = _sine(2.0)
-        stretcher = TimeStretcher(Recorder())
+    def _note_through(self, rate: float):
+        """A 440Hz note at 0.5s of source, over silent music, resampled at
+        `rate`: (its pitch in the output, the output second it starts at)."""
+        silence = array.array("h", bytes(2 * CHANNELS * SAMPLE_RATE * 3))
+        mixer = HitsoundMixer()
+        mixer.set_samples({"note": _sine(0.4).tobytes()})
+        mixer.set_schedule([SAMPLE_RATE // 2], ["note"], [100])
+        stretcher = TimeStretcher(mixer)
         stretcher.pitch = True
         stretcher.reset(0.0)
-        _pull_seconds(stretcher, source, downmix_to_mono(source), 0.5, 1.5)
-        self.assertTrue(calls)
-        for (start, frames, length), (following, _f, _l) in zip(calls, calls[1:]):
-            self.assertEqual(length, frames, "mixed into the source chunk, not the output")
-            self.assertEqual(start + frames, following, "source spans are contiguous")
+        out = _pull_seconds(stretcher, silence, downmix_to_mono(silence), 1.5, rate)
+        left = out[::CHANNELS]
+        begins = next(i for i, value in enumerate(left) if abs(value) > 200)
+        return _pitch_hz(out[begins * CHANNELS:(begins + 8000) * CHANNELS]), begins / SAMPLE_RATE
+
+    def test_hitsounds_keep_their_pitch_under_nightcore_and_daycore(self):
+        """Only the song changes pitch -- the owner's call, after hearing the
+        notes pitched with it."""
+        for rate in (1.5, 0.75):
+            with self.subTest(rate=rate):
+                pitch, _begins = self._note_through(rate)
+                self.assertAlmostEqual(pitch, TONE_HZ, delta=TONE_HZ * 0.03)
+
+    def test_a_note_lands_where_the_resampled_song_puts_its_moment(self):
+        """At 0.5s of source, so at 0.5 / rate of output -- within a frame or
+        two, not the grain-sized error mixing at source offsets would make."""
+        for rate in (1.5, 0.75):
+            with self.subTest(rate=rate):
+                _pitch, begins = self._note_through(rate)
+                self.assertAlmostEqual(begins, 0.5 / rate, delta=0.001)
 
     def test_the_1_5x_correction_is_the_measured_one(self):
         """Not the -15.3ms the line through 0.75 and 1.0 extrapolates to; see
