@@ -1005,24 +1005,24 @@ Every beatmap in it is checked once for taiko difficulties, and the result is re
             <translation>このページのどこで入力しても検索できます</translation>
         </message>
         <message>
-            <source>edited just now</source>
-            <translation>たった今編集</translation>
+            <source>opened just now</source>
+            <translation>たった今開いた</translation>
         </message>
         <message>
-            <source>edited yesterday</source>
-            <translation>昨日編集</translation>
+            <source>opened yesterday</source>
+            <translation>昨日開いた</translation>
         </message>
         <message>
-            <source>edited {n} days ago</source>
-            <translation>{n} 日前に編集</translation>
+            <source>opened {n} days ago</source>
+            <translation>{n} 日前に開いた</translation>
         </message>
         <message>
-            <source>edited {n} h ago</source>
-            <translation>{n} 時間前に編集</translation>
+            <source>opened {n} h ago</source>
+            <translation>{n} 時間前に開いた</translation>
         </message>
         <message>
-            <source>edited {n} min ago</source>
-            <translation>{n} 分前に編集</translation>
+            <source>opened {n} min ago</source>
+            <translation>{n} 分前に開いた</translation>
         </message>
         <message>
             <source>mapped by {name}</source>

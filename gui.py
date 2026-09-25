@@ -19,7 +19,7 @@ from time import perf_counter, time as wall_clock
 from typing import Any
 
 from PySide6.QtCore import (
-    QByteArray, QElapsedTimer, QEvent, QLine, QObject, QVariantAnimation, QPointF, QPropertyAnimation, QRect, QRectF, QSize, QStandardPaths, Qt,
+    QByteArray, QElapsedTimer, QEvent, QLine, QObject, QVariantAnimation, QPointF, QPropertyAnimation, QRect, QRectF, QSize, QStandardPaths, Qt, QEasingCurve,
     QTimer,
     QUrl, Signal,
 )
@@ -8607,20 +8607,22 @@ def format_bpm(low: float, high: float) -> str:
     return f"{round(low)}–{round(high)}"
 
 
-def edited_ago(path: Path) -> str:
-    try:
-        seconds = max(0.0, wall_clock() - path.stat().st_mtime)
-    except OSError:
+def opened_ago(opened: float | None) -> str:
+    """When the chart was last opened *here* -- the file's own mtime is the
+    mapper's last edit, which read "edited 124 days ago" on a chart opened a
+    minute before. Empty for an entry saved before times were kept."""
+    if not opened:
         return ""
+    seconds = max(0.0, wall_clock() - opened)
     if seconds < 60:
-        return tr("MainWindow", "edited just now")
+        return tr("MainWindow", "opened just now")
     if seconds < 3600:
-        return tr("MainWindow", "edited {n} min ago").format(n=int(seconds // 60))
+        return tr("MainWindow", "opened {n} min ago").format(n=int(seconds // 60))
     if seconds < 86400:
-        return tr("MainWindow", "edited {n} h ago").format(n=int(seconds // 3600))
+        return tr("MainWindow", "opened {n} h ago").format(n=int(seconds // 3600))
     if seconds < 2 * 86400:
-        return tr("MainWindow", "edited yesterday")
-    return tr("MainWindow", "edited {n} days ago").format(n=int(seconds // 86400))
+        return tr("MainWindow", "opened yesterday")
+    return tr("MainWindow", "opened {n} days ago").format(n=int(seconds // 86400))
 
 
 def tabular(font: QFont) -> QFont:
@@ -8639,6 +8641,73 @@ def tabular(font: QFont) -> QFont:
 ROW_ROLE = Qt.UserRole + 1
 ROW_INK, ROW_INK_2, ROW_INK_3 = "#e8edf3", "#aeb8c5", "#7d8794"
 ROW_HOVER, ROW_PINK_ON = "#2a3341", "#ff66aa"
+# The detail pane lists this many difficulties before it scrolls; the banner
+# takes the rest of the height.
+DIFFICULTY_SLOTS, DIFFICULTY_ROW_HEIGHT = 8, 48
+# The song list's wheel and arrow scrolling glide over this long.
+SMOOTH_SCROLL_MS = 200
+
+
+class SmoothScroller(QObject):
+    """Eases `view`'s vertical scroll to where the wheel or the selection
+    asks for, instead of jumping there. Scrolls per pixel, so a glide has
+    positions between rows to pass through. Instant under reduced motion.
+
+    The view's own autoScroll is switched off -- it is what jumps to the
+    current item -- and `follow_current` does that job here, eased.
+    """
+
+    WHEEL_ROWS = 3  # Windows' default lines per notch
+
+    def __init__(self, view: QAbstractItemView) -> None:
+        super().__init__(view)
+        self.view = view
+        view.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        view.setAutoScroll(False)
+        self.bar = view.verticalScrollBar()
+        self.animation = QPropertyAnimation(self.bar, b"value", self)
+        self.animation.setEasingCurve(QEasingCurve.OutCubic)
+        self.target = self.bar.value()
+        view.viewport().installEventFilter(self)
+        view.selectionModel().currentChanged.connect(lambda current, _previous: self.follow_current(current))
+
+    def glide_to(self, value: int) -> None:
+        value = max(self.bar.minimum(), min(self.bar.maximum(), int(value)))
+        self.target = value
+        self.animation.stop()
+        if reduced_motion():
+            self.bar.setValue(value)
+            return
+        self.animation.setDuration(SMOOTH_SCROLL_MS)
+        self.animation.setStartValue(self.bar.value())
+        self.animation.setEndValue(value)
+        self.animation.start()
+
+    def follow_current(self, index) -> None:
+        if not index.isValid():
+            return
+        rect = self.view.visualRect(index)
+        height = self.view.viewport().height()
+        # From where the glide is heading, so rows passed mid-glide count.
+        base = self.target if self.animation.state() == QPropertyAnimation.Running else self.bar.value()
+        top = rect.top() + self.bar.value() - base
+        if top < 0:
+            self.glide_to(base + top)
+        elif top + rect.height() > height:
+            self.glide_to(base + top + rect.height() - height)
+
+    def eventFilter(self, watched, event) -> bool:
+        if event.type() != QEvent.Wheel or event.modifiers() != Qt.NoModifier:
+            return False
+        notches = event.angleDelta().y() / 120
+        if not notches:
+            return False
+        row = self.view.sizeHintForRow(0) if self.view.model().rowCount() else 40
+        base = self.target if self.animation.state() == QPropertyAnimation.Running else self.bar.value()
+        self.glide_to(base - notches * self.WHEEL_ROWS * max(20, row))
+        return True
+
+
 # The song preview: how long the selection has to rest before it starts (so
 # holding an arrow down does not open every song on the way), and its fade in.
 PREVIEW_SETTLE_MS = 250
@@ -8729,7 +8798,7 @@ class DifficultyRowDelegate(QStyledItemDelegate):
     length and BPM on the right in tabular figures."""
 
     def sizeHint(self, option, index):
-        return QSize(option.rect.width(), 48)
+        return QSize(option.rect.width(), DIFFICULTY_ROW_HEIGHT)
 
     def paint(self, painter, option, index):
         painter.save()
@@ -8798,7 +8867,9 @@ class SongBanner(QWidget):
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
-        self.setFixedHeight(150)
+        # The height the difficulty slots leave; see DIFFICULTY_SLOTS.
+        self.setMinimumHeight(150)
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         self.title = ""
         self.subtitle = ""
         self._art: QPixmap | None = None
@@ -8925,12 +8996,12 @@ class ContinueCard(QFrame):
             label.setMaximumWidth(220)
             layout.addWidget(label)
 
-    def show_chart(self, path: str, title: str, version: str) -> None:
+    def show_chart(self, path: str, title: str, version: str, opened: float | None) -> None:
         self.path = path
         metrics = self.title.fontMetrics()
         self.title.setText(metrics.elidedText(title, Qt.ElideRight, 220))
         self.version.setText(self.version.fontMetrics().elidedText(version, Qt.ElideRight, 220))
-        self.when.setText(edited_ago(Path(path)))
+        self.when.setText(opened_ago(opened))
         self.setToolTip(path)
 
     def mouseReleaseEvent(self, event) -> None:
@@ -9141,6 +9212,7 @@ class LibraryPageController:
         self.song_list.setUniformItemSizes(False)
         # Rows elide rather than scroll sideways; the delegate paints to width.
         self.song_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.song_scroller = SmoothScroller(self.song_list)
         self.song_list.currentRowChanged.connect(self.song_selected)
         self.song_list.itemActivated.connect(lambda _item: self.difficulty_list.setFocus())
         split.addWidget(self.song_list)
@@ -9151,7 +9223,7 @@ class LibraryPageController:
         detail_layout.setContentsMargins(0, 0, 0, 0)
         detail_layout.setSpacing(0)
         self.song_banner = SongBanner()
-        detail_layout.addWidget(self.song_banner)
+        detail_layout.addWidget(self.song_banner, 1)
         self.difficulty_list = QListWidget()
         self.difficulty_list.setObjectName("difficultyList")
         self.difficulty_list.setItemDelegate(DifficultyRowDelegate(self.difficulty_list))
@@ -9159,7 +9231,11 @@ class LibraryPageController:
         self.difficulty_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.difficulty_list.itemActivated.connect(lambda _item: self.open_selected_difficulty())
         self.difficulty_list.currentItemChanged.connect(lambda *_: self.difficulty_changed())
-        detail_layout.addWidget(self.difficulty_list, 1)
+        # Room for DIFFICULTY_SLOTS rows and no more: a set is 5-7
+        # difficulties at most, and every pixel past that is the banner's.
+        # A bigger set scrolls.
+        self.difficulty_list.setFixedHeight(DIFFICULTY_SLOTS * DIFFICULTY_ROW_HEIGHT + 14)
+        detail_layout.addWidget(self.difficulty_list)
         actions = QFrame()
         actions.setObjectName("detailActions")
         actions_layout = QHBoxLayout(actions)
@@ -9248,31 +9324,50 @@ class LibraryPageController:
 
     # -- recent charts ----------------------------------------------------
 
-    def recent_charts(self) -> list[str]:
+    def recent_charts(self) -> list[tuple[str, float | None]]:
+        """[(path, when it was opened here)], newest first. An entry from
+        before the times were kept is a bare path, with no time."""
         try:
             recent = json.loads(self.window.settings.string_value("library/recent", "[]") or "[]")
         except ValueError:
             return []
-        return [path for path in recent if isinstance(path, str)]
+        charts = []
+        for entry in recent:
+            if isinstance(entry, str):
+                charts.append((entry, None))
+            elif isinstance(entry, list) and len(entry) == 2 and isinstance(entry[0], str):
+                charts.append((entry[0], entry[1] if isinstance(entry[1], (int, float)) else None))
+        return charts
 
     def remember_recent(self, path: Path) -> None:
-        recent = [str(path)] + [item for item in self.recent_charts() if Path(item) != path]
+        recent = [[str(path), wall_clock()]] + [
+            [item, opened] for item, opened in self.recent_charts()
+            if os.path.normcase(item) != os.path.normcase(path)]
         self.window.settings.set_value("library/recent", json.dumps(recent[:RECENT_CHARTS_KEPT]))
         self.refresh_continue_row()
 
     def refresh_continue_row(self) -> None:
         original = self.original_metadata_check.isChecked()
-        known = {d.path: d for group in self.library_songs.values() for d in group}
+        # Case-folded: the saved path is resolved and the scanned one is as
+        # the Songs folder was typed, and "D:/osu!/songs" missed "D:\osu!\Songs".
+        known = {os.path.normcase(d.path): d for group in self.library_songs.values() for d in group}
         shown = 0
-        for path in self.recent_charts():
+        for path, opened in self.recent_charts():
             if shown == len(self.continue_cards):
                 break
             if not Path(path).is_file():
                 continue  # deleted or moved since: nothing to reopen
-            difficulty = known.get(Path(path))
-            title = difficulty.display_title(original) if difficulty else Path(path).parent.name
-            version = difficulty.version if difficulty else Path(path).stem
-            self.continue_cards[shown].show_chart(path, title, version)
+            difficulty = known.get(os.path.normcase(path))
+            if difficulty is not None:
+                title, version = difficulty.display_title(original), difficulty.version
+            else:
+                # Opened here but not in the index (another folder, or not
+                # scanned yet): its own header, rather than the file name.
+                header = read_header(Path(path)) or {}
+                pair = ("title_unicode", "title") if original else ("title", "title_unicode")
+                title = next((header.get(key) for key in pair if header.get(key)), Path(path).parent.name)
+                version = header.get("version") or Path(path).stem
+            self.continue_cards[shown].show_chart(path, title, version, opened)
             self.continue_cards[shown].show()
             shown += 1
         for card in self.continue_cards[shown:]:
@@ -10936,7 +11031,25 @@ class MainWindow(QMainWindow):
         page_layout.setContentsMargins(0, 0, 0, 0)
         page_layout.setSpacing(7)
 
-        sub_toolbar = QHBoxLayout()
+        # The row is ~1800px of controls, and as a plain layout that was the
+        # whole window's minimum width: anything narrower ran off the screen.
+        # In a scroll area it keeps its one line and scrolls sideways instead.
+        sub_toolbar_row = QWidget()
+        sub_toolbar = QHBoxLayout(sub_toolbar_row)
+        sub_toolbar.setContentsMargins(0, 0, 0, 0)
+        sub_toolbar_scroll = QScrollArea()
+        sub_toolbar_scroll.setWidget(sub_toolbar_row)
+        sub_toolbar_scroll.setWidgetResizable(True)
+        sub_toolbar_scroll.setFrameShape(QFrame.NoFrame)
+        sub_toolbar_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        sub_toolbar_scroll.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        sub_toolbar_scroll.setStyleSheet(
+            "QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; }"
+            "QScrollBar:horizontal { background: transparent; height: 6px; }"
+            "QScrollBar::handle:horizontal { background: #3a4554; border-radius: 3px; min-width: 32px; }"
+            "QScrollBar::handle:horizontal:hover { background: #ff66aa; }"
+            "QScrollBar::add-line, QScrollBar::sub-line, QScrollBar::add-page, QScrollBar::sub-page { width: 0; background: none; }")
+        self.fancy_sub_toolbar = sub_toolbar_scroll
 
         self.play_button = QPushButton(tr("MainWindow", "Play"))
         self.play_button.clicked.connect(self.toggle_playback)
@@ -10978,7 +11091,7 @@ class MainWindow(QMainWindow):
         self.circle_size_control=DifficultyValueControl("CS",7.0,"Circle Size: 0 is biggest, 10 is smallest. Export default is 7.00.")
         sub_toolbar.addWidget(self.approach_rate_control)
         sub_toolbar.addWidget(self.circle_size_control)
-        page_layout.addLayout(sub_toolbar)
+        page_layout.addWidget(sub_toolbar_scroll)
 
         # Every box but the canvas is a dock: moved to any edge, floated, closed
         # and brought back from the Layout menu, with the arrangement kept
@@ -11036,6 +11149,8 @@ class MainWindow(QMainWindow):
         sub_toolbar.addWidget(self.fancy_layout_button)
         sub_toolbar.addWidget(self.reset_button)
         sub_toolbar.addWidget(self.export_button)
+        # Its own height, plus the scroll bar's when the row is too wide.
+        sub_toolbar_scroll.setFixedHeight(sub_toolbar_row.sizeHint().height() + 8)
 
         right_layout.addWidget(QLabel(tr("MainWindow", "Transformation mode")))
 

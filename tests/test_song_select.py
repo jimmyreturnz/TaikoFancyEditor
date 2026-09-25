@@ -158,13 +158,23 @@ class PageTests(unittest.TestCase):
 
     def test_opening_a_chart_puts_it_in_continue(self):
         library = self.window._library
+        library.refresh_continue_row()  # built from the real settings, before the patch
         self.assertTrue(library.continue_row.isHidden())
         self.window.song_list.setCurrentRow(0)
         self.window._open_selected_difficulty()
         recent = json.loads(self.stored["library/recent"])
-        self.assertEqual(Path(recent[0]), self.window.state.source_path)
+        self.assertEqual(Path(recent[0][0]), self.window.state.source_path)
         self.assertFalse(library.continue_row.isHidden())
-        self.assertEqual(library.continue_cards[0].path, recent[0])
+        self.assertEqual(library.continue_cards[0].path, recent[0][0])
+        # When it was opened here, not when the file was last written.
+        self.assertEqual(library.continue_cards[0].when.text(), "opened just now")
+
+    def test_a_path_saved_before_open_times_still_lists(self):
+        song = next(Path(self.window.song_list.item(0).data(Qt.UserRole)).glob("*.osu"))
+        self.stored["library/recent"] = json.dumps([str(song)])
+        self.window._library.refresh_continue_row()
+        self.assertEqual(self.window._library.continue_cards[0].path, str(song))
+        self.assertEqual(self.window._library.continue_cards[0].when.text(), "")
 
     def test_no_osu_db_says_so_and_rates_nothing(self):
         library = self.window._library

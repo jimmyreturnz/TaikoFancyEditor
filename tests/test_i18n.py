@@ -298,7 +298,12 @@ class StableIdentifierTests(unittest.TestCase):
 
         i18n.install_translator(_APP, FakeSettings(language))
         import gui
+        import settings
 
+        # Test settings are seeded from the real ones, and a real session
+        # leaves its Fancy layout there -- one with the Transform dock closed
+        # hid the Swap button this test looks for. Start from the default.
+        settings.SettingsManager().set_value("fancy/dock_state", "")
         window = gui.MainWindow()
         window.show()
         return window
