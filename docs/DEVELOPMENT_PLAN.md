@@ -723,6 +723,29 @@ started.
 
 ## Owner requests, 2026-09-17
 
+### Song select redesign -- DONE 2026-09-26
+
+As the approved mockup: search and Group/Sort/原文 pills on one row, one quiet
+folder menu, a Continue row (`library/recent`), rows painted by
+`SongRowDelegate` (title, "artist · mapped by", a dot per difficulty in osu!'s
+star colour), and a detail pane headed by the map's background with a beat
+line. Difficulties show osu!stable's own star rating from `osu!.db`
+(`osu_db.py`, 0.3s for 24,000 maps; faded with a dashed rim when the file's MD5
+no longer matches, grey "★ –" when unrated), plus notes · length · BPM. The
+song preview plays from `PreviewTime` (40% of the track when unset) with a
+400ms fade, after the selection has rested 250ms. Keys: type anywhere, Up/Down
+one song, Right/Enter into the difficulties, Left/Esc back.
+
+- **The scan now reads a taiko file to the end** (index version 4). The
+  first scan after upgrading re-reads everything: 492s cold on the owner's
+  HDD (seek-bound; 556MB of taiko files), 8.6s warm. The hit objects are
+  taken in one read and only their ends parsed -- line by line was 15.8s warm.
+- **Exo 2 app-wide, with vertical hinting and grayscale antialiasing.**
+  Windows' default full hinting snaps an unhinted font to whole pixels
+  (uneven spacing), and ClearType's colour fringes smeared every edge on the
+  navy.
+- Left out: the dots' beat ripple, the banner drift, the list settle-in.
+
 ### Fancy Arranger: every box customizable -- DONE 2026-09-25 (34121ea, 05e0b3f)
 
 Canvas at osu!'s proportions (512x384 inside 640x480 at (64, 56), circles at

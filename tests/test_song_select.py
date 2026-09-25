@@ -1,0 +1,195 @@
+"""Song select: osu!'s star colours, osu!.db's ratings, the scan's new fields,
+and the page's Continue row and keyboard."""
+from __future__ import annotations
+
+import json
+import os
+import struct
+import tempfile
+import unittest
+from pathlib import Path
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QKeyEvent
+from PySide6.QtWidgets import QApplication
+
+import osu_db
+from song_library import read_header
+from tests.osu_fixtures import write_fixture
+
+_APP: QApplication | None = None
+
+
+def setUpModule() -> None:
+    global _APP
+    import settings as settings_module
+
+    settings_module.APPLICATION_NAME = "TaikoFancyArrangerTests"
+    _APP = QApplication.instance() or QApplication([])
+
+
+def _string(value: str) -> bytes:
+    data = value.encode("utf-8")
+    assert len(data) < 128  # one ULEB128 byte
+    return b"\x0b" + bytes([len(data)]) + data
+
+
+def _osu_db(version: int, beatmaps: list[tuple[str, str, str, float]]) -> bytes:
+    """A minimal osu!.db: (folder, file, md5, taiko nomod stars) per map."""
+    single = version >= osu_db.FLOAT_STARS_VERSION
+    out = struct.pack("<ii", version, 1) + b"\x01" + bytes(8) + _string("player")
+    out += struct.pack("<i", len(beatmaps))
+    for folder, osu_file, md5, stars in beatmaps:
+        out += b"".join(_string(s) for s in ("A", "", "T", "", "me", "Oni", "a.mp3"))
+        out += _string(md5) + _string(osu_file)
+        out += b"\x04" + struct.pack("<hhhq", 1, 0, 0, 0) + bytes(16) + bytes(8)
+        for mode in range(4):
+            if mode == osu_db.TAIKO:
+                pairs = [(64, stars + 1), (0, stars)]  # a DT rating first, to be skipped
+                out += struct.pack("<i", len(pairs))
+                for mods, value in pairs:
+                    out += b"\x08" + struct.pack("<i", mods)
+                    out += b"\x0c" + struct.pack("<f", value) if single else b"\x0d" + struct.pack("<d", value)
+            else:
+                out += struct.pack("<i", 0)
+        out += bytes(12) + struct.pack("<i", 1) + bytes(17)
+        out += bytes(23) + _string("") + _string("") + bytes(2) + _string("") + bytes(10)
+        out += _string(folder) + bytes(13) + bytes(5)
+    return out
+
+
+class OsuDbTests(unittest.TestCase):
+    def test_both_star_formats(self):
+        """Doubles before 20250107, floats from it."""
+        for version in (20240101, osu_db.FLOAT_STARS_VERSION):
+            with self.subTest(version=version), tempfile.TemporaryDirectory() as temp:
+                path = Path(temp) / "osu!.db"
+                path.write_bytes(_osu_db(version, [("Song A", "A [Oni].osu", "aa", 5.25),
+                                                   ("Song B", "B [Hard].osu", "bb", 2.5)]))
+                ratings = osu_db.read(path)
+                self.assertEqual(ratings[("song a", "a [oni].osu")].md5, "aa")
+                self.assertAlmostEqual(ratings[("song a", "a [oni].osu")].taiko_stars, 5.25, places=5)
+                self.assertAlmostEqual(ratings[("song b", "b [hard].osu")].taiko_stars, 2.5, places=5)
+
+
+class StarColourTests(unittest.TestCase):
+    def test_osu_spectrum_stops(self):
+        import gui
+
+        self.assertEqual(gui.star_colour(1.25).name(), "#4fc0ff")
+        self.assertEqual(gui.star_colour(5.8).name(), "#c645b8")
+        self.assertEqual(gui.star_colour(0.05).name(), "#aaaaaa")
+        self.assertEqual(gui.star_colour(None).name(), "#aaaaaa")
+        self.assertEqual(gui.star_colour(12).name(), "#000000")
+
+    def test_rounds_away_from_zero_before_sampling(self):
+        import gui
+
+        self.assertEqual(gui.star_colour(1.245).name(), gui.star_colour(1.25).name())
+
+    def test_text_is_dark_then_gold_then_its_own_spectrum(self):
+        import gui
+
+        self.assertEqual(gui.star_text_colour(6.4).alpha(), 191)
+        self.assertEqual(gui.star_text_colour(7.0).name(), "#ffd966")
+        self.assertEqual(gui.star_text_colour(9.9).name(), "#ff8068")
+
+
+class ScanFieldTests(unittest.TestCase):
+    def test_a_taiko_file_gives_background_bpm_notes_and_length(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = write_fixture(Path(temp), "full_v14")
+            text = path.read_text(encoding="utf-8")
+            fields = read_header(path)
+            objects = [line for line in text.split("[HitObjects]")[1].splitlines() if line.strip()]
+            self.assertEqual(fields["notes"], len(objects))
+            times = [int(line.split(",")[2]) for line in objects]
+            self.assertEqual(fields["length_ms"], times[-1] - times[0])
+            self.assertGreater(fields["bpm_max"], 0)
+
+
+class PageTests(unittest.TestCase):
+    def setUp(self):
+        import gui
+
+        self._temp = tempfile.TemporaryDirectory()
+        self.root = Path(self._temp.name)
+        for name in ("Tester - Test Song", "Other - Second Song"):
+            (self.root / name).mkdir()
+            write_fixture(self.root / name, "full_v14")
+            (self.root / name / "audio.mp3").write_bytes(b"")
+        self.stored = {"library/songs_folder": str(self.root)}
+        self.window = gui.MainWindow()
+        self.window.settings.string_value = lambda key, default="": self.stored.get(key, default)
+        self.window.settings.set_value = lambda key, value: self.stored.__setitem__(key, value)
+        self.window.settings.sync = lambda: None
+        self.window._library_cache_path = lambda: self.root / "index.json"
+        self.window._start_scan()
+        while self.window._scan_iterator is not None:
+            self.window._scan_step()
+
+    def tearDown(self):
+        self.window.scan_timer.stop()
+        self.window.close()
+        self.window.deleteLater()
+        self._temp.cleanup()
+
+    def key(self, widget, key, text=""):
+        # sendEvent, not widget.event(): only the former passes the filters.
+        QApplication.sendEvent(widget, QKeyEvent(QKeyEvent.KeyPress, key, Qt.NoModifier, text))
+
+    def test_typing_on_the_list_goes_to_the_search(self):
+        self.key(self.window.song_list, Qt.Key_Z, "z")
+        self.assertEqual(self.window.library_search.text(), "z")
+
+    def test_arrows_in_the_search_move_through_songs(self):
+        self.window.song_list.setCurrentRow(0)
+        self.key(self.window.library_search, Qt.Key_Down)
+        self.assertEqual(self.window.song_list.currentRow(), 1)
+
+    def test_arrows_on_the_list_step_one_song(self):
+        self.window.song_list.setCurrentRow(0)
+        self.key(self.window.song_list, Qt.Key_Down)
+        self.assertEqual(self.window.song_list.currentRow(), 1)
+        self.key(self.window.song_list, Qt.Key_Up)
+        self.assertEqual(self.window.song_list.currentRow(), 0)
+
+    def test_opening_a_chart_puts_it_in_continue(self):
+        library = self.window._library
+        self.assertTrue(library.continue_row.isHidden())
+        self.window.song_list.setCurrentRow(0)
+        self.window._open_selected_difficulty()
+        recent = json.loads(self.stored["library/recent"])
+        self.assertEqual(Path(recent[0]), self.window.state.source_path)
+        self.assertFalse(library.continue_row.isHidden())
+        self.assertEqual(library.continue_cards[0].path, recent[0])
+
+    def test_no_osu_db_says_so_and_rates_nothing(self):
+        library = self.window._library
+        self.assertIsNone(library.star_ratings)
+        self.assertFalse(library.library_rating_note.isHidden())
+        self.window.song_list.setCurrentRow(0)
+        row = self.window.difficulty_list.item(0).data(Qt.UserRole + 1)
+        self.assertIsNone(row["stars"])
+
+    def test_a_rating_goes_stale_when_the_file_changes(self):
+        folder = Path(self.window.song_list.item(0).data(Qt.UserRole))
+        song = next(folder.glob("*.osu"))
+        db = self.root / "osu!.db"
+        for md5, stale in ((osu_db.file_md5(song), False), ("0" * 32, True)):
+            with self.subTest(stale=stale):
+                self.window._library.star_ratings = osu_db.read(self._write_db(db, song, md5))
+                self.window._library.song_selected(0)
+                row = self.window.difficulty_list.item(0).data(Qt.UserRole + 1)
+                self.assertAlmostEqual(row["stars"], 4.5, places=5)
+                self.assertEqual(row["stale"], stale)
+
+    def _write_db(self, db: Path, song: Path, md5: str) -> Path:
+        db.write_bytes(_osu_db(osu_db.FLOAT_STARS_VERSION, [(song.parent.name, song.name, md5, 4.5)]))
+        return db
+
+
+if __name__ == "__main__":
+    unittest.main()

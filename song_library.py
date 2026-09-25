@@ -4,9 +4,10 @@ No Qt import on purpose (same rule as `osu_io` / `model`): the scan is a plain
 generator so the caller decides how much of it to run per UI frame, and the
 cache is plain JSON so it can be inspected and deleted by hand.
 
-`parse_osu` is deliberately *not* reused here. It reads every hit object of
-every file; a real Songs folder is tens of thousands of files and the only
-fields the browser needs are five header lines.
+`parse_osu` is deliberately *not* reused here. It builds every hit object of
+every file; a real Songs folder is tens of thousands of files. Non-taiko files
+are read only as far as their header. A taiko file is read to the end, but only
+counted: the song list shows its background, BPM, note count and length.
 """
 from __future__ import annotations
 
@@ -15,7 +16,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
-CACHE_VERSION = 2
+# 3: taiko entries carry background, BPM range, note count and length.
+# 4: and the audio file and PreviewTime, for the song select's preview. An
+# older cache is dropped, so the first scan after upgrading reads every chart
+# again.
+CACHE_VERSION = 4
 TAIKO_MODE = "1"
 
 # Header keys we index. Everything else in [General]/[Metadata] is ignored.
@@ -30,11 +35,15 @@ _WANTED = {
     "Version": "version",
     "Creator": "creator",
     "Tags": "tags",
+    "AudioFilename": "audio",
+    "PreviewTime": "preview",
 }
 # Cache entry layout after [mtime, size]: keeps the JSON compact and maps
 # straight onto TaikoDifficulty's fields (mode excepted, which only decides
 # whether an entry becomes one).
 _FIELD_ORDER = ("mode", "artist", "artist_unicode", "title", "title_unicode", "version", "creator", "tags")
+# What the song list's detail pane shows, read from the rest of a taiko file.
+_DETAIL_ORDER = ("background", "bpm_min", "bpm_max", "notes", "length_ms", "audio", "preview")
 # First section that can never hold one of the above; the file is huge past it.
 _STOP_SECTIONS = {"[Events]", "[TimingPoints]", "[HitObjects]", "[Colours]", "[Difficulty]"}
 
@@ -49,6 +58,17 @@ class TaikoDifficulty:
     version: str
     creator: str
     tags: str
+    # Defaults, so an entry from a header-only source (and every existing
+    # caller) still builds; the song list shows a dash for what is unknown.
+    background: str = ""
+    bpm_min: float = 0.0
+    bpm_max: float = 0.0
+    notes: int = 0
+    length_ms: int = 0
+    # The song select's preview: the audio file and osu!'s PreviewTime in ms,
+    # as written ("-1", or empty from an older entry, means none was set).
+    audio: str = ""
+    preview: str = ""
 
     @property
     def folder(self) -> Path:
@@ -108,21 +128,86 @@ def read_header(path: Path) -> dict[str, str] | None:
     Decoding is lenient (`errors="replace"`): these strings are only ever
     displayed in the browser, and the real load path re-reads the file through
     `parse_osu`, which does proper cp1252 fallback.
+
+    A taiko file is read on past the header for `_DETAIL_ORDER`; any other
+    mode stops at the first section that cannot hold a header field.
     """
-    fields = dict.fromkeys(_FIELD_ORDER, "")
+    fields: dict = dict.fromkeys(_FIELD_ORDER, "")
     fields["mode"] = "0"
+    fields.update(background="", bpm_min=0.0, bpm_max=0.0, notes=0, length_ms=0, audio="", preview="")
     try:
         with path.open("r", encoding="utf-8", errors="replace") as handle:
+            section = ""
             for line in handle:
                 stripped = line.strip()
-                if stripped in _STOP_SECTIONS:
-                    break
-                key, separator, value = stripped.partition(":")
-                if separator and key in _WANTED:
-                    fields[_WANTED[key]] = value.strip()
+                if stripped.startswith("[") and stripped.endswith("]"):
+                    if stripped in _STOP_SECTIONS and fields["mode"] != TAIKO_MODE:
+                        break
+                    if stripped == "[HitObjects]":
+                        # The last section, and nearly all of the file: taken
+                        # in one read and only its ends parsed. Line by line it
+                        # was 14.5M calls and most of a 16s warm scan.
+                        _read_hit_objects(fields, handle.read())
+                        break
+                    section = stripped
+                    continue
+                if section in ("", "[General]", "[Metadata]"):
+                    key, separator, value = stripped.partition(":")
+                    if separator and key in _WANTED:
+                        fields[_WANTED[key]] = value.strip()
+                elif section == "[Events]":
+                    _read_event(fields, stripped)
+                elif section == "[TimingPoints]":
+                    _read_timing_point(fields, stripped)
     except OSError:
         return None
+    first = fields.pop("_first_ms", None)
+    last = fields.pop("_last_ms", None)
+    if first is not None and last is not None:
+        fields["length_ms"] = max(0, last - first)
     return fields
+
+
+def _read_event(fields: dict, line: str) -> None:
+    """The background: `0,0,"file.jpg",x,y` -- the first image event."""
+    if fields["background"] or not line.startswith("0,"):
+        return
+    parts = line.split(",")
+    if len(parts) >= 3 and parts[1].strip() == "0":
+        fields["background"] = parts[2].strip().strip('"')
+
+
+def _read_timing_point(fields: dict, line: str) -> None:
+    """BPM from red lines only: `time,beatLength,...,uninherited` with a
+    positive beat length. Absurd gimmick BPMs are real, and shown as such."""
+    parts = line.split(",")
+    if len(parts) < 2:
+        return
+    try:
+        beat_length = float(parts[1])
+    except ValueError:
+        return
+    uninherited = len(parts) < 7 or parts[6].strip() != "0"
+    if not uninherited or beat_length <= 0:
+        return
+    bpm = 60000.0 / beat_length
+    fields["bpm_min"] = bpm if not fields["bpm_min"] else min(fields["bpm_min"], bpm)
+    fields["bpm_max"] = max(fields["bpm_max"], bpm)
+
+
+def _read_hit_objects(fields: dict, text: str) -> None:
+    lines = [line for line in text.splitlines() if line.strip()]
+    lines = lines[:next((i for i, line in enumerate(lines) if line.startswith("[")), len(lines))]
+    times = []
+    for line in (lines[:1] + lines[-1:]) if lines else ():
+        parts = line.split(",", 3)
+        try:
+            times.append(int(float(parts[2])))
+        except (IndexError, ValueError):
+            pass
+    fields["notes"] = len(lines)
+    if len(times) == 2:
+        fields["_first_ms"], fields["_last_ms"] = times
 
 
 def scan(root: Path, cache: dict[str, list]) -> Iterator[TaikoDifficulty | None]:
@@ -147,10 +232,12 @@ def scan(root: Path, cache: dict[str, list]) -> Iterator[TaikoDifficulty | None]
             header = read_header(path)
             if header is None:
                 continue
-            entry = [stat.st_mtime_ns, stat.st_size] + [header[name] for name in _FIELD_ORDER]
+            entry = ([stat.st_mtime_ns, stat.st_size]
+                     + [header[name] for name in _FIELD_ORDER]
+                     + [header[name] for name in _DETAIL_ORDER])
             cache[key] = entry
         # entry[2] is the mode; everything after it lines up with
-        # TaikoDifficulty's fields, in _FIELD_ORDER.
+        # TaikoDifficulty's fields: _FIELD_ORDER, then _DETAIL_ORDER.
         yield TaikoDifficulty(path, *entry[3:]) if entry[2] == TAIKO_MODE else None
     for stale in set(cache) - seen:
         del cache[stale]

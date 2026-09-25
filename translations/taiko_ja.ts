@@ -965,6 +965,78 @@ Every beatmap in it is checked once for taiko difficulties, and the result is re
             <translation>太鼓の曲</translation>
         </message>
         <message>
+            <source>Change folder…</source>
+            <translation>フォルダーを変更…</translation>
+        </message>
+        <message>
+            <source>Changed since osu! rated it: open it in osu! to update the stars.</source>
+            <translation>osu! で評価された後に変更されています。osu! で開くと星の数が更新されます。</translation>
+        </message>
+        <message>
+            <source>Continue</source>
+            <translation>続きから</translation>
+        </message>
+        <message>
+            <source>Edit {version}  ↵</source>
+            <translation>{version} を編集  ↵</translation>
+        </message>
+        <message>
+            <source>Group</source>
+            <translation>グループ</translation>
+        </message>
+        <message>
+            <source>Not rated yet: open it in osu! (or press F5 in song select), then Quick scan.</source>
+            <translation>まだ評価されていません。osu! で開くか（選曲画面で F5）、その後クイックスキャンしてください。</translation>
+        </message>
+        <message>
+            <source>Quick scan</source>
+            <translation>クイックスキャン</translation>
+        </message>
+        <message>
+            <source>Rescan everything</source>
+            <translation>すべて再スキャン</translation>
+        </message>
+        <message>
+            <source>Songs folder</source>
+            <translation>Songs フォルダー</translation>
+        </message>
+        <message>
+            <source>Type anywhere on this page to search</source>
+            <translation>このページのどこで入力しても検索できます</translation>
+        </message>
+        <message>
+            <source>edited just now</source>
+            <translation>たった今編集</translation>
+        </message>
+        <message>
+            <source>edited yesterday</source>
+            <translation>昨日編集</translation>
+        </message>
+        <message>
+            <source>edited {n} days ago</source>
+            <translation>{n} 日前に編集</translation>
+        </message>
+        <message>
+            <source>edited {n} h ago</source>
+            <translation>{n} 時間前に編集</translation>
+        </message>
+        <message>
+            <source>edited {n} min ago</source>
+            <translation>{n} 分前に編集</translation>
+        </message>
+        <message>
+            <source>mapped by {name}</source>
+            <translation>譜面: {name}</translation>
+        </message>
+        <message>
+            <source>{n} notes</source>
+            <translation>{n} ノーツ</translation>
+        </message>
+        <message>
+            <source>Star ratings come from osu!stable's osu!.db, and none was found beside this Songs folder.</source>
+            <translation>星の数は osu!stable の osu!.db から読み込みますが、この Songs フォルダーの隣に見つかりませんでした。</translation>
+        </message>
+        <message>
             <source>These difficulties have edits that are not written to disk:</source>
             <translation>次の難易度には、ディスクに保存されていない編集があります:</translation>
         </message>

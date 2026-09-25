@@ -10,25 +10,29 @@ from dataclasses import replace
 from functools import lru_cache
 from contextlib import contextmanager
 from itertools import count as count_from
+from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
-from time import perf_counter
+import struct
+import json
+from time import perf_counter, time as wall_clock
 from typing import Any
 
 from PySide6.QtCore import (
-    QByteArray, QElapsedTimer, QEvent, QLine, QObject, QPointF, QPropertyAnimation, QRect, QRectF, QSize, QStandardPaths, Qt,
+    QByteArray, QElapsedTimer, QEvent, QLine, QObject, QVariantAnimation, QPointF, QPropertyAnimation, QRect, QRectF, QSize, QStandardPaths, Qt,
     QTimer,
     QUrl, Signal,
 )
-from PySide6.QtGui import QImageReader, QBrush, QColor, QFont, QFontDatabase, QFontMetrics, QKeySequence, QPainter, QPen, QPixmap, QPolygonF, QRadialGradient, QShortcut, QIcon
-from PySide6.QtMultimedia import QMediaPlayer
+from PySide6.QtGui import QImageReader, QBrush, QColor, QFont, QFontDatabase, QFontMetrics, QKeySequence, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap, QPolygonF, QRadialGradient, QShortcut, QIcon
+from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QAbstractItemView, QAbstractSlider, QAbstractSpinBox, QApplication, QButtonGroup, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame,
     QBoxLayout, QGraphicsOpacityEffect, QGridLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QMainWindow, QMessageBox,
     QProgressBar, QPushButton, QScrollArea,
-    QSlider, QSpacerItem, QSpinBox, QSplitter, QStackedWidget, QStyle, QStyleOptionButton, QTabWidget, QToolButton, QVBoxLayout, QWidget, QDockWidget, QMenu, QDialog, QDialogButtonBox, QFontComboBox, QSizePolicy
+    QSlider, QSpacerItem, QSpinBox, QSplitter, QStackedWidget, QStyle, QStyleOptionButton, QStyledItemDelegate, QTabWidget, QToolButton, QVBoxLayout, QWidget, QDockWidget, QMenu, QDialog, QDialogButtonBox, QFontComboBox, QSizePolicy
 )
 
+import osu_db
 from audio_engine import DEFAULT_HITSOUND_OFFSET_MS, WHEEL_SEEK_HOLD_MS, TrackPlayer
 from skin import TaikoSkin, skins_root
 from parameters import PARAMETERS
@@ -168,6 +172,9 @@ PAGE_LIBRARY, PAGE_EDITOR, PAGE_GIMMICK, PAGE_FANCY = 0, 1, 2, 3
 # The app's accent, used by the global button style and anywhere a widget has
 # to reproduce it in code rather than in a stylesheet.
 ACCENT_PINK = "#f3a6bd"
+# The song select's Continue row: cards shown, paths remembered.
+RECENT_CHARTS_SHOWN = 3
+RECENT_CHARTS_KEPT = 8
 
 # Points added to the system UI font. Applied to the QApplication font so it
 # reaches dialogs and honours DPI scaling, unlike a stylesheet pixel size.
@@ -202,6 +209,29 @@ def resolve_song_asset(song_folder: Path, raw_name: str, allowed_suffixes: set[s
     if candidate.suffix.lower() not in allowed_suffixes:
         raise ValueError(f"Unsupported beatmap asset type: {candidate.suffix}")
     return candidate
+
+
+# The UI face, from the mockups the owner approved: Exo 2, the face osu! grew
+# up with. Bundled (SIL OFL) rather than asked of the system, which usually does
+# not have it. It has no kana, so Japanese falls to the system's own faces.
+UI_FONT_FILE = Path("assets/fonts/Exo2-VariableFont_wght.ttf")
+UI_FONT_FAMILY = "Exo 2"
+UI_FONT_FALLBACKS = ("Yu Gothic UI", "Meiryo", "Segoe UI")
+
+
+def ui_font_family() -> str | None:
+    """Register the bundled Exo 2 once and return its family, or None when the
+    file is missing (a source checkout without assets) -- the system font then
+    stays, which is what the app used before."""
+    for root in resource_roots():
+        candidate = root / UI_FONT_FILE
+        if candidate.is_file():
+            font_id = QFontDatabase.addApplicationFont(str(candidate))
+            families = QFontDatabase.applicationFontFamilies(font_id) if font_id >= 0 else []
+            if families:
+                QFont.insertSubstitutions(families[0], list(UI_FONT_FALLBACKS))
+                return families[0]
+    return None
 
 
 def application_icon() -> QIcon:
@@ -383,9 +413,11 @@ def button_text_width(button: QPushButton) -> int:
     font AND a bold copy of it, and the wider of the two wins.
     """
     metrics_width = button.fontMetrics().horizontalAdvance(button.text())
-    bold_font = QFont(button.font())
-    bold_font.setWeight(QFont.Weight.Bold)
-    bold_width = QFontMetrics(bold_font).horizontalAdvance(button.text())
+    bold_width = 0
+    if button.isCheckable():  # only a checked button is drawn bold
+        bold_font = QFont(button.font())
+        bold_font.setWeight(QFont.Weight.Bold)
+        bold_width = QFontMetrics(bold_font).horizontalAdvance(button.text())
     return max(
         button.sizeHint().width(),
         max(metrics_width, bold_width) + button_chrome_width(button),
@@ -8510,6 +8542,448 @@ class LanguageDialog(QDialog):
         self.accept()
 
 
+# osu!'s star-rating colours (OsuColour.STAR_DIFFICULTY_SPECTRUM, as osu!-web
+# draws them): the list dots and the difficulty pills both read these, so a
+# set's spread shows before it is opened.
+STAR_SPECTRUM = (
+    (0.1, "#4290fb"), (1.25, "#4fc0ff"), (2.0, "#4fffd5"), (2.5, "#7cff4f"),
+    (3.3, "#f6f05c"), (4.2, "#ff8068"), (4.9, "#ff4e6f"), (5.8, "#c645b8"),
+    (6.7, "#6563de"), (7.7, "#18158e"), (9.0, "#000000"),
+)
+STAR_TEXT_SPECTRUM = (
+    (9.0, "#f6f05c"), (9.9, "#ff8068"), (10.6, "#ff4e6f"), (11.5, "#c645b8"), (12.4, "#6563de"),
+)
+STAR_UNRATED = "#aaaaaa"
+
+
+def _sample_spectrum(stops, value: float) -> QColor:
+    """osu!-web's d3 scale: clamped, interpolated at gamma 2.2."""
+    if value <= stops[0][0]:
+        return QColor(stops[0][1])
+    for (low, low_hex), (high, high_hex) in zip(stops, stops[1:]):
+        if value <= high:
+            t = (value - low) / (high - low)
+            a, b = QColor(low_hex), QColor(high_hex)
+            mix = lambda x, y: round(255 * ((x / 255) ** 2.2 + t * ((y / 255) ** 2.2 - (x / 255) ** 2.2)) ** (1 / 2.2))
+            return QColor(mix(a.red(), b.red()), mix(a.green(), b.green()), mix(a.blue(), b.blue()))
+    return QColor(stops[-1][1])
+
+
+def star_colour(stars: float | None) -> QColor:
+    """The pill and dot colour. osu! rounds to 2dp away from zero first, so
+    1.245 samples as 1.25, and anything under 0.1 is its grey."""
+    if stars is None:
+        return QColor(STAR_UNRATED)
+    stars = float(Decimal(str(stars)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+    return QColor(STAR_UNRATED) if stars < 0.1 else _sample_spectrum(STAR_SPECTRUM, stars)
+
+
+def star_text_colour(stars: float | None) -> QColor:
+    """Dark below 6.5, gold below 9, then its own spectrum -- osu!-web's pill."""
+    if stars is None or stars < 6.5:
+        return QColor(0, 0, 0, 191)
+    if stars < 9.0:
+        return QColor("#ffd966")
+    return _sample_spectrum(STAR_TEXT_SPECTRUM, stars)
+
+
+def reduced_motion() -> bool:
+    """Windows' "Animation effects" switch, as Qt reports it. Off under the
+    offscreen platform, which keeps the tests free of running animations."""
+    return not QApplication.isEffectEnabled(Qt.UI_General)
+
+
+def format_length(ms: int) -> str:
+    seconds = max(0, int(ms)) // 1000
+    return f"{seconds // 60}:{seconds % 60:02d}"
+
+
+def format_bpm(low: float, high: float) -> str:
+    if not high:
+        return "–"
+    if round(low) == round(high):
+        return f"{round(high)}"
+    return f"{round(low)}–{round(high)}"
+
+
+def edited_ago(path: Path) -> str:
+    try:
+        seconds = max(0.0, wall_clock() - path.stat().st_mtime)
+    except OSError:
+        return ""
+    if seconds < 60:
+        return tr("MainWindow", "edited just now")
+    if seconds < 3600:
+        return tr("MainWindow", "edited {n} min ago").format(n=int(seconds // 60))
+    if seconds < 86400:
+        return tr("MainWindow", "edited {n} h ago").format(n=int(seconds // 3600))
+    if seconds < 2 * 86400:
+        return tr("MainWindow", "edited yesterday")
+    return tr("MainWindow", "edited {n} days ago").format(n=int(seconds // 86400))
+
+
+def tabular(font: QFont) -> QFont:
+    """Exo 2's tabular figures, so the stat columns line up digit for digit."""
+    font = QFont(font)
+    try:
+        font.setFeature(QFont.Tag("tnum"), 1)
+    except (AttributeError, TypeError):
+        pass  # A Qt without OpenType features: proportional figures, still legible.
+    return font
+
+
+# The song and difficulty rows carry what they paint under this role; their
+# display text stays the plain label, which is what search, tests and screen
+# readers see.
+ROW_ROLE = Qt.UserRole + 1
+ROW_INK, ROW_INK_2, ROW_INK_3 = "#e8edf3", "#aeb8c5", "#7d8794"
+ROW_HOVER, ROW_PINK_ON = "#2a3341", "#ff66aa"
+# The song preview: how long the selection has to rest before it starts (so
+# holding an arrow down does not open every song on the way), and its fade in.
+PREVIEW_SETTLE_MS = 250
+PREVIEW_FADE_MS = 400
+# The song list's difficulty dots, one per chart in its star colour.
+SONG_DOT_RADIUS, SONG_DOT_PITCH = 5.0, 14
+
+
+def _paint_selection(painter: QPainter, rect: QRectF, option, rim: bool) -> None:
+    """The selected tint fades left to right, as in the mockup; the song list
+    marks it with a bar on the left, the difficulty list with a pink rim."""
+    if option.state & QStyle.State_Selected:
+        tint = QLinearGradient(rect.topLeft(), rect.topRight())
+        tint.setColorAt(0.0, QColor(255, 102, 170, 46))
+        tint.setColorAt(0.7, QColor(255, 102, 170, 10))
+        painter.setPen(QPen(QColor(ROW_PINK_ON), 1) if rim else Qt.NoPen)
+        painter.setBrush(tint)
+        painter.drawRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), 4, 4)
+        if not rim:
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(ROW_PINK_ON))
+            painter.drawRoundedRect(QRectF(rect.left(), rect.top() + 4, 3, rect.height() - 8), 1.5, 1.5)
+    elif option.state & QStyle.State_MouseOver:
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(ROW_HOVER))
+        painter.drawRoundedRect(rect, 4, 4)
+
+
+class SongRowDelegate(QStyledItemDelegate):
+    """A song: bold title over "artist · mapped by X", a dot per difficulty in
+    its star colour. A group header: small caps in the accent pink."""
+
+    def sizeHint(self, option, index):
+        header = index.data(Qt.UserRole) is None
+        return QSize(option.rect.width(), 28 if header else 46)
+
+    def paint(self, painter, option, index):
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        rect = QRectF(option.rect)
+        row = index.data(ROW_ROLE)
+        font = QFont(option.font)
+        if row is None:  # a group header
+            font.setBold(True)
+            font.setPointSizeF(font.pointSizeF() * 0.8)
+            font.setCapitalization(QFont.AllUppercase)
+            font.setLetterSpacing(QFont.PercentageSpacing, 106)
+            painter.setFont(font)
+            painter.setPen(QColor(index.data(Qt.ForegroundRole).color()))
+            painter.drawText(rect.adjusted(8, 0, -8, -2), Qt.AlignLeft | Qt.AlignBottom, index.data())
+            painter.setPen(QColor("#303947"))
+            painter.drawLine(rect.bottomLeft() + QPointF(4, 0), rect.bottomRight() - QPointF(4, 0))
+            painter.restore()
+            return
+        _paint_selection(painter, rect.adjusted(2, 1, -2, -1), option, rim=False)
+        stars = row["stars"]
+        dots_width = len(stars) * SONG_DOT_PITCH
+        text = rect.adjusted(13, 5, -(dots_width + 18), -5)
+        font.setWeight(QFont.DemiBold)
+        painter.setFont(font)
+        painter.setPen(QColor(ROW_INK))
+        metrics = QFontMetrics(font)
+        painter.drawText(text, Qt.AlignLeft | Qt.AlignTop, metrics.elidedText(row["title"], Qt.ElideRight, int(text.width())))
+        small = QFont(option.font)
+        small.setPointSizeF(small.pointSizeF() * 0.86)
+        painter.setFont(small)
+        painter.setPen(QColor(ROW_INK_2))
+        painter.drawText(text, Qt.AlignLeft | Qt.AlignBottom,
+                         QFontMetrics(small).elidedText(row["subtitle"], Qt.ElideRight, int(text.width())))
+        x = rect.right() - dots_width - 8
+        y = rect.center().y()
+        for value in stars:
+            if value is None:
+                painter.setPen(QPen(QColor(STAR_UNRATED), 1.5))
+                painter.setBrush(Qt.NoBrush)
+            else:
+                # A faint rim: osu!'s colours run to black past 9 stars, which
+                # on this navy is no dot at all.
+                painter.setPen(QPen(QColor(255, 255, 255, 46), 1))
+                painter.setBrush(star_colour(value))
+            painter.drawEllipse(QPointF(x + SONG_DOT_PITCH / 2, y), SONG_DOT_RADIUS, SONG_DOT_RADIUS)
+            x += SONG_DOT_PITCH
+        painter.restore()
+
+
+class DifficultyRowDelegate(QStyledItemDelegate):
+    """A difficulty: star pill and name, "mapped by X" under it, notes,
+    length and BPM on the right in tabular figures."""
+
+    def sizeHint(self, option, index):
+        return QSize(option.rect.width(), 48)
+
+    def paint(self, painter, option, index):
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        rect = QRectF(option.rect).adjusted(2, 2, -2, -2)
+        row = index.data(ROW_ROLE) or {}
+        _paint_selection(painter, rect, option, rim=True)
+        inner = rect.adjusted(10, 6, -10, -6)
+        stats_font = tabular(option.font)
+        stats_font.setPointSizeF(stats_font.pointSizeF() * 0.86)
+        stats_font.setWeight(QFont.DemiBold)
+        stats_metrics = QFontMetrics(stats_font)
+        stats = row.get("stats", ("", ""))
+        stats_width = max(stats_metrics.horizontalAdvance(line) for line in stats) if any(stats) else 0
+        painter.setFont(stats_font)
+        painter.setPen(QColor(ROW_INK_2))
+        painter.drawText(inner, Qt.AlignRight | Qt.AlignTop, stats[0])
+        painter.drawText(inner, Qt.AlignRight | Qt.AlignBottom, stats[1])
+
+        stars = row.get("stars")
+        pill_font = tabular(option.font)
+        pill_font.setBold(True)
+        pill_font.setPointSizeF(pill_font.pointSizeF() * 0.82)
+        pill_text = f"★ {stars:.2f}" if stars is not None else "★ –"
+        pill_metrics = QFontMetrics(pill_font)
+        pill = QRectF(inner.left(), inner.top(), max(52, pill_metrics.horizontalAdvance(pill_text) + 16),
+                      pill_metrics.height() + 4)
+        painter.setOpacity(0.5 if row.get("stale") else 1.0)
+        painter.setPen(QPen(QColor(255, 255, 255, 102), 1, Qt.DashLine) if row.get("stale") else Qt.NoPen)
+        painter.setBrush(star_colour(stars))
+        painter.drawRoundedRect(pill, pill.height() / 2, pill.height() / 2)
+        painter.setFont(pill_font)
+        painter.setPen(star_text_colour(stars))
+        painter.drawText(pill, Qt.AlignCenter, pill_text)
+        painter.setOpacity(1.0)
+
+        text_left = pill.right() + 8
+        width = int(inner.right() - stats_width - 12 - text_left)
+        name_font = QFont(option.font)
+        name_font.setBold(True)
+        painter.setFont(name_font)
+        painter.setPen(QColor(ROW_INK))
+        painter.drawText(QRectF(text_left, pill.top(), max(0, width), pill.height()), Qt.AlignLeft | Qt.AlignVCenter,
+                         QFontMetrics(name_font).elidedText(index.data() or "", Qt.ElideRight, max(0, width)))
+        by_font = QFont(option.font)
+        by_font.setPointSizeF(by_font.pointSizeF() * 0.86)
+        painter.setFont(by_font)
+        painter.setPen(QColor(ROW_INK_3))
+        painter.drawText(QRectF(inner.left(), inner.top(), inner.width() - stats_width - 12, inner.height()),
+                         Qt.AlignLeft | Qt.AlignBottom,
+                         QFontMetrics(by_font).elidedText(row.get("by", ""), Qt.ElideRight,
+                                                          int(inner.width() - stats_width - 12)))
+        painter.restore()
+
+
+class SongBanner(QWidget):
+    """The selected song's own background, heading the detail pane the way
+    osu!'s song select does, with the title over a wash at its foot.
+
+    The line along the bottom flashes on each beat of the selected chart and
+    settles at the preview's kiai level (0.15) in between. A new song
+    crossfades its art in. Both are off under reduced motion.
+    """
+
+    BEAT_REST = 0.15
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setFixedHeight(150)
+        self.title = ""
+        self.subtitle = ""
+        self._art: QPixmap | None = None
+        self._previous: QPixmap | None = None
+        self._scaled: dict[int, QPixmap] = {}
+        self._fade = 1.0
+        self._beat_phase = 1.0
+        self.fade = QVariantAnimation(self)
+        self.fade.setStartValue(0.0)
+        self.fade.setEndValue(1.0)
+        self.fade.setDuration(250)
+        self.fade.valueChanged.connect(self._set_fade)
+        self.beat = QVariantAnimation(self)
+        self.beat.setStartValue(0.0)
+        self.beat.setEndValue(1.0)
+        self.beat.setLoopCount(-1)
+        self.beat.valueChanged.connect(self._set_beat)
+
+    def _set_fade(self, value) -> None:
+        self._fade = float(value)
+        self.update()
+
+    def _set_beat(self, value) -> None:
+        self._beat_phase = float(value)
+        self.update()
+
+    def set_song(self, title: str, subtitle: str, art: QPixmap | None, bpm: float) -> None:
+        self.title, self.subtitle = title, subtitle
+        self._previous, self._art = self._art, art
+        self._scaled = {}
+        self.fade.stop()
+        self.beat.stop()
+        if reduced_motion():
+            self._fade, self._beat_phase = 1.0, 1.0
+        else:
+            self._fade = 0.0
+            self.fade.start()
+            if bpm > 0:
+                # Past 300 BPM a flash per beat is a flicker, not a pulse.
+                beat_ms = 60000.0 / bpm
+                while beat_ms < 200:
+                    beat_ms *= 2
+                self.beat.setDuration(int(beat_ms))
+                self.beat.start()
+        self.update()
+
+    def hideEvent(self, event) -> None:
+        self.beat.stop()  # nothing to keep time for on a page nobody is looking at
+        super().hideEvent(event)
+
+    def _cover(self, art: QPixmap) -> QPixmap:
+        key = art.cacheKey()
+        if key not in self._scaled:
+            self._scaled[key] = art.scaled(self.size(), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+        return self._scaled[key]
+
+    def resizeEvent(self, event) -> None:
+        self._scaled = {}
+        super().resizeEvent(event)
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        rect = QRectF(self.rect())
+        clip = QPainterPath()
+        clip.addRoundedRect(rect, 6, 6)
+        painter.setClipPath(clip)
+        painter.fillRect(rect, QColor("#222a36"))
+        for art, opacity in ((self._previous, 1.0 - self._fade), (self._art, self._fade)):
+            if art is not None and not art.isNull() and opacity > 0:
+                cover = self._cover(art)
+                painter.setOpacity(opacity)
+                painter.drawPixmap(int((rect.width() - cover.width()) / 2),
+                                   int((rect.height() - cover.height()) / 2), cover)
+        painter.setOpacity(1.0)
+        wash = QLinearGradient(rect.topLeft(), rect.bottomLeft())
+        wash.setColorAt(0.25, QColor(0, 0, 0, 0))
+        wash.setColorAt(0.6, QColor(255, 102, 170, 20))
+        wash.setColorAt(1.0, QColor(13, 17, 23, 242))
+        painter.fillRect(rect, wash)
+
+        text = rect.adjusted(14, 10, -14, -14)
+        title_font = QFont(self.font())
+        title_font.setPointSizeF(title_font.pointSizeF() * 1.55)
+        title_font.setWeight(QFont.ExtraBold)
+        sub_font = QFont(self.font())
+        sub_font.setPointSizeF(sub_font.pointSizeF() * 0.93)
+        sub_height = QFontMetrics(sub_font).height()
+        painter.setFont(sub_font)
+        painter.setPen(QColor("#d5dce5"))
+        painter.drawText(text, Qt.AlignLeft | Qt.AlignBottom,
+                         QFontMetrics(sub_font).elidedText(self.subtitle, Qt.ElideRight, int(text.width())))
+        painter.setFont(title_font)
+        painter.setPen(QColor(ROW_INK))
+        painter.drawText(text.adjusted(0, 0, 0, -sub_height), Qt.AlignLeft | Qt.AlignBottom | Qt.TextWordWrap,
+                         self.title)
+
+        # 0.95 on the beat, down to the kiai level by 60% of it, as the mockup.
+        flash = max(self.BEAT_REST, 0.95 - (0.95 - self.BEAT_REST) * min(1.0, self._beat_phase / 0.6))
+        painter.setOpacity(flash)
+        painter.fillRect(QRectF(rect.left(), rect.bottom() - 3, rect.width(), 3), QColor(ROW_PINK_ON))
+
+
+class ContinueCard(QFrame):
+    """One recent chart: title, difficulty in pink, how long ago it was saved."""
+
+    clicked = Signal(str)
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setObjectName("continueCard")
+        self.setCursor(Qt.PointingHandCursor)
+        self.path = ""
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 5, 10, 5)
+        layout.setSpacing(0)
+        self.title = QLabel()
+        self.title.setStyleSheet(f"font-weight: 700; color: {ROW_INK};")
+        self.version = QLabel()
+        self.version.setStyleSheet(f"color: {ACCENT_PINK};")
+        self.when = QLabel()
+        self.when.setStyleSheet(f"color: {ROW_INK_3}; font-size: 11px;")
+        for label in (self.title, self.version, self.when):
+            label.setMaximumWidth(220)
+            layout.addWidget(label)
+
+    def show_chart(self, path: str, title: str, version: str) -> None:
+        self.path = path
+        metrics = self.title.fontMetrics()
+        self.title.setText(metrics.elidedText(title, Qt.ElideRight, 220))
+        self.version.setText(self.version.fontMetrics().elidedText(version, Qt.ElideRight, 220))
+        self.when.setText(edited_ago(Path(path)))
+        self.setToolTip(path)
+
+    def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton and self.rect().contains(event.position().toPoint()):
+            self.clicked.emit(self.path)
+        super().mouseReleaseEvent(event)
+
+
+class LibraryKeys(QObject):
+    """The song select's keyboard: type anywhere to search, arrows between
+    the songs and their difficulties, Enter opens, Left/Esc goes back."""
+
+    def __init__(self, controller: "LibraryPageController") -> None:
+        super().__init__(controller.window)
+        self.controller = controller
+
+    def eventFilter(self, watched, event) -> bool:
+        if event.type() != QEvent.KeyPress:
+            return False
+        c = self.controller
+        key = event.key()
+        if watched is c.library_search:
+            if key in (Qt.Key_Up, Qt.Key_Down):
+                c.move_song(-1 if key == Qt.Key_Up else 1)
+                return True
+            if key in (Qt.Key_Return, Qt.Key_Enter) and c.difficulty_list.count():
+                c.difficulty_list.setFocus()
+                return True
+            return False
+        if watched is c.song_list:
+            if key in (Qt.Key_Up, Qt.Key_Down):
+                c.move_song(-1 if key == Qt.Key_Up else 1)
+                return True
+            if key == Qt.Key_Right and c.difficulty_list.count():
+                c.difficulty_list.setFocus()
+                return True
+            if key == Qt.Key_Escape and c.library_search.text():
+                c.library_search.clear()
+                return True
+        elif watched is c.difficulty_list:
+            if key in (Qt.Key_Left, Qt.Key_Escape):
+                c.song_list.setFocus()
+                return True
+            if key in (Qt.Key_Return, Qt.Key_Enter):
+                c.open_selected_difficulty()
+                return True
+        text = event.text()
+        if text and text.isprintable() and not text.isspace() and not event.modifiers() & (Qt.ControlModifier | Qt.AltModifier):
+            c.library_search.setFocus()
+            c.library_search.insert(text)
+            return True
+        return False
+
+
 class LibraryPageController:
     """Library page: browse every taiko chart under the osu! Songs folder,
     song then difficulty, and hand the chosen one back to the window.
@@ -8529,6 +9003,22 @@ class LibraryPageController:
         self.library_cache: dict[str, list] = {}
         self._scan_songs: dict[Path, list] = {}
         self.listed_paths: set[Path] = set()
+        # osu!stable's own star ratings, {(folder, file): DbBeatmap}; None when
+        # there is no readable osu!.db beside the Songs folder.
+        self.star_ratings: dict | None = None
+        # The song preview. A QMediaPlayer rather than TrackPlayer: it streams,
+        # so a preview starts at once instead of after decoding the whole
+        # track, and nothing here needs the editor's sample-accurate clock.
+        # Made on first use -- most windows (every test's) never preview.
+        self.preview_player: QMediaPlayer | None = None
+        self._preview_audio: Path | None = None
+        self._preview_ms = -1
+        self._preview_pending: tuple[Path, int] | None = None
+        self._preview_loading = False
+        self.preview_timer = QTimer(window)
+        self.preview_timer.setSingleShot(True)
+        self.preview_timer.setInterval(PREVIEW_SETTLE_MS)
+        self.preview_timer.timeout.connect(self.start_preview)
         self._scan_iterator = None
         self._scan_files = 0
         self._scan_since_refresh = 0
@@ -8537,128 +9027,262 @@ class LibraryPageController:
         self.scan_timer.timeout.connect(self.scan_step)
 
     def build_page(self) -> QWidget:
-        """Browse every taiko chart under the osu! Songs folder: song, then difficulty."""
+        """Browse every taiko chart under the osu! Songs folder: song, then difficulty.
+
+        Laid out as the approved mockup (docs/DEVELOPMENT_PLAN.md, 3d): search
+        and pills on one row, a Continue row of recent charts, the song list
+        beside a detail pane headed by the map's own background.
+        """
         page = QWidget()
+        page.setObjectName("libraryPage")
         layout = QVBoxLayout(page)
-        layout.setContentsMargins(10, 6, 10, 6)
+        layout.setContentsMargins(12, 10, 12, 6)
         layout.setSpacing(8)
 
         top = QHBoxLayout()
-        heading = QLabel(tr("MainWindow", "Taiko songs"))
-        heading.setStyleSheet("font-size: 17px; font-weight: 700;")
-        top.addWidget(heading)
-
+        top.setSpacing(10)
         self.library_search = QLineEdit()
         self.library_search.setPlaceholderText(
             tr("MainWindow", "Search artist, title, difficulty, mapper or tags")
         )
+        self.library_search.setToolTip(tr("MainWindow", "Type anywhere on this page to search"))
         self.library_search.setClearButtonEnabled(True)
         self.library_search.setMinimumWidth(240)
         self.library_search.textChanged.connect(lambda _text: self.rebuild_song_list())
         top.addWidget(self.library_search, 1)
 
-        self.library_folder_label = ElidedLabel("")
-        self.library_folder_label.setMaximumWidth(360)
-        self.library_folder_label.setStyleSheet("color: #97a3b4;")
-        top.addWidget(self.library_folder_label)
-
-        change_folder_button = QPushButton(tr("MainWindow", "Change Folder"))
-        change_folder_button.setFocusPolicy(Qt.NoFocus)
-        change_folder_button.clicked.connect(self.choose_songs_folder)
-        top.addWidget(change_folder_button)
-
-        # Quick Scan is start_scan() as a button: incremental, reusing the
-        # cached entry for any file whose size and mtime haven't changed, so
-        # it is fast even on a huge Songs folder. Rescan (below) is the
-        # nuclear option -- see its own docstring for why the two need to
-        # stay separate rather than one button doing both.
-        quick_scan_button = QPushButton(tr("MainWindow", "Quick Scan"))
-        quick_scan_button.setToolTip(tr("MainWindow", "Look for songs added or changed since the last scan"))
-        quick_scan_button.setFocusPolicy(Qt.NoFocus)
-        quick_scan_button.clicked.connect(self.start_scan)
-        top.addWidget(quick_scan_button)
-
-        rescan_button = QPushButton(tr("MainWindow", "Rescan"))
-        rescan_button.setToolTip(tr("MainWindow", "Rebuild the whole index from scratch (slower; use if Quick Scan missed a change)"))
-        rescan_button.setFocusPolicy(Qt.NoFocus)
-        rescan_button.clicked.connect(self.rescan)
-        top.addWidget(rescan_button)
-        layout.addLayout(top)
-
-        # Second row: how the list is organised. All three re-sort in place,
-        # with no rescan -- they only change how the same index is displayed.
-        arrange = QHBoxLayout()
-        arrange.addWidget(QLabel(tr("MainWindow", "Group by")))
-        self.library_group_combo = QComboBox()
+        # The combos are the model the pills drive: everything that reads the
+        # grouping or the sort (and the tests) reads them.
+        self.library_group_combo = QComboBox(page)
         self.library_group_combo.addItem(tr("MainWindow", "Nothing"), "none")
         self.library_group_combo.addItem(tr("MainWindow", "Mapper"), "mapper")
         self.library_group_combo.addItem(tr("MainWindow", "Artist"), "artist")
-        self.library_group_combo.currentIndexChanged.connect(lambda _index: self.rebuild_song_list())
-        arrange.addWidget(self.library_group_combo)
-
-        arrange.addWidget(QLabel(tr("MainWindow", "Sort")))
-        self.library_sort_combo = QComboBox()
+        self.library_group_combo.hide()
+        self.library_sort_combo = QComboBox(page)
         self.library_sort_combo.addItem(tr("MainWindow", "A to Z"), "az")
         self.library_sort_combo.addItem(tr("MainWindow", "Z to A"), "za")
-        self.library_sort_combo.currentIndexChanged.connect(lambda _index: self.rebuild_song_list())
-        arrange.addWidget(self.library_sort_combo)
+        self.library_sort_combo.hide()
 
-        self.original_metadata_check = QCheckBox(tr("MainWindow", "Original language metadata"))
+        caption = QLabel(tr("MainWindow", "Group"))
+        caption.setStyleSheet(f"color: {ROW_INK_3}; font-size: 11px; font-weight: 600;")
+        top.addWidget(caption)
+        for combo, labels in (
+            (self.library_group_combo, (tr("MainWindow", "None"), tr("MainWindow", "Mapper"), tr("MainWindow", "Artist"))),
+            (self.library_sort_combo, ("A–Z", "Z–A")),
+        ):
+            buttons = []
+            group = QButtonGroup(page)
+            for index, label in enumerate(labels):
+                button = QPushButton(label)
+                button.setCheckable(True)
+                button.setToolTip(combo.itemText(index))
+                group.addButton(button, index)
+                buttons.append(button)
+            buttons[combo.currentIndex()].setChecked(True)
+            group.idClicked.connect(combo.setCurrentIndex)
+            combo.currentIndexChanged.connect(lambda index, buttons=buttons: buttons[index].setChecked(True))
+            combo.currentIndexChanged.connect(lambda _index: self.rebuild_song_list())
+            top.addWidget(segmented(buttons))
+
+        self.original_metadata_check = QPushButton("原文")
+        self.original_metadata_check.setCheckable(True)
         self.original_metadata_check.setToolTip(
             tr("MainWindow", "Show titles and artists in the song's own script instead of the romanized fields")
         )
         self.original_metadata_check.setChecked(self.window.settings.bool_value("library/original_metadata", False))
         self.original_metadata_check.toggled.connect(self.original_metadata_toggled)
-        arrange.addWidget(self.original_metadata_check)
-        arrange.addStretch(1)
-        layout.addLayout(arrange)
+        top.addWidget(segmented([self.original_metadata_check]))
+
+        # One quiet menu for three rare actions. Quick Scan is incremental and
+        # Rescan throws the index away -- see `rescan` for why both exist.
+        self.library_folder_label = QToolButton()
+        self.library_folder_label.setObjectName("folderMenu")
+        self.library_folder_label.setPopupMode(QToolButton.InstantPopup)
+        self.library_folder_label.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        self.library_folder_label.setFocusPolicy(Qt.NoFocus)
+        folder_menu = QMenu(self.library_folder_label)
+        quick = folder_menu.addAction(tr("MainWindow", "Quick scan"))
+        quick.setToolTip(tr("MainWindow", "Look for songs added or changed since the last scan"))
+        quick.triggered.connect(self.start_scan)
+        full = folder_menu.addAction(tr("MainWindow", "Rescan everything"))
+        full.setToolTip(tr("MainWindow", "Rebuild the whole index from scratch (slower; use if Quick Scan missed a change)"))
+        full.triggered.connect(self.rescan)
+        change = folder_menu.addAction(tr("MainWindow", "Change folder…"))
+        change.triggered.connect(self.choose_songs_folder)
+        folder_menu.setToolTipsVisible(True)
+        self.library_folder_label.setMenu(folder_menu)
+        self.set_folder_text("")
+        top.addWidget(self.library_folder_label)
+        layout.addLayout(top)
+
+        # Continue: the last charts opened here, one click from reopening.
+        self.continue_row = QWidget()
+        continue_layout = QHBoxLayout(self.continue_row)
+        continue_layout.setContentsMargins(0, 0, 0, 0)
+        continue_layout.setSpacing(8)
+        continue_caption = QLabel(tr("MainWindow", "Continue"))
+        continue_caption.setStyleSheet(f"color: {ROW_INK_3}; font-size: 11px; font-weight: 600;")
+        continue_layout.addWidget(continue_caption)
+        # A fixed set of cards, refilled rather than rebuilt: see
+        # OrphanedLayoutItemTests for what churning a layout's items costs here.
+        self.continue_cards = [ContinueCard() for _ in range(RECENT_CHARTS_SHOWN)]
+        for card in self.continue_cards:
+            card.clicked.connect(self.open_recent)
+            continue_layout.addWidget(card)
+        continue_layout.addStretch(1)
+        layout.addWidget(self.continue_row)
 
         split = QSplitter(Qt.Horizontal)
-
+        split.setChildrenCollapsible(False)
         self.song_list = QListWidget()
+        self.song_list.setItemDelegate(SongRowDelegate(self.song_list))
+        self.song_list.setMouseTracking(True)
+        self.song_list.setUniformItemSizes(False)
+        # Rows elide rather than scroll sideways; the delegate paints to width.
+        self.song_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.song_list.currentRowChanged.connect(self.song_selected)
         self.song_list.itemActivated.connect(lambda _item: self.difficulty_list.setFocus())
         split.addWidget(self.song_list)
 
-        right = QWidget()
-        right_layout = QVBoxLayout(right)
-        right_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.setSpacing(6)
-        right_layout.addWidget(QLabel(tr("MainWindow", "Difficulties")))
+        detail = QFrame()
+        detail.setObjectName("songDetail")
+        detail_layout = QVBoxLayout(detail)
+        detail_layout.setContentsMargins(0, 0, 0, 0)
+        detail_layout.setSpacing(0)
+        self.song_banner = SongBanner()
+        detail_layout.addWidget(self.song_banner)
         self.difficulty_list = QListWidget()
+        self.difficulty_list.setObjectName("difficultyList")
+        self.difficulty_list.setItemDelegate(DifficultyRowDelegate(self.difficulty_list))
+        self.difficulty_list.setMouseTracking(True)
+        self.difficulty_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.difficulty_list.itemActivated.connect(lambda _item: self.open_selected_difficulty())
-        right_layout.addWidget(self.difficulty_list, 1)
+        self.difficulty_list.currentItemChanged.connect(lambda *_: self.update_open_button())
+        detail_layout.addWidget(self.difficulty_list, 1)
+        actions = QFrame()
+        actions.setObjectName("detailActions")
+        actions_layout = QHBoxLayout(actions)
+        actions_layout.setContentsMargins(10, 10, 10, 10)
         self.open_difficulty_button = QPushButton(tr("MainWindow", "Edit This Difficulty"))
+        self.open_difficulty_button.setObjectName("editDifficulty")
         self.open_difficulty_button.clicked.connect(self.open_selected_difficulty)
-        right_layout.addWidget(self.open_difficulty_button)
-        split.addWidget(right)
-        split.setSizes([820, 420])
+        actions_layout.addWidget(self.open_difficulty_button)
+        detail_layout.addWidget(actions)
+        split.addWidget(detail)
+        split.setStretchFactor(0, 145)
+        split.setStretchFactor(1, 100)
+        split.setSizes([740, 510])
         layout.addWidget(split, 1)
 
         footer = QHBoxLayout()
         self.library_status = QLabel(tr("MainWindow", "No songs folder selected yet."))
+        self.library_status.setStyleSheet(f"color: {ROW_INK_2}; font-size: 12px;")
         footer.addWidget(self.library_status, 1)
+        self.library_rating_note = QLabel()
+        self.library_rating_note.setStyleSheet(f"color: {ROW_INK_3}; font-size: 12px;")
+        self.library_rating_note.hide()
+        footer.addWidget(self.library_rating_note)
         self.scan_progress = QProgressBar()
         # Indeterminate: the walk discovers files as it goes, so there is no
         # honest total to count towards until it has already finished.
         self.scan_progress.setRange(0, 0)
-        self.scan_progress.setFixedWidth(160)
+        self.scan_progress.setFixedSize(140, 4)
         self.scan_progress.setTextVisible(False)
         self.scan_progress.setVisible(False)
         footer.addWidget(self.scan_progress)
         layout.addLayout(footer)
 
+        self.keys = LibraryKeys(self)
+        for widget in (self.library_search, self.song_list, self.difficulty_list):
+            widget.installEventFilter(self.keys)
+
         page.setStyleSheet(
-            """
-            QListWidget { background: #222a36; border: 1px solid #303947; border-radius: 6px; padding: 4px; }
-            QListWidget::item { padding: 7px 8px; border-radius: 4px; }
-            QListWidget::item:selected { background: #f3a6bd; color: #17191f; }
-            QLineEdit { background: #252d39; border: 1px solid #3a4554; border-radius: 5px; padding: 6px; }
-            QProgressBar { background: #252d39; border: 1px solid #3a4554; border-radius: 5px; }
-            QProgressBar::chunk { background: #f3a6bd; }
+            f"""
+            QListWidget {{ background: #222a36; border: 1px solid #303947; border-radius: 6px; padding: 4px; outline: 0; }}
+            QFrame#songDetail {{ background: #222a36; border: 1px solid #303947; border-radius: 6px; }}
+            QFrame#songDetail QListWidget {{ border: 0; background: transparent; padding: 6px; }}
+            QFrame#detailActions {{ border: 0; border-top: 1px solid #303947; border-radius: 0; background: transparent; }}
+            QPushButton#editDifficulty {{
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #f6b3c7, stop:0.6 #f3a6bd, stop:1 #ee97b1);
+                color: #17191f; border: 0; border-radius: 6px; padding: 8px 14px; font-weight: 700; text-align: left;
+            }}
+            QPushButton#editDifficulty:hover {{ background: #f7bccd; }}
+            QPushButton#editDifficulty:disabled {{ background: #39414d; color: #7d8794; }}
+            QLineEdit {{ background: #252d39; border: 1px solid #3a4554; border-radius: 6px; padding: 7px 10px; font-size: 14px; }}
+            QLineEdit:focus {{ border: 2px solid #ff9dcc; padding: 6px 9px; }}
+            QToolButton#folderMenu {{ background: transparent; border: 1px solid #3a4554; border-radius: 6px;
+                color: {ROW_INK_2}; padding: 5px 10px; font-weight: 600; }}
+            QToolButton#folderMenu:hover {{ background: {ROW_HOVER}; color: {ROW_INK}; }}
+            QToolButton#folderMenu::menu-indicator {{ image: none; }}
+            QFrame#continueCard {{ background: #222a36; border: 1px solid #303947; border-radius: 6px; }}
+            QFrame#continueCard:hover {{ background: {ROW_HOVER}; border-color: #ff66aa55; }}
+            QProgressBar {{ background: #252d39; border: 0; border-radius: 2px; }}
+            QProgressBar::chunk {{ background: #f3a6bd; border-radius: 2px; }}
+            QScrollBar:vertical {{ background: transparent; width: 10px; margin: 2px; }}
+            QScrollBar::handle:vertical {{ background: #3a4554; border-radius: 3px; min-height: 32px; }}
+            QScrollBar::handle:vertical:hover {{ background: #ff66aa; }}
+            QScrollBar::add-line, QScrollBar::sub-line, QScrollBar::add-page, QScrollBar::sub-page {{ height: 0; background: none; }}
             """
         )
+        self.refresh_continue_row()
+        self.update_open_button()
         return page
+
+    def set_folder_text(self, folder: str) -> None:
+        metrics = self.library_folder_label.fontMetrics()
+        shown = metrics.elidedText(folder, Qt.ElideMiddle, 260) if folder else tr("MainWindow", "Songs folder")
+        self.library_folder_label.setText(f"{shown}  ▾")
+        self.library_folder_label.setToolTip(folder)
+
+    def move_song(self, delta: int) -> None:
+        """Up/Down from the search box: the next *song*, over group headers."""
+        row = self.song_list.currentRow()
+        while True:
+            row += delta
+            if not 0 <= row < self.song_list.count():
+                return
+            if self.song_list.item(row).data(Qt.UserRole) is not None:
+                self.song_list.setCurrentRow(row)
+                return
+
+    # -- recent charts ----------------------------------------------------
+
+    def recent_charts(self) -> list[str]:
+        try:
+            recent = json.loads(self.window.settings.string_value("library/recent", "[]") or "[]")
+        except ValueError:
+            return []
+        return [path for path in recent if isinstance(path, str)]
+
+    def remember_recent(self, path: Path) -> None:
+        recent = [str(path)] + [item for item in self.recent_charts() if Path(item) != path]
+        self.window.settings.set_value("library/recent", json.dumps(recent[:RECENT_CHARTS_KEPT]))
+        self.refresh_continue_row()
+
+    def refresh_continue_row(self) -> None:
+        original = self.original_metadata_check.isChecked()
+        known = {d.path: d for group in self.library_songs.values() for d in group}
+        shown = 0
+        for path in self.recent_charts():
+            if shown == len(self.continue_cards):
+                break
+            if not Path(path).is_file():
+                continue  # deleted or moved since: nothing to reopen
+            difficulty = known.get(Path(path))
+            title = difficulty.display_title(original) if difficulty else Path(path).parent.name
+            version = difficulty.version if difficulty else Path(path).stem
+            self.continue_cards[shown].show_chart(path, title, version)
+            self.continue_cards[shown].show()
+            shown += 1
+        for card in self.continue_cards[shown:]:
+            card.hide()
+        self.continue_row.setVisible(shown > 0)
+
+    def open_recent(self, path: str) -> None:
+        self.stop_preview()
+        self.window._load_map_path(Path(path).resolve(), refresh_difficulties=True)
+        if self.window.state.source_path == Path(path).resolve():
+            self.remember_recent(Path(path))
 
     # -- folder, scan, cache --------------------------------------------------
 
@@ -8728,11 +9352,12 @@ class LibraryPageController:
 
     def start_scan(self) -> None:
         folder = self.window.settings.string_value("library/songs_folder", "")
-        self.library_folder_label.setText(folder)
+        self.set_folder_text(folder)
         if not folder or not Path(folder).is_dir():
             self.library_status.setText(tr("MainWindow", "No songs folder selected yet."))
             return
         self.scan_timer.stop()
+        self.load_star_ratings(Path(folder))
         self.library_cache = load_cache(self.window._library_cache_path())
         # Show the saved index first, then verify it: on every start after the
         # first, the list is complete before a single file has been reopened.
@@ -8793,6 +9418,25 @@ class LibraryPageController:
         self.rebuild_song_list()
         self.update_scan_status(tr("MainWindow", "{songs} taiko songs, {files} files scanned"))
 
+    def load_star_ratings(self, songs_folder: Path) -> None:
+        """osu!stable's osu!.db, one level above Songs. Read once per scan
+        (about 0.3s for 24,000 maps); a missing or unreadable one means every
+        difficulty shows unrated, and the footer says why, once."""
+        try:
+            self.star_ratings = osu_db.read(songs_folder.parent / "osu!.db")
+        except (OSError, ValueError, IndexError, struct.error):
+            self.star_ratings = None
+        self.library_rating_note.setText(tr(
+            "MainWindow", "Star ratings come from osu!stable's osu!.db, and none was found beside this Songs folder."))
+        self.library_rating_note.setVisible(self.star_ratings is None)
+
+    def rating_entry(self, difficulty):
+        """osu!.db's entry for this file, when it has a taiko rating."""
+        if not self.star_ratings:
+            return None
+        entry = self.star_ratings.get((difficulty.path.parent.name.lower(), difficulty.path.name.lower()))
+        return entry if entry is not None and entry.taiko_stars is not None else None
+
     def update_scan_status(self, template: str) -> None:
         self.library_status.setText(
             template.format(files=self._scan_files, songs=len(self.library_songs))
@@ -8804,9 +9448,11 @@ class LibraryPageController:
         self.window.settings.set_value("library/original_metadata", checked)
         self.window.settings.sync()
         self.rebuild_song_list()
+        self.refresh_continue_row()
 
     def song_entries(self) -> list[tuple[str, str, str, Path]]:
         """(group, sort label, row text, folder) for the songs the filters keep.
+        The row text is what the list reports; `SongRowDelegate` paints it.
 
         Sorted by group first so the list can be walked once and broken into
         headers; Z-to-A reverses the groups too, which is what "sort by
@@ -8857,6 +9503,7 @@ class LibraryPageController:
                 self.song_list.addItem(header)
             item = QListWidgetItem(text)
             item.setData(Qt.UserRole, str(folder))
+            item.setData(ROW_ROLE, self.song_row(folder))
             item.setToolTip(str(folder))
             self.song_list.addItem(item)
         self.song_list.blockSignals(False)
@@ -8866,27 +9513,167 @@ class LibraryPageController:
                 return
         self.difficulty_list.clear()
 
+    def song_row(self, folder: Path) -> dict:
+        difficulties = self.library_songs.get(folder, [])
+        original = self.original_metadata_check.isChecked()
+        first = difficulties[0]
+        artist = first.display_artist(original)
+        subtitle = " · ".join(part for part in (
+            artist, tr("MainWindow", "mapped by {name}").format(name=first.creator) if first.creator else "") if part)
+        # The dots skip the MD5 check: only the selected song's files are hashed.
+        entries = [self.rating_entry(d) for d in difficulties]
+        stars = sorted((e.taiko_stars if e else None for e in entries), key=lambda value: (value is None, value or 0))
+        return {"title": first.display_title(original), "subtitle": subtitle, "stars": stars}
+
     def song_selected(self, row: int) -> None:
         self.difficulty_list.clear()
         item = self.song_list.item(row)
         if item is None or item.data(Qt.UserRole) is None:
+            self.update_open_button()
             return  # a group header
-        difficulties = self.library_songs.get(Path(item.data(Qt.UserRole)), [])
-        for difficulty in sorted(difficulties, key=lambda entry: entry.version.lower()):
+        folder = Path(item.data(Qt.UserRole))
+        difficulties = self.library_songs.get(folder, [])
+        if not difficulties:
+            return
+        original = self.original_metadata_check.isChecked()
+        rated = []
+        for difficulty in difficulties:
+            entry = self.rating_entry(difficulty)
+            stars = entry.taiko_stars if entry else None
+            # osu! keys its rating to the file's hash: an edit since, here or
+            # anywhere, leaves the number describing a chart that is gone.
+            stale = entry is not None and osu_db.file_md5(difficulty.path) != entry.md5
+            rated.append((difficulty, stars, stale))
+        # Easiest first, as osu! lists them; unrated after, by name.
+        rated.sort(key=lambda entry: (entry[1] is None, entry[1] or 0.0, entry[0].version.lower()))
+        for difficulty, stars, stale in rated:
             entry_item = QListWidgetItem(difficulty.version or difficulty.path.stem)
             entry_item.setData(Qt.UserRole, str(difficulty.path))
-            entry_item.setToolTip(difficulty.path.name)
+            notes = (tr("MainWindow", "{n} notes").format(n=difficulty.notes) if difficulty.notes else "–")
+            timing = (f"{format_length(difficulty.length_ms)} · {format_bpm(difficulty.bpm_min, difficulty.bpm_max)} BPM"
+                      if difficulty.notes else "")
+            entry_item.setData(ROW_ROLE, {
+                "stars": stars, "stale": stale, "stats": (notes, timing),
+                "by": tr("MainWindow", "mapped by {name}").format(name=difficulty.creator) if difficulty.creator else "",
+            })
+            tip = difficulty.path.name
+            if stale:
+                tip += "\n" + tr("MainWindow", "Changed since osu! rated it: open it in osu! to update the stars.")
+            elif stars is None:
+                tip += "\n" + tr("MainWindow", "Not rated yet: open it in osu! (or press F5 in song select), then Quick scan.")
+            entry_item.setToolTip(tip)
             self.difficulty_list.addItem(entry_item)
+        first = difficulties[0]
+        art = None
+        if first.background:
+            reader = QImageReader(str(folder / first.background))
+            reader.setAutoTransform(True)
+            # Decoded no larger than the pane needs: a 4K background at full
+            # size costs a visible pause on every selection.
+            size = reader.size()
+            if size.isValid() and size.width() > 1280:
+                reader.setScaledSize(size.scaled(1280, 1280, Qt.KeepAspectRatio))
+            image = reader.read()
+            art = QPixmap.fromImage(image) if not image.isNull() else None
+        artist = first.display_artist(original)
+        self.song_banner.set_song(
+            first.display_title(original),
+            " · ".join(part for part in (artist, tr("MainWindow", "mapped by {name}").format(name=first.creator)
+                                         if first.creator else "") if part),
+            art, first.bpm_max if first.bpm_min == first.bpm_max else first.bpm_min,
+        )
         if self.difficulty_list.count():
             self.difficulty_list.setCurrentRow(0)
+        self.update_open_button()
+        self.schedule_preview(first)
+
+    # -- song preview -----------------------------------------------------
+
+    def schedule_preview(self, difficulty) -> None:
+        if not difficulty.audio:
+            return
+        try:
+            preview_ms = int(float(difficulty.preview))
+        except ValueError:
+            preview_ms = -1
+        self._preview_pending = (difficulty.folder / difficulty.audio, preview_ms)
+        self.preview_timer.start()
+
+    def start_preview(self) -> None:
+        if self._preview_pending is None or not self.song_list.isVisible():
+            return
+        audio, preview_ms = self._preview_pending
+        self._preview_pending = None
+        if audio == self._preview_audio and self.preview_player is not None \
+                and self.preview_player.playbackState() == QMediaPlayer.PlayingState:
+            return  # another difficulty of the song already playing
+        if not audio.is_file():
+            self.stop_preview()
+            return
+        if self.preview_player is None:
+            self.preview_player = QMediaPlayer(self.window)
+            self.preview_player.setAudioOutput(QAudioOutput(self.preview_player))
+            self.preview_player.mediaStatusChanged.connect(self._preview_status)
+            self.preview_fade = QVariantAnimation(self.preview_player)
+            self.preview_fade.setDuration(PREVIEW_FADE_MS)
+            self.preview_fade.valueChanged.connect(
+                lambda value: self.preview_player.audioOutput().setVolume(float(value)))
+        self.preview_player.stop()
+        self._preview_audio, self._preview_ms = audio, preview_ms
+        self.preview_player.audioOutput().setVolume(0.0)
+        # Set after stop(): stopping reports LoadedMedia too, and taken as a
+        # fresh load it started the song again the moment the page was left.
+        self._preview_loading = True
+        self.preview_player.setSource(QUrl.fromLocalFile(str(audio)))
+
+    def _preview_status(self, status) -> None:
+        if status == QMediaPlayer.LoadedMedia and self._preview_loading:
+            self._preview_loading = False
+            self._play_preview()
+        elif status == QMediaPlayer.EndOfMedia and self._preview_audio is not None:
+            self._play_preview()  # round again from the preview point, as song select does
+
+    def _play_preview(self) -> None:
+        player = self.preview_player
+        # osu! starts an unset PreviewTime at 40% of the track.
+        start = self._preview_ms if self._preview_ms >= 0 else int(player.duration() * 0.4)
+        player.setPosition(max(0, start))
+        player.play()
+        volume = self.window.settings.int_value("audio/music_volume", 65) / 100.0
+        self.preview_fade.stop()
+        self.preview_fade.setStartValue(0.0)
+        self.preview_fade.setEndValue(volume)
+        self.preview_fade.start()
+
+    def stop_preview(self) -> None:
+        self.preview_timer.stop()
+        self._preview_pending = None
+        self._preview_loading = False
+        self._preview_audio = None
+        if self.preview_player is not None:
+            self.preview_fade.stop()
+            self.preview_player.stop()
+            self.preview_player.setSource(QUrl())
+
+    def update_open_button(self) -> None:
+        item = self.difficulty_list.currentItem()
+        self.open_difficulty_button.setEnabled(item is not None)
+        self.open_difficulty_button.setText(
+            tr("MainWindow", "Edit {version}  ↵").format(version=item.text()) if item is not None
+            else tr("MainWindow", "Edit This Difficulty")
+        )
 
     def open_selected_difficulty(self) -> None:
         item = self.difficulty_list.currentItem()
         if item is None:
             return
+        path = Path(item.data(Qt.UserRole)).resolve()
+        self.stop_preview()
         # _load_map_path reports its own failure, and moves to the Editor page
         # itself once the difficulty really loaded.
-        self.window._load_map_path(Path(item.data(Qt.UserRole)).resolve(), refresh_difficulties=True)
+        self.window._load_map_path(path, refresh_difficulties=True)
+        if self.window.state.source_path == path:
+            self.remember_recent(path)
 
 
 class ToolStateController:
@@ -9251,10 +10038,23 @@ class MainWindow(QMainWindow):
         self.app_name="Taiko Fancy Arranger";self.setWindowTitle(self.app_name)
         icon=application_icon()
         if not icon.isNull():self.setWindowIcon(icon)
-        # System font, two points up: the default reads small on the dense
-        # editor pages, and raising the application font (rather than a
-        # stylesheet px size) keeps every dialog and DPI scaling in step.
+        # Exo 2 at the system font's size, two points up: the default reads
+        # small on the dense editor pages, and raising the application font
+        # (rather than a stylesheet px size) keeps every dialog and DPI scaling
+        # in step. Without the bundled file, the system face.
         base_font = QFontDatabase.systemFont(QFontDatabase.GeneralFont)
+        family = ui_font_family()
+        if family:
+            base_font.setFamily(family)
+            # Exo 2 carries no hinting instructions, and Windows' default is
+            # full (GDI-style) hinting, which snaps every glyph to whole pixels:
+            # the letters came out unevenly spaced ("m a pp e d"). Vertical
+            # hinting keeps baselines crisp and places glyphs fractionally.
+            base_font.setHintingPreference(QFont.PreferVerticalHinting)
+            # Grayscale, as osu! draws it: ClearType's red and blue fringes on
+            # this navy made every edge look smeared (owner's screenshot,
+            # 2026-09-26).
+            base_font.setStyleStrategy(QFont.NoSubpixelAntialias)
         if base_font.pointSizeF() > 0:
             base_font.setPointSizeF(base_font.pointSizeF() + UI_FONT_POINT_BOOST)
         elif base_font.pixelSize() > 0:
@@ -10461,6 +11261,11 @@ class MainWindow(QMainWindow):
             self._apply_hitsound_source()
         if index == PAGE_LIBRARY and self.player.playbackState() == QMediaPlayer.PlayingState:
             self.toggle_playback()
+        if index == PAGE_LIBRARY:
+            # Arrows step through the songs straight away, no click first.
+            self._library.song_list.setFocus()
+        else:
+            self._library.stop_preview()
 
     def keyPressEvent(self, event) -> None:
         """Esc goes back a step -- to the song list from anywhere else, and
@@ -10591,6 +11396,7 @@ class MainWindow(QMainWindow):
             self.settings.set_value("fancy/dock_state", self.fancy_docks.saveState())
             self._release_application_hooks()
             self._release_audio_file()
+            self._library.stop_preview()
             event.accept()
         else:
             event.ignore()
