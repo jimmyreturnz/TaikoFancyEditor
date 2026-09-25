@@ -186,6 +186,26 @@ class PageTests(unittest.TestCase):
                 self.assertAlmostEqual(row["stars"], 4.5, places=5)
                 self.assertEqual(row["stale"], stale)
 
+    def test_the_preview_follows_the_difficultys_own_audio(self):
+        """One folder, two songs: each difficulty previews its own file."""
+        folder = Path(self.window.song_list.item(0).data(Qt.UserRole))
+        first = next(folder.glob("*.osu"))
+        (folder / "other.mp3").write_bytes(b"")
+        (folder / "other.osu").write_bytes(first.read_bytes()
+                                            .replace(b"AudioFilename: audio.mp3", b"AudioFilename: other.mp3")
+                                            .replace(b"Version:Oni", b"Version:Zzz"))
+        self.window._start_scan()
+        while self.window._scan_iterator is not None:
+            self.window._scan_step()
+        row = next(i for i in range(self.window.song_list.count())
+                   if self.window.song_list.item(i).data(Qt.UserRole) == str(folder))
+        self.window._library.song_selected(row)
+        queued = {}
+        for index in range(self.window.difficulty_list.count()):
+            self.window.difficulty_list.setCurrentRow(index)
+            queued[self.window.difficulty_list.item(index).text()] = self.window._library._preview_pending[0].name
+        self.assertEqual(queued, {"Oni": "audio.mp3", "Zzz": "other.mp3"})
+
     def _write_db(self, db: Path, song: Path, md5: str) -> Path:
         db.write_bytes(_osu_db(osu_db.FLOAT_STARS_VERSION, [(song.parent.name, song.name, md5, 4.5)]))
         return db

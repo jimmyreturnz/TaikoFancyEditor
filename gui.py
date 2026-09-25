@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import os
 import random
 import csv
 import shutil
@@ -9157,7 +9158,7 @@ class LibraryPageController:
         self.difficulty_list.setMouseTracking(True)
         self.difficulty_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.difficulty_list.itemActivated.connect(lambda _item: self.open_selected_difficulty())
-        self.difficulty_list.currentItemChanged.connect(lambda *_: self.update_open_button())
+        self.difficulty_list.currentItemChanged.connect(lambda *_: self.difficulty_changed())
         detail_layout.addWidget(self.difficulty_list, 1)
         actions = QFrame()
         actions.setObjectName("detailActions")
@@ -9582,10 +9583,20 @@ class LibraryPageController:
                                          if first.creator else "") if part),
             art, first.bpm_max if first.bpm_min == first.bpm_max else first.bpm_min,
         )
+        self._shown_difficulties = {str(d.path): d for d in difficulties}
         if self.difficulty_list.count():
             self.difficulty_list.setCurrentRow(0)
+        self.difficulty_changed()
+
+    def difficulty_changed(self) -> None:
+        """The preview follows the *difficulty*: one folder can hold several
+        songs (a pack, a cut and a full version), each difficulty naming its
+        own AudioFilename. Two on the same file keep playing where they are."""
         self.update_open_button()
-        self.schedule_preview(first)
+        item = self.difficulty_list.currentItem()
+        difficulty = item and getattr(self, "_shown_difficulties", {}).get(item.data(Qt.UserRole))
+        if difficulty is not None:
+            self.schedule_preview(difficulty)
 
     # -- song preview -----------------------------------------------------
 
@@ -10051,9 +10062,8 @@ class MainWindow(QMainWindow):
             # the letters came out unevenly spaced ("m a pp e d"). Vertical
             # hinting keeps baselines crisp and places glyphs fractionally.
             base_font.setHintingPreference(QFont.PreferVerticalHinting)
-            # Grayscale, as osu! draws it: ClearType's red and blue fringes on
-            # this navy made every edge look smeared (owner's screenshot,
-            # 2026-09-26).
+            # Grayscale, as osu! draws it. Only the FreeType engine honours
+            # this -- see main() for why that is the engine.
             base_font.setStyleStrategy(QFont.NoSubpixelAntialias)
         if base_font.pointSizeF() > 0:
             base_font.setPointSizeF(base_font.pointSizeF() + UI_FONT_POINT_BOOST)
@@ -17782,6 +17792,14 @@ register_shortcut_definitions(
 
 def main() -> None:
     settings = SettingsManager()
+    # FreeType, not DirectWrite: DirectWrite draws Exo 2 with ClearType's red
+    # and blue fringes whatever the font's style strategy asks for, which on
+    # this navy read as smeared text (owner's screenshots, 2026-09-26). On
+    # the real screen FreeType cut the fringe pixels of one song row from 709
+    # to 104 (the rest is the pink selection bar), with Japanese fallback and
+    # the ★ intact. An explicit -platform or QT_QPA_PLATFORM still wins.
+    if sys.platform == "win32" and "-platform" not in sys.argv:
+        os.environ.setdefault("QT_QPA_PLATFORM", "windows:fontengine=freetype")
     app=QApplication(sys.argv)
     # Without these, QStandardPaths.AppDataLocation resolves to
     # AppData/Roaming/python -- shared with every other PySide app run by the
