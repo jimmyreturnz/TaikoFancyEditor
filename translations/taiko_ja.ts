@@ -1481,6 +1481,38 @@ Every beatmap in it is checked once for taiko difficulties, and the result is re
             <translation>{rate}x · ピッチ {pitch}</translation>
         </message>
         <message>
+            <source>Export as new difficulty…</source>
+            <translation>新しい難易度としてエクスポート…</translation>
+        </message>
+        <message>
+            <source>Write the transformed notes to a new .osu difficulty next to this one</source>
+            <translation>変形したノーツを、この難易度の隣に新しい .osu 難易度として書き出します</translation>
+        </message>
+        <message>
+            <source>Layout</source>
+            <translation>レイアウト</translation>
+        </message>
+        <message>
+            <source>Transforming is one undo step. Save (Ctrl+S) writes it to this difficulty's file, with a backup.</source>
+            <translation>変形は1回の元に戻す操作です。保存（Ctrl+S）でこの難易度のファイルにバックアップ付きで書き込みます。</translation>
+        </message>
+        <message>
+            <source>Transform</source>
+            <translation>変形</translation>
+        </message>
+        <message>
+            <source>Timeline &amp; playback</source>
+            <translation>タイムラインと再生</translation>
+        </message>
+        <message>
+            <source>Reset layout</source>
+            <translation>レイアウトをリセット</translation>
+        </message>
+        <message>
+            <source>Transform {count} notes</source>
+            <translation>{count}個のノーツを変形</translation>
+        </message>
+        <message>
             <source>Pasted {count} notes.</source>
             <translation>{count}個のノートを貼り付けました。</translation>
         </message>

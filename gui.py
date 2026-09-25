@@ -15,7 +15,7 @@ from time import perf_counter
 from typing import Any
 
 from PySide6.QtCore import (
-    QElapsedTimer, QEvent, QLine, QObject, QPointF, QPropertyAnimation, QRect, QRectF, QSize, QStandardPaths, Qt,
+    QByteArray, QElapsedTimer, QEvent, QLine, QObject, QPointF, QPropertyAnimation, QRect, QRectF, QSize, QStandardPaths, Qt,
     QTimer,
     QUrl, Signal,
 )
@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
     QBoxLayout, QGraphicsOpacityEffect, QGridLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QMainWindow, QMessageBox,
     QProgressBar, QPushButton, QScrollArea,
-    QSlider, QSpacerItem, QSpinBox, QSplitter, QStackedWidget, QStyle, QStyleOptionButton, QTabWidget, QToolButton, QVBoxLayout, QWidget, QDialog, QDialogButtonBox, QFontComboBox, QSizePolicy
+    QSlider, QSpacerItem, QSpinBox, QSplitter, QStackedWidget, QStyle, QStyleOptionButton, QTabWidget, QToolButton, QVBoxLayout, QWidget, QDockWidget, QMenu, QDialog, QDialogButtonBox, QFontComboBox, QSizePolicy
 )
 
 from audio_engine import DEFAULT_HITSOUND_OFFSET_MS, WHEEL_SEEK_HOLD_MS, TrackPlayer
@@ -1431,7 +1431,9 @@ class TransformCanvas(QWidget):
         # The export's CS, which sizes the circles (osu_circle_radius).
         self.circle_size = 7.0
         self.setAcceptDrops(True)
-        self.setMinimumHeight(360)
+        # Small enough for a half-screen window; the docks around it take what
+        # is left, and the 16:9 frame letterboxes inside whatever this gets.
+        self.setMinimumHeight(160)
 
     def set_state(
         self,
@@ -9610,7 +9612,13 @@ class MainWindow(QMainWindow):
         # wheel. A combo box popup is its own top-level too, so this hands the
         # popup its own scrolling back at the same time.
         window = watched.window() if isinstance(watched, QWidget) else None
-        if window is not None and window is not self:
+        # A floating Fancy Arranger dock is a top-level of its own, but still
+        # this window's: its parent chain reaches here, which a dialog's does
+        # not. Without this, Alt+wheel snap and click-to-clear stopped at the
+        # dock's edge the moment it was floated.
+        if window is not None and window is not self and not (
+            isinstance(window, QDockWidget) and self._is_descendant(window, self)
+        ):
             return super().eventFilter(watched,event)
         # Shift toggles the placement preview between its normal and finisher
         # size (_draw_placement_ghost reads it fresh on every paint), but a
@@ -10086,9 +10094,9 @@ class MainWindow(QMainWindow):
         its own snap combo and playback row.
         """
         page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(7)
+        page_layout = QVBoxLayout(page)
+        page_layout.setContentsMargins(0, 0, 0, 0)
+        page_layout.setSpacing(7)
 
         sub_toolbar = QHBoxLayout()
 
@@ -10100,7 +10108,10 @@ class MainWindow(QMainWindow):
         self.reset_button.clicked.connect(self.reset_applied)
         self.reset_button.setFocusPolicy(Qt.NoFocus)
 
-        self.export_button = QPushButton(tr("MainWindow", "Export Applied Map"))
+        # What it does: writes the transformed notes as a new .osu beside this
+        # one. Saving over this difficulty is the header's Save (Ctrl+S).
+        self.export_button = QPushButton(tr("MainWindow", "Export as new difficulty…"))
+        self.export_button.setToolTip(tr("MainWindow", "Write the transformed notes to a new .osu difficulty next to this one"))
         self.export_button.clicked.connect(self.export_map)
         self.export_button.setFocusPolicy(Qt.NoFocus)
 
@@ -10119,28 +10130,49 @@ class MainWindow(QMainWindow):
         sub_toolbar.addWidget(self.difficulty_combo)
 
         sub_toolbar.addWidget(self.play_button)
-        sub_toolbar.addWidget(self.reset_button)
-        sub_toolbar.addWidget(self.export_button)
+        # Reset and Export are added once, at the far end (after Layout): a
+        # second addWidget of a widget already in the row makes Qt free its old
+        # item behind PySide's back, and the wrapper PySide keeps for it (made
+        # when this row was attached) then claims freed memory. The next Qt
+        # object allocated there reached eventFilter as a QWidgetItem -- an
+        # access violation inside show(), about one test_gimmick_editor run in six.
         self.approach_rate_control=DifficultyValueControl("AR",10.0,"Approach Rate: 0 is slowest, 10 is fastest. Export default is 10.00.")
         self.circle_size_control=DifficultyValueControl("CS",7.0,"Circle Size: 0 is biggest, 10 is smallest. Export default is 7.00.")
         sub_toolbar.addWidget(self.approach_rate_control)
         sub_toolbar.addWidget(self.circle_size_control)
-        sub_toolbar.addStretch(1)
-        layout.addLayout(sub_toolbar)
+        page_layout.addLayout(sub_toolbar)
 
-        # Transformation preview and its controls. The gameplay timeline is
-        # added below this splitter so it spans the full page width.
-        workspace_splitter = QSplitter(Qt.Horizontal)
+        # Every box but the canvas is a dock: moved to any edge, floated, closed
+        # and brought back from the Layout menu, with the arrangement kept
+        # between sessions (fancy/dock_state). Qt's own QDockWidget, inside a
+        # QMainWindow of the page's own -- no dependency, and dragging,
+        # floating and snapping come with it.
+        docks = QMainWindow(page)
+        docks.setWindowFlags(Qt.Widget)
+        docks.setDockOptions(QMainWindow.AnimatedDocks | QMainWindow.AllowNestedDocks | QMainWindow.AllowTabbedDocks)
+        # The Transform dock takes the full height beside the canvas, as in
+        # the mockup, rather than stopping at the timeline.
+        docks.setCorner(Qt.BottomRightCorner, Qt.RightDockWidgetArea)
+        docks.setStyleSheet(
+            "QDockWidget { color: #7d8794; font-weight: 700; }"
+            "QDockWidget::title { background: #1e2530; padding: 4px 8px; border-bottom: 1px solid #303947; }"
+            "QMainWindow::separator { background: transparent; width: 8px; height: 8px; }"
+            "QMainWindow::separator:hover { background: #ff66aa; }"
+        )
+        self.fancy_docks = docks
+        page_layout.addWidget(docks, 1)
 
         self.canvas = TransformCanvas()
         self.canvas.circle_size = self.circle_size_control.value()
         self.circle_size_control.changed.connect(self._canvas_circle_size_changed)
         self.canvas.background_dropped.connect(self._background_dropped)
         self.canvas.drag_offset_requested.connect(self._canvas_dragged)
-        workspace_splitter.addWidget(self.canvas)
+        docks.setCentralWidget(self.canvas)
 
         right = QWidget()
         self.transform_controls_panel = right
+        # The panel keeps the width its widest label needs; the dock around it
+        # scrolls instead, so a small window scrolls rather than clipping.
         right.setMinimumWidth(460)
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(8, 8, 8, 8)
@@ -10151,8 +10183,21 @@ class MainWindow(QMainWindow):
         self.background_opacity_control.changed.connect(
             lambda: self.canvas.set_background_opacity(int(self.background_opacity_control.value()))
         )
-        right_layout.addWidget(QLabel(tr("MainWindow", "Background Opacity")))
-        right_layout.addWidget(self.background_opacity_control)
+        sub_toolbar.addWidget(QLabel(tr("MainWindow", "Background Opacity")))
+        self.background_opacity_control.setMaximumWidth(220)
+        sub_toolbar.addWidget(self.background_opacity_control)
+        sub_toolbar.addStretch(1)
+        self.fancy_layout_button = QToolButton()
+        self.fancy_layout_button.setText(tr("MainWindow", "Layout"))
+        self.fancy_layout_button.setPopupMode(QToolButton.InstantPopup)
+        self.fancy_layout_button.setFocusPolicy(Qt.NoFocus)
+        self.fancy_layout_button.setStyleSheet(
+            "QToolButton { background: transparent; color: #aeb8c5; border: 1px solid #3a4554;"
+            " border-radius: 6px; padding: 5px 10px; font-weight: 600; }"
+            "QToolButton:hover { background: #2a3341; color: #e8edf3; }")
+        sub_toolbar.addWidget(self.fancy_layout_button)
+        sub_toolbar.addWidget(self.reset_button)
+        sub_toolbar.addWidget(self.export_button)
 
         right_layout.addWidget(QLabel(tr("MainWindow", "Transformation mode")))
 
@@ -10165,6 +10210,20 @@ class MainWindow(QMainWindow):
             self._rebuild_control_tabs
         )
         right_layout.addWidget(self.mode_combo)
+        self.mode_combo.setVisible(False)
+        self.mode_buttons: dict[str, QPushButton] = {}
+        for mode_id, label in (("all", tr("MainWindow", "All Notes")), ("split", tr("MainWindow", "Split Don / Kat"))):
+            button = QPushButton(label)
+            button.setCheckable(True)
+            button.clicked.connect(
+                lambda _checked=False, m=mode_id: self.mode_combo.setCurrentIndex(self.mode_combo.findData(m)))
+            self.mode_buttons[mode_id] = button
+        mode_row = QHBoxLayout()
+        mode_row.addWidget(segmented(list(self.mode_buttons.values())))
+        mode_row.addStretch(1)
+        right_layout.addLayout(mode_row)
+        self.mode_combo.currentIndexChanged.connect(self._sync_mode_buttons)
+        self._sync_mode_buttons()
         self.swap_don_kat_button = QPushButton(tr("MainWindow", "Swap Don ↔ Kat"))
         self.swap_don_kat_button.setVisible(False)
         self.swap_don_kat_button.setToolTip(tr("MainWindow", "Swap transformation, parameters, and position between Don and Kat"))
@@ -10182,14 +10241,28 @@ class MainWindow(QMainWindow):
         self.apply_button.setFocusPolicy(Qt.NoFocus)
         self.apply_button.setEnabled(False)
         right_layout.addWidget(self.apply_button)
-        self.apply_original_button=QPushButton(tr("MainWindow", "Apply All Changes to Original File"))
-        self.apply_original_button.clicked.connect(self.apply_to_original_file)
-        self.apply_original_button.setFocusPolicy(Qt.NoFocus); self.apply_original_button.setEnabled(False)
-        right_layout.addWidget(self.apply_original_button)
+        # "Apply All Changes to Original File" is gone: a transform is one undo
+        # step, which marks the difficulty changed, and the header's Save writes
+        # it to this file with the same backup -- the button was Save twice.
+        save_hint = QLabel(tr("MainWindow", "Transforming is one undo step. Save (Ctrl+S) writes it to this difficulty's file, with a backup."))
+        save_hint.setWordWrap(True)
+        save_hint.setStyleSheet("color: #7d8794; font-size: 11px;")
+        right_layout.addWidget(save_hint)
 
-        workspace_splitter.addWidget(right)
-        workspace_splitter.setSizes([900, 460])
-        layout.addWidget(workspace_splitter, 1)
+        transform_scroll = QScrollArea()
+        transform_scroll.setWidgetResizable(True)
+        transform_scroll.setFrameShape(QFrame.NoFrame)
+        transform_scroll.setWidget(right)
+        self.fancy_transform_dock = QDockWidget(tr("MainWindow", "Transform"), docks)
+        self.fancy_transform_dock.setObjectName("fancy_transform_dock")
+        self.fancy_transform_dock.setWidget(transform_scroll)
+        self.fancy_transform_dock.setMinimumWidth(200)
+        docks.addDockWidget(Qt.RightDockWidgetArea, self.fancy_transform_dock)
+
+        timeline_box = QWidget()
+        layout = QVBoxLayout(timeline_box)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(6)
 
         timeline_controls = QHBoxLayout()
         timeline_controls.addWidget(QLabel(tr("MainWindow", "Beat snap")))
@@ -10244,11 +10317,11 @@ class MainWindow(QMainWindow):
         self.timeline.timing_bar = self.fancy_timing_bar
 
         self.timeline_play_button=QPushButton("▶");self.timeline_play_button.clicked.connect(self.toggle_playback);timeline_row.addWidget(self.timeline_play_button)
-        timeline_row.addWidget(QLabel(tr("MainWindow", "Playback Rate")))
         self.playback_speed_buttons=[]
         for label,rate in (("25%",.25),("50%",.5),("75%",.75),("100%",1.0)):
             button=QPushButton(label);button.setCheckable(True);button.setProperty("playbackRate",rate)
-            button.clicked.connect(lambda checked=False,r=rate:self._choose_speed(r));self.playback_speed_buttons.append(button);timeline_row.addWidget(button)
+            button.clicked.connect(lambda checked=False,r=rate:self._choose_speed(r));self.playback_speed_buttons.append(button)
+        timeline_row.addWidget(segmented(self.playback_speed_buttons))
         layout.addLayout(timeline_row)
 
         self.fancy_density = DensityOverview()
@@ -10256,7 +10329,54 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.fancy_density)
         self._density_views.append(self.fancy_density)
 
+        # "&&": a single & in a dock title is taken as a mnemonic and vanishes.
+        self.fancy_timeline_dock = QDockWidget(tr("MainWindow", "Timeline & playback").replace("&", "&&"), docks)
+        self.fancy_timeline_dock.setObjectName("fancy_timeline_dock")
+        self.fancy_timeline_dock.setWidget(timeline_box)
+        self.fancy_timeline_dock.setMinimumHeight(120)
+        docks.addDockWidget(Qt.BottomDockWidgetArea, self.fancy_timeline_dock)
+
+        self._fancy_default_dock_state = docks.saveState()
+        saved = self.settings.value("fancy/dock_state")
+        if isinstance(saved, (QByteArray, bytes)) and saved:
+            docks.restoreState(QByteArray(saved))
+        else:
+            # Sizes only mean anything once the page is laid out, so the first
+            # open gets them on the next pass of the event loop.
+            QTimer.singleShot(0, self._size_fancy_docks)
+        layout_menu = QMenu(self.fancy_layout_button)
+        layout_menu.aboutToShow.connect(lambda: self._fill_fancy_layout_menu(layout_menu))
+        self.fancy_layout_button.setMenu(layout_menu)
+
         return page
+
+    def _fill_fancy_layout_menu(self, menu: QMenu) -> None:
+        """Each dock's own show/hide toggle -- how a closed one comes back --
+        and a reset to the arrangement the page opens with."""
+        menu.clear()
+        for dock in (self.fancy_transform_dock, self.fancy_timeline_dock):
+            menu.addAction(dock.toggleViewAction())
+        menu.addSeparator()
+        menu.addAction(tr("MainWindow", "Reset layout"), self._reset_fancy_layout)
+
+    def _reset_fancy_layout(self) -> None:
+        for dock in (self.fancy_transform_dock, self.fancy_timeline_dock):
+            dock.setFloating(False)
+            dock.show()
+        self.fancy_docks.restoreState(self._fancy_default_dock_state)
+        self._size_fancy_docks()
+
+    def _size_fancy_docks(self) -> None:
+        """The opening sizes: the Transform panel at the width its widest label
+        needs (plus a scrollbar), the timeline at what its four rows need."""
+        panel = self.transform_controls_panel.minimumWidth() + 24
+        self.fancy_docks.resizeDocks([self.fancy_transform_dock], [panel], Qt.Horizontal)
+        self.fancy_docks.resizeDocks([self.fancy_timeline_dock], [280], Qt.Vertical)
+
+    def _sync_mode_buttons(self, _index: int = 0) -> None:
+        current = self.mode_combo.currentData()
+        for mode_id, button in self.mode_buttons.items():
+            button.setChecked(mode_id == current)
 
     def _switch_page(self, index: int) -> None:
         current = self.page_stack.currentIndex()
@@ -10440,6 +10560,7 @@ class MainWindow(QMainWindow):
             # ScrollBarWheelTests.setUp, the 33rd window of the module.
             self.gameplay_render_timer.stop()
             self.info_timer.stop()
+            self.settings.set_value("fancy/dock_state", self.fancy_docks.saveState())
             self._release_application_hooks()
             self._release_audio_file()
             event.accept()
@@ -15704,7 +15825,7 @@ class MainWindow(QMainWindow):
         self.canvas.set_background(str(state.background_path) if state.background_path else None)
 
         for button in (
-            self.play_button, self.apply_button, self.reset_button, self.export_button, self.apply_original_button,
+            self.play_button, self.apply_button, self.reset_button, self.export_button,
             self.undo_button, self.redo_button, self.save_all_button, self.export_new_difficulty_button,
         ):
             button.setEnabled(True)
@@ -15811,6 +15932,13 @@ class MainWindow(QMainWindow):
         if new_selection != self.selected:
             self.preview_offsets = {"all": [0.0, 0.0], "don": [0.0, 0.0], "kat": [0.0, 0.0]}
         self.selected=new_selection; self.preview_timer.stop(); self.preview_positions=dict(self.applied_positions); self.refresh_canvas()
+        self._update_apply_label()
+    def _update_apply_label(self) -> None:
+        """Says what the click will do: how many notes it transforms."""
+        count = len(self.selected)
+        self.apply_button.setText(
+            tr("MainWindow", "Transform {count} notes").format(count=count) if count
+            else tr("MainWindow", "Transform Selected Notes"))
     def _selection_finalized(self, selected) -> None:
         self.selected=set(selected)
         if any(self._spec(i, group)[0] for i,group in enumerate(("all",) if not self._is_split_mode() else ("don","kat"))): self.schedule_preview()
@@ -16652,16 +16780,6 @@ class MainWindow(QMainWindow):
             text=f"{format_time(display)}   {percent:.1f}%"
             self.editor_timeline_strip.setText(text)
             self.gimmick_timeline_strip.setText(text)
-
-    def apply_to_original_file(self)->None:
-        if self.document is None or self.source_path is None:return
-        answer=QMessageBox.question(self,tr("MainWindow", "Overwrite original beatmap?"),tr("MainWindow", "This writes every committed transformation to the original .osu file. Continue?"),QMessageBox.Yes|QMessageBox.No,QMessageBox.No)
-        if answer!=QMessageBox.Yes:return
-        try:
-            for note in self.document.hit_objects:note.x,note.y=self.applied_positions.get(note.original_index,(note.x,note.y))
-            write_osu(self.document,self.source_path,self.document.version,allow_overwrite_source=True,create_backup=True,force_ar=self.approach_rate_control.value(),force_cs=self.circle_size_control.value())
-        except Exception as error:QMessageBox.critical(self,tr("MainWindow", "Write failed"),str(error));return
-        QMessageBox.information(self,tr("MainWindow", "Original updated"),tr("MainWindow", "Applied all committed changes to:")+"\n"+str(self.source_path))
 
     def save_all_states(self) -> None:
         """Write every changed difficulty's original file at once (global header's Save)."""

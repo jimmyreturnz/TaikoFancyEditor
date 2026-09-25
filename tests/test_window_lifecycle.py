@@ -143,6 +143,58 @@ class ApplicationHookReleaseTests(unittest.TestCase):
         )
 
 
+class OrphanedLayoutItemTests(unittest.TestCase):
+    """Building a window must not leave a layout item PySide still tracks after
+    Qt has let go of it.
+
+    PySide keeps a wrapper for every item of a layout that was filled and then
+    attached (`addLayout`). Adding a widget that is already in a layout makes
+    Qt free its old item without telling PySide, so that wrapper then claims
+    freed memory -- and the next Qt object allocated there reached the window's
+    eventFilter as a QWidgetItem, an access violation inside `show()` about one
+    test_gimmick_editor run in six. The Fancy Arranger's sub-toolbar added
+    Reset and Export twice. `replaceWidget`'s returned item is the one allowed
+    orphan: it is detached but never freed, so nothing can be allocated over it.
+    """
+
+    @staticmethod
+    def _orphans():
+        import shiboken6
+        from PySide6.QtWidgets import QLayout, QLayoutItem
+
+        wrappers = shiboken6.getAllValidWrappers()
+        layouts = [w for w in wrappers if isinstance(w, QLayout)]
+        # indexOf compares pointers, so it can ask about a freed item safely.
+        return {
+            shiboken6.getCppPointer(w)[0] for w in wrappers
+            if isinstance(w, QLayoutItem) and not isinstance(w, QLayout)
+            and not any(layout.indexOf(w) >= 0 for layout in layouts)
+        }
+
+    def test_building_a_window_orphans_no_layout_item(self):
+        import shiboken6
+        from unittest import mock
+        from PySide6.QtWidgets import QLayout
+
+        detached = set()
+        real_replace = QLayout.replaceWidget
+
+        def replace(layout, *args, **kwargs):
+            item = real_replace(layout, *args, **kwargs)
+            if item is not None:
+                detached.add(shiboken6.getCppPointer(item)[0])
+            return item
+
+        before = self._orphans()
+        with mock.patch.object(QLayout, "replaceWidget", replace):
+            window = gui.MainWindow()
+        try:
+            new = self._orphans() - before - detached
+            self.assertEqual(new, set(), f"{len(new)} layout items orphaned while building the window")
+        finally:
+            window.close()
+
+
 class AudioFileReleaseTests(ApplicationHookReleaseTests):
     """The song file must not stay locked by a closed window.
 
