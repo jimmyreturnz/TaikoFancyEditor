@@ -18,15 +18,19 @@ Taiko Fancy Arrangerは、osu!taikoのノーツを手作業で1つずつ置く�
 
 ## スクリーンショット
 
-すべて Hyper Bass (RENKA chan Drop) [Drop the GIMMICK] で撮影しています。
+譜面の画像は Ph0eNiiXZ さんの Tanchiky vs. siromaru - Crystal Gravity、ギミックエディターは Hyper Bass (RENKA chan Drop) [Drop the GIMMICK] で撮影しています。
 
 **曲選択**：osu!.dbからの★難易度、難易度ごとの背景とプレビュー。
 
 ![曲選択](docs/screenshots/song-select.png)
 
-**エディター**：チャート、SV、ゲームプレイプレビューを1つのタイムラインに並べて表示。
+**エディター**：KantanからDimensional Distortionまで、全難易度を1つのタイムラインで同時に表示。
 
 ![エディター](docs/screenshots/editor.png)
+
+**ゲームプレイプレビュー**：1つの難易度のチャートとSVに、osu!と同じ表示のプレビュー。
+
+![ゲームプレイプレビュー](docs/screenshots/gameplay-preview.png)
 
 **ギミックエディター**：フェイクスライダー、小節線、各レイヤーのSVなど、ギミックの種類ごとに1レイヤー。
 

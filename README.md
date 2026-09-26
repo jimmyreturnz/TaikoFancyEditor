@@ -29,15 +29,19 @@ The main inspirations include Alchyr's ranked maps *13 Stairs* and *Helios*, whi
 
 ## Screenshots
 
-All taken on Hyper Bass (RENKA chan Drop) [Drop the GIMMICK].
+Charting shots on Ph0eNiiXZ's Tanchiky vs. siromaru - Crystal Gravity, the gimmick editor on Hyper Bass (RENKA chan Drop) [Drop the GIMMICK].
 
 **Song select**: star ratings from your osu!.db, each difficulty's own background and preview.
 
 ![Song select](docs/screenshots/song-select.png)
 
-**Editor**: chart, SV and the gameplay preview, stacked on one timeline.
+**Editor**: every difficulty of the song open at once, Kantan to Dimensional Distortion, on one timeline.
 
 ![Editor](docs/screenshots/editor.png)
+
+**Gameplay preview**: one difficulty's chart and SV, with the preview drawn the way osu! shows it.
+
+![Gameplay preview](docs/screenshots/gameplay-preview.png)
 
 **Gimmick editor**: one layer per kind of gimmick, the fake sliders, barlines and each layer's SV.
 

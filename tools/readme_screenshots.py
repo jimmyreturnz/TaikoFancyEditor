@@ -1,14 +1,19 @@
 """Take the README's screenshots from the running app.
 
-    python tools/readme_screenshots.py <map.osu> [out_dir] [--at MS]
+    python tools/readme_screenshots.py <chart.osu> <gimmick.osu> [out_dir]
+        [--at MS] [--gimmick-at MS]
 
 Real platform (the offscreen one has no fonts), at 1920x1080. Writes nothing
 of the user's: settings come from the test suite's private copy (importing
 `tests` swaps it in), and the song index and gimmick index are read from
 temporary copies. Nothing is saved to the map.
 
-The README uses Hyper Bass (RENKA chan Drop) [Drop the GIMMICK], which has
-every gimmick the editor writes, at 1:55.8 (a kiai with shiny notes).
+The README uses Ph0eNiiXZ's Tanchiky vs. siromaru - Crystal Gravity for the
+charting shots -- every difficulty stacked on the Editor page, then
+[Dimensional Distortion] alone with its SV and the gameplay preview, at 0:47
+(kiai) -- and Hyper Bass (RENKA chan Drop) [Drop the GIMMICK], which has every
+gimmick the editor writes, for the Gimmick page at 1:55.8. The built-in skin
+throughout.
 """
 from __future__ import annotations
 
@@ -30,10 +35,17 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 import gui  # noqa: E402
 from settings import APPLICATION_NAME, ORGANIZATION_NAME  # noqa: E402
 
-args = [a for a in sys.argv[1:] if not a.startswith("--")]
+def option(name: str, default: float) -> float:
+    return float(sys.argv[sys.argv.index(name) + 1]) if name in sys.argv else default
+
+
+args = [a for i, a in enumerate(sys.argv[1:], 1)
+        if not a.startswith("--") and not sys.argv[i - 1].startswith("--")]
 MAP = Path(args[0]).resolve()
-OUT = Path(args[1]) if len(args) > 1 else ROOT / "docs" / "screenshots"
-AT_MS = float(sys.argv[sys.argv.index("--at") + 1]) if "--at" in sys.argv else 115800.0
+GIMMICK_MAP = Path(args[1]).resolve()
+OUT = Path(args[2]) if len(args) > 2 else ROOT / "docs" / "screenshots"
+AT_MS = option("--at", 47000.0)
+GIMMICK_AT_MS = option("--gimmick-at", 115800.0)
 OUT.mkdir(parents=True, exist_ok=True)
 
 app = QApplication.instance() or QApplication([])
@@ -121,31 +133,37 @@ settle(40, wait_ms=1500)
 library.stop_preview()
 shoot(window, "song-select")
 
-# -- editor, with the gameplay preview under the chart and SV ---------------------
+def only_views(*views: tuple[str, Path]) -> None:
+    """Close every Editor view, then open `views` in order."""
+    for frame in list(window._editor_views):
+        window._close_editor_view(frame)
+    for view_type, path in views:
+        window._add_editor_view(view_type, path)
+
+
+# -- editor: every difficulty of the song, easiest first ---------------------------
 window._load_map_path(MAP)
 window._show_page(gui.PAGE_EDITOR)
-window._add_editor_view("gameplay", MAP)
+difficulties = sorted(
+    MAP.parent.glob("*.osu"),
+    key=lambda path: len(window._ensure_state(path.resolve()).document.hit_objects),
+)
+only_views(*[("chart", path.resolve()) for path in difficulties])
 window.seek_audio(AT_MS)
 shoot(window, "editor")
 
-# -- gimmick editor ----------------------------------------------------------------
-original_entry = gui.GimmickEntryDialog
-gui.GimmickEntryDialog = _UseCurrent
-try:
-    if window._enter_gimmick_page():
-        window._show_page(gui.PAGE_GIMMICK)
-        window.seek_audio(AT_MS)
-        shoot(window, "gimmick-editor")
-finally:
-    gui.GimmickEntryDialog = original_entry
+# -- one difficulty: its chart, its SV and the gameplay preview ----------------------
+only_views(("chart", MAP), ("sv", MAP), ("gameplay", MAP))
+window.seek_audio(AT_MS)
+shoot(window, "gameplay-preview")
 
 # -- fancy arranger: a run of notes as a star --------------------------------------
 window._show_page(gui.PAGE_FANCY)
 state = window.state
-window.seek_audio(AT_MS - 20000)
+window.seek_audio(AT_MS - 2000)
 chosen = {
     note.original_index for note in state.document.hit_objects
-    if note.is_circle and AT_MS - 21500 <= note.time <= AT_MS - 18000
+    if note.is_circle and AT_MS - 4000 <= note.time <= AT_MS
 }
 window._selection_changed(chosen)
 page = window.control_tabs.widget(0)
@@ -153,11 +171,23 @@ page.combo.setCurrentIndex(page.combo.findData("star"))
 settle(30, wait_ms=1200)
 shoot(window, "fancy-arranger")
 
+# -- gimmick editor ----------------------------------------------------------------
+window._load_map_path(GIMMICK_MAP)
+original_entry = gui.GimmickEntryDialog
+gui.GimmickEntryDialog = _UseCurrent
+try:
+    if window._enter_gimmick_page():
+        window._show_page(gui.PAGE_GIMMICK)
+        window.seek_audio(GIMMICK_AT_MS)
+        shoot(window, "gimmick-editor")
+finally:
+    gui.GimmickEntryDialog = original_entry
+
 # -- dialogs -----------------------------------------------------------------------
 config = window._gimmick_config("barline")
 dialogs = {
     "config-barline": lambda: gui.GimmickConfigDialog(config, "barline", window._gimmick_config("fake_slider"), window),
-    "convert-notes": lambda: gui.ConvertNotesDialog(config, "barline", window, AT_MS - 4000, AT_MS),
+    "convert-notes": lambda: gui.ConvertNotesDialog(config, "barline", window, GIMMICK_AT_MS - 4000, GIMMICK_AT_MS),
     "generate-sv": lambda: gui.SVFunctionDialog(AT_MS - 4000, AT_MS, window, initial_rate=1.0, final_rate=2.5),
     "settings": lambda: gui.SettingsDialog(window.settings, window.shortcuts, window),
 }
