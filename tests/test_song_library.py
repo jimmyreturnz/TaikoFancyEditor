@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -210,6 +211,27 @@ class ScanTests(unittest.TestCase):
         make_song(self.root, "song two")
         songs = group_by_song(item for item in scan(self.root, {}) if item is not None)
         self.assertEqual(len(songs), 2)
+
+
+class HeardTempoTests(unittest.TestCase):
+    def _chart(self, *red_and_green: str) -> Path:
+        folder = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, folder, True)
+        path = folder / "t.osu"
+        lines = ["osu file format v14", "", "[TimingPoints]", *red_and_green, "", "[HitObjects]"]
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return path
+
+    def test_red_lines_in_order_green_lines_ignored(self):
+        path = self._chart("4000,400,4,1,0,70,1,0", "0,500,4,1,0,60,1,0", "2000,-50,4,1,0,60,0,0")
+        self.assertEqual(song_library.heard_tempo(path), [(0.0, 500.0), (4000.0, 400.0)])
+
+    def test_a_red_line_that_never_finishes_a_beat_is_not_a_tempo(self):
+        # Anti-barline wall ticks: 2250ms beats, 10ms apart.
+        path = self._chart("0,750,4,1,0,60,1,0", "1000,2250,4,1,0,60,1,0",
+                           "1010,2250,4,1,0,60,1,0", "1020,750,4,1,0,60,1,0")
+        # The wall ends where the chart's own tempo comes back, 10ms later.
+        self.assertEqual(song_library.heard_tempo(path), [(0.0, 750.0), (1020.0, 750.0)])
 
 
 class LibraryPageTests(unittest.TestCase):

@@ -68,7 +68,7 @@ from osu_io.timing import (
 )
 from osu_io.writer import write_osu
 from song_library import (
-    group_by_song, load_cache, matches_search, read_header, save_cache, scan,
+    group_by_song, heard_tempo, load_cache, matches_search, read_header, save_cache, scan,
     songs_from_cache,
 )
 from time_axis import (
@@ -9039,8 +9039,10 @@ class SongBanner(QWidget):
     """The selected song's own background, heading the detail pane the way
     osu!'s song select does, with the title over a wash at its foot.
 
-    The line along the bottom flashes on each beat of the selected chart and
-    settles at the preview's kiai level (0.15) in between. A new song
+    The line along the bottom flashes on each beat of the selected
+    difficulty and settles at the preview's kiai level (0.15) in between. The
+    beats are its own red lines, read against `clock` (song milliseconds), so
+    a BPM change or a second audio file in the folder keeps time. A new song
     crossfades its art in. Both are off under reduced motion.
     """
 
@@ -9063,39 +9065,66 @@ class SongBanner(QWidget):
         self.fade.setEndValue(1.0)
         self.fade.setDuration(250)
         self.fade.valueChanged.connect(self._set_fade)
-        self.beat = QVariantAnimation(self)
-        self.beat.setStartValue(0.0)
-        self.beat.setEndValue(1.0)
-        self.beat.setLoopCount(-1)
-        self.beat.valueChanged.connect(self._set_beat)
+        self._tempo: list[tuple[float, float]] = []
+        self._tempo_times: list[float] = []
+        self._clock = None
+        self.beat = QTimer(self)
+        self.beat.setInterval(16)
+        self.beat.timeout.connect(self._tick_beat)
 
     def _set_fade(self, value) -> None:
         self._fade = float(value)
         self.update()
 
-    def _set_beat(self, value) -> None:
-        self._beat_phase = float(value)
+    def beat_phase_at(self, time_ms: float) -> float:
+        """0 on a beat of the red line in force at `time_ms`, rising to 1."""
+        if not self._tempo:
+            return 1.0
+        index = max(0, bisect_right(self._tempo_times, time_ms) - 1)
+        start, beat = self._tempo[index]
+        # Past 300 BPM a flash per beat is a flicker, not a pulse.
+        while beat < 200:
+            beat *= 2
+        return ((time_ms - start) % beat) / beat
+
+    def _tick_beat(self) -> None:
+        if self._clock is None:
+            return
+        self._beat_phase = self.beat_phase_at(self._clock())
         self.update()
 
-    def set_song(self, title: str, subtitle: str, art: QPixmap | None, bpm: float) -> None:
+    def set_tempo(self, tempo: list[tuple[float, float]], clock) -> None:
+        """Keep time with `tempo`'s red lines, read against `clock()`."""
+        self._tempo = tempo
+        self._tempo_times = [time for time, _beat in tempo]
+        self._clock = clock
+        self._beat_phase = 1.0
+        self._sync_beat()
+
+    def _sync_beat(self) -> None:
+        running = bool(self._tempo) and self.isVisible() and not reduced_motion()
+        if running and not self.beat.isActive():
+            self.beat.start()
+        elif not running:
+            self.beat.stop()
+            self._beat_phase = 1.0
+            self.update()
+
+    def set_song(self, title: str, subtitle: str, art: QPixmap | None) -> None:
         self.title, self.subtitle = title, subtitle
         self._previous, self._art = self._art, art
         self._scaled = {}
         self.fade.stop()
-        self.beat.stop()
         if reduced_motion():
-            self._fade, self._beat_phase = 1.0, 1.0
+            self._fade = 1.0
         else:
             self._fade = 0.0
             self.fade.start()
-            if bpm > 0:
-                # Past 300 BPM a flash per beat is a flicker, not a pulse.
-                beat_ms = 60000.0 / bpm
-                while beat_ms < 200:
-                    beat_ms *= 2
-                self.beat.setDuration(int(beat_ms))
-                self.beat.start()
         self.update()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._sync_beat()
 
     def hideEvent(self, event) -> None:
         self.beat.stop()  # nothing to keep time for on a page nobody is looking at
@@ -9394,6 +9423,12 @@ class LibraryPageController:
         # Rows elide rather than scroll sideways; the delegate paints to width.
         self.song_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.song_scroller = SmoothScroller(self.song_list)
+        # The banner's beat: red lines per difficulty file, read once each.
+        self._tempo_cache: dict[Path, list[tuple[float, float]]] = {}
+        self._beat_audio: Path | None = None
+        self._beat_anchor_ms = 0.0
+        self._beat_elapsed = QElapsedTimer()
+        self._beat_elapsed.start()
         self.song_list.currentRowChanged.connect(self.song_selected)
         self.song_list.itemActivated.connect(lambda _item: self.difficulty_list.setFocus())
         split.addWidget(self.song_list)
@@ -9880,13 +9915,13 @@ class LibraryPageController:
             self.difficulty_list.addItem(entry_item)
         first = difficulties[0]
         artist = first.display_artist(original)
-        # The song's words and beat; the art is the selected difficulty's
-        # (see _show_banner_art), set once difficulty_changed below runs.
+        # The song's words; the art and the beat are the selected
+        # difficulty's (see _show_banner_art, _keep_time_with), set once
+        # difficulty_changed below runs.
         self._banner_song = (
             first.display_title(original),
             " · ".join(part for part in (artist, tr("MainWindow", "mapped by {name}").format(name=first.creator)
                                          if first.creator else "") if part),
-            first.bpm_max if first.bpm_min == first.bpm_max else first.bpm_min,
         )
         self._banner_art_key = None
         self._shown_difficulties = {str(d.path): d for d in difficulties}
@@ -9919,8 +9954,53 @@ class LibraryPageController:
                 reader.setScaledSize(size.scaled(1280, 1280, Qt.KeepAspectRatio))
             image = reader.read()
             art = QPixmap.fromImage(image) if not image.isNull() else None
-        title, subtitle, bpm = self._banner_song
-        self.song_banner.set_song(title, subtitle, art, bpm)
+        title, subtitle = self._banner_song
+        self.song_banner.set_song(title, subtitle, art)
+
+    def _keep_time_with(self, difficulty) -> None:
+        """The banner's beat, from this difficulty's red lines and audio.
+
+        Its own, not the song's first difficulty's: one folder can hold a cut
+        and a full version, or songs at different tempos, each difficulty
+        naming its own AudioFilename and timing.
+        """
+        audio = difficulty.folder / difficulty.audio if difficulty.audio else None
+        tempo = self._tempo_cache.get(difficulty.path)
+        if tempo is None:
+            tempo = self._tempo_cache[difficulty.path] = heard_tempo(difficulty.path)
+        try:
+            start = float(difficulty.preview)
+        except ValueError:
+            start = -1.0
+        if audio == self._beat_audio and self.song_banner._clock is not None:
+            # Same audio: the clock already runs on it, only the lines change.
+            self.song_banner.set_tempo(tempo, self._beat_clock)
+            return
+        self._beat_audio = audio
+        # Until the preview is heard, count from where it will start.
+        self._beat_anchor_ms = start if start >= 0 else (tempo[0][0] if tempo else 0.0)
+        self._beat_elapsed.start()
+        self.song_banner.set_tempo(tempo, self._beat_clock)
+
+    def _beat_clock(self) -> float:
+        """Song milliseconds for the beat line: the preview's position while it
+        plays this audio, and a running count from the preview point before.
+
+        Wall time between re-anchors, because the player reports its position
+        in coarse steps (CLAUDE.md, the FFmpeg backend): read directly, the
+        flash would step with it. Re-anchored when the two drift apart by more
+        than a frame or two -- a seek, the loop back to the preview point.
+        """
+        now = self._beat_anchor_ms + self._beat_elapsed.elapsed()
+        player = self.preview_player
+        if (player is not None and self._preview_audio == self._beat_audio
+                and player.playbackState() == QMediaPlayer.PlayingState):
+            position = float(player.position())
+            if abs(position - now) > 40:
+                self._beat_anchor_ms = position
+                self._beat_elapsed.restart()
+                now = position
+        return now
 
     def difficulty_changed(self) -> None:
         """The preview follows the *difficulty*: one folder can hold several
@@ -9932,6 +10012,7 @@ class LibraryPageController:
         if difficulty is not None:
             self.schedule_preview(difficulty)
             self._show_banner_art(difficulty)
+            self._keep_time_with(difficulty)
 
     # -- song preview -----------------------------------------------------
 

@@ -258,6 +258,39 @@ class PageTests(unittest.TestCase):
             shown[self.window.difficulty_list.item(index).text()] = library._banner_art_key[1]
         self.assertEqual(shown, {"Oni": "bg.jpg", "Zzz": "other.jpg"})
 
+    def test_the_beat_line_keeps_each_difficultys_own_tempo(self):
+        """Same folder, different audio and timing: the beat is the selected
+        difficulty's red lines, not the first difficulty's BPM."""
+        folder = Path(self.window.song_list.item(0).data(Qt.UserRole))
+        first = next(folder.glob("*.osu"))
+        (folder / "other.mp3").write_bytes(b"")
+        (folder / "other.osu").write_bytes(first.read_bytes()
+                                            .replace(b"AudioFilename: audio.mp3", b"AudioFilename: other.mp3")
+                                            .replace(b"0,500,4,1,0,60,1,0", b"0,300,4,1,0,60,1,0")
+                                            .replace(b"6000,400,4,1,0,70,1,8", b"6000,250,4,1,0,70,1,8")
+                                            .replace(b"Version:Oni", b"Version:Zzz"))
+        self.window._start_scan()
+        while self.window._scan_iterator is not None:
+            self.window._scan_step()
+        row = next(i for i in range(self.window.song_list.count())
+                   if self.window.song_list.item(i).data(Qt.UserRole) == str(folder))
+        self.window._library.song_selected(row)
+        banner = self.window._library.song_banner
+        beats = {}
+        for index in range(self.window.difficulty_list.count()):
+            self.window.difficulty_list.setCurrentRow(index)
+            beats[self.window.difficulty_list.item(index).text()] = [beat for _t, beat in banner._tempo]
+        self.assertEqual(beats, {"Oni": [500.0, 400.0], "Zzz": [300.0, 250.0]})
+
+    def test_the_beat_is_phased_from_the_red_line_in_force(self):
+        banner = self.window._library.song_banner
+        banner.set_tempo([(0.0, 500.0), (1000.0, 400.0)], lambda: 0.0)
+        self.assertAlmostEqual(banner.beat_phase_at(250.0), 0.5)
+        self.assertAlmostEqual(banner.beat_phase_at(1200.0), 0.5)   # 200 into a 400ms beat
+        # Past 300 BPM the flash halves until it is a pulse, not a flicker.
+        banner.set_tempo([(0.0, 100.0)], lambda: 0.0)
+        self.assertAlmostEqual(banner.beat_phase_at(100.0), 0.5)
+
     def _write_db(self, db: Path, song: Path, md5: str) -> Path:
         db.write_bytes(_osu_db(osu_db.FLOAT_STARS_VERSION, [(song.parent.name, song.name, md5, 4.5)]))
         return db

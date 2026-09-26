@@ -195,6 +195,48 @@ def _read_timing_point(fields: dict, line: str) -> None:
     fields["bpm_max"] = max(fields["bpm_max"], bpm)
 
 
+def heard_tempo(path: Path) -> list[tuple[float, float]]:
+    """The red lines a listener hears as tempo: (time, beat length), in order.
+
+    For the song select's beat line, read from the one difficulty selected --
+    difficulties can carry different audio and different timing. A red line
+    that does not last one whole beat of its own before the next is left out:
+    that is a gimmick (a 60000 BPM line hiding a note, an anti-barline wall
+    tick), not a tempo, and pulsing to it would be a strobe. [] when the file
+    cannot be read or has no red line.
+    """
+    lines: list[tuple[float, float]] = []
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            section = ""
+            for line in handle:
+                stripped = line.strip()
+                if stripped.startswith("[") and stripped.endswith("]"):
+                    if section == "[TimingPoints]":
+                        break
+                    section = stripped
+                    continue
+                if section != "[TimingPoints]":
+                    continue
+                parts = stripped.split(",")
+                if len(parts) < 2:
+                    continue
+                try:
+                    time, beat_length = float(parts[0]), float(parts[1])
+                except ValueError:
+                    continue
+                uninherited = len(parts) < 7 or parts[6].strip() != "0"
+                if uninherited and beat_length > 0:
+                    lines.append((time, beat_length))
+    except OSError:
+        return []
+    lines.sort()
+    return [
+        (time, beat) for index, (time, beat) in enumerate(lines)
+        if index == len(lines) - 1 or lines[index + 1][0] - time >= beat
+    ]
+
+
 def _read_hit_objects(fields: dict, text: str) -> None:
     lines = [line for line in text.splitlines() if line.strip()]
     lines = lines[:next((i for i, line in enumerate(lines) if line.startswith("[")), len(lines))]
