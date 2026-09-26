@@ -10,6 +10,7 @@ from __future__ import annotations
 import dataclasses
 import os
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -1378,28 +1379,22 @@ class KiaiRangeTests(_Session, unittest.TestCase):
 
 
 class SpinButtonTests(unittest.TestCase):
-    def test_the_pink_pair_actually_carries_its_glyphs(self):
-        """A typed width against the window stylesheet's padding left no room
-        for the label, and Qt drew two blank pink squares."""
+    def test_spin_boxes_keep_their_own_arrows_and_the_art_exists(self):
+        """The step arrows live inside the box now (config_sheet's stylesheet),
+        so a spin box keeps Qt's own buttons -- and every image the rule names
+        has to be on disk, or Qt silently draws nothing there."""
+        import re
+        from config_sheet import control_stylesheet
         dialog = gui.TimingLineDialog(gui.TimingPoint.uninherited_at(0, 180.0))
-        dialog.show()
-        container = dialog.value_spin.property("pinkRow")
-        self.assertIsNotNone(container)
-        buttons = container.findChildren(gui.QPushButton)
-        self.assertEqual([button.text() for button in buttons], ["+", "-"])
-        for button in buttons:
-            self.assertGreaterEqual(
-                button.width(), button.fontMetrics().horizontalAdvance(button.text()),
-            )
-        dialog.deleteLater()
-
-    def test_the_buttons_still_step_the_value(self):
-        dialog = gui.TimingLineDialog(gui.TimingPoint.uninherited_at(0, 180.0))
+        self.assertNotEqual(dialog.time_spin.buttonSymbols(), gui.QAbstractSpinBox.NoButtons)
         before = dialog.time_spin.value()
-        container = dialog.time_spin.property("pinkRow")
-        container.findChildren(gui.QPushButton)[0].click()
+        dialog.time_spin.stepUp()
         self.assertEqual(dialog.time_spin.value(), before + 1)
         dialog.deleteLater()
+        urls = re.findall(r"url\(([^)]+)\)", control_stylesheet())
+        self.assertTrue(urls)
+        for url in urls:
+            self.assertTrue(Path(url).is_file(), url)
 
 
 class BpmLabelTests(_Session, unittest.TestCase):

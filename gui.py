@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
 
 import osu_db
 from smooth_scroll import SMOOTH_SCROLL_MS, SmoothScroller, reduced_motion, smooth
+from config_sheet import SEGMENT_STYLE, control_stylesheet, segmented
 from audio_engine import DEFAULT_HITSOUND_OFFSET_MS, WHEEL_SEEK_HOLD_MS, TrackPlayer
 from skin import UI_SOUNDS, TaikoSkin, skins_root
 from parameters import PARAMETERS
@@ -346,8 +347,8 @@ if not any(item.get("key")=="reverse" for item in PARAMETERS.get("text",[])):
 GUI_TRANSFORMATIONS=[name for name in ("text","drawn_path","equation") if name in PARAMETERS]+[name for name in available_transformations() if name in PARAMETERS and name not in {"text","drawn_path","equation"}]
 
 
-# The compact +/- pair. Three controls build one by hand (`ParameterControl`
-# twice, `DifficultyValueControl`, `pink_spin_buttons`) and they now agree on
+# The compact +/- pair. The Fancy Arranger's controls build one by hand
+# (`ParameterControl` twice, `DifficultyValueControl`) and they agree on
 # how it looks: the window stylesheet's 8px/16px is far too much padding for
 # a single glyph, and overriding only `padding` and `font-size` leaves the
 # inherited pink background, hover and disabled states alone -- a leaf
@@ -442,40 +443,6 @@ def step_button(text: str, on_click, parent: QWidget | None = None) -> QPushButt
     return button
 
 
-# Joined pills: a group of choices reads as one control, and only the pressed
-# ones are pink -- with solid pink pills in a row, the pressed one differed by a
-# shade. The bottom border is the non-colour cue for "pressed".
-SEGMENT_STYLE = """
-QFrame#segment { background: #252d39; border: 1px solid #3a4554; border-radius: 6px; }
-QFrame#segment QPushButton {
-    background: transparent; color: #aeb8c5; border: 0; border-radius: 4px;
-    border-bottom: 2px solid transparent; padding: 3px 9px; font-size: 12px; font-weight: 600;
-}
-QFrame#segment QPushButton:hover { background: #2f3947; color: #e8edf3; }
-QFrame#segment QPushButton:checked {
-    background: #ff66aa; color: #ffffff; font-weight: 700; border-bottom: 2px solid #ffffff;
-}
-"""
-
-
-def segmented(buttons) -> QFrame:
-    """`buttons` in one joined pill group (SEGMENT_STYLE)."""
-    frame = QFrame()
-    frame.setObjectName("segment")
-    frame.setStyleSheet(SEGMENT_STYLE)
-    # Its own height, centred in the row, rather than the row's full height
-    # with the pills floating in the middle of it.
-    frame.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
-    layout = QHBoxLayout(frame)
-    layout.setContentsMargins(2, 2, 2, 2)
-    layout.setSpacing(2)
-    for button in buttons:
-        button.setStyleSheet("")
-        button.setFocusPolicy(Qt.NoFocus)
-        layout.addWidget(button)
-    return frame
-
-
 def equalize_button_widths(buttons, heights: bool = False, widths: bool = True) -> None:
     """Give every button the width of the widest one.
 
@@ -538,77 +505,13 @@ def shift_is_held() -> bool:
     return bool(QApplication.queryKeyboardModifiers() & Qt.ShiftModifier)
 
 
-def pink_spin_buttons(root: QWidget) -> None:
-    """Give every spin box under `root` the pink +/- pair, in place of arrows.
-
-    Qt's native spin arrows are two grey triangles a few pixels tall: the
-    app-wide pink QPushButton rule does not reach them, they are the hardest
-    thing in any of these dialogs to hit, and next to the pink buttons around
-    them they read as disabled. Two controls built the pair by hand first
-    (`ParameterControl`, `DifficultyValueControl`); this used to claim they
-    had "already solved this the same way", which was the one thing they had
-    not done -- both typed a width (30px, 28px) under the window stylesheet's
-    32px of horizontal padding, so their glyphs had negative room and Qt
-    painted blank pink squares. All three now build the pair through
-    `step_button`, so the fix cannot go missing from one of them again.
-
-    Called once per dialog, after its layout is built. Spin boxes that already
-    carry their own pair say so by having no buttons, and are left alone.
-    """
-    for spin in root.findChildren(QAbstractSpinBox):
-        if spin.buttonSymbols() == QAbstractSpinBox.NoButtons:
-            continue
-        parent = spin.parentWidget()
-        layout = parent.layout() if parent is not None else None
-        if layout is None:
-            continue
-        spin.setButtonSymbols(QAbstractSpinBox.NoButtons)
-        # A row already hidden before the wrap has to stay hidden after it.
-        # The container is brand new and therefore visible, and the spin is
-        # forced visible below because it has to show *inside* the container
-        # -- so between them they used to un-hide any row a dialog had already
-        # set_row_visible(..., False) on. Only spin boxes were affected, which
-        # is why the Volume dialog hid its checkbox rows and kept showing the
-        # position offset.
-        was_hidden = spin.isHidden()
-        container = QWidget(parent)
-        row = QHBoxLayout(container)
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(3)
-        # replaceWidget takes the spin out of the layout without deleting it,
-        # so it can be handed straight to the container's own row.
-        layout.replaceWidget(spin, container)
-        row.addWidget(spin, 1)
-        spin.setVisible(True)
-        container.setVisible(not was_hidden)
-        # The spin is no longer the widget its form row is keyed on, so
-        # setRowVisible has to be told where it went -- see `set_row_visible`.
-        spin.setProperty("pinkRow", container)
-        # A plain hyphen, the same glyph ParameterControl and
-        # DifficultyValueControl already use: the typographic minus is not in
-        # every font this ships against, and a missing glyph here is exactly
-        # the blank button this pair exists to stop being.
-        for text, step in (("+", spin.stepUp), ("-", spin.stepDown)):
-            # Padding, not a typed width -- the same trap EditorViewFrame's
-            # chrome buttons fell into. `step_button` overrides the padding
-            # and then measures the glyph against what it actually costs.
-            row.addWidget(step_button(text, step, container))
-
-
 def set_row_visible(layout: QFormLayout, widget: QWidget, visible: bool) -> None:
-    """`QFormLayout.setRowVisible` that survives `pink_spin_buttons`.
-
-    A wrapped spin box is no longer the widget its form row holds -- its
-    container is -- and setRowVisible on a widget the layout cannot find is a
-    silent no-op, which is how "Every n snaps" ended up showing the millisecond
-    field as well.
-    """
-    layout.setRowVisible(widget.property("pinkRow") or widget, visible)
+    """`QFormLayout.setRowVisible`, kept as the one place rows are toggled."""
+    layout.setRowVisible(widget, visible)
 
 
 def is_row_visible(layout: QFormLayout, widget: QWidget) -> bool:
-    """The read side of `set_row_visible`, for the same reason."""
-    return layout.isRowVisible(widget.property("pinkRow") or widget)
+    return layout.isRowVisible(widget)
 
 
 # -- hitsounds -------------------------------------------------------------
@@ -1422,7 +1325,6 @@ class DrawingDialog(QDialog):
         dialog=ImageTraceDialog(self)
         # Applied from here rather than inside the dialog: gui imports it, so
         # it cannot import back.
-        pink_spin_buttons(dialog)
         if dialog.exec()!=QDialog.Accepted:
             return
         strokes=[stroke for stroke in dialog.accepted_strokes if len(stroke)>=2]
@@ -6922,7 +6824,6 @@ class GimmickConfigDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addRow(buttons)
-        pink_spin_buttons(self)
 
     def _update_caution(self) -> None:
         """Warn, don't refuse: the two values only actually clash where a
@@ -7065,7 +6966,6 @@ class ConvertNotesDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
-        pink_spin_buttons(self)
 
     # -- pages ---------------------------------------------------------------
 
@@ -7556,7 +7456,6 @@ class BarlineFunctionDialog(QDialog):
         # Before the first _update_mode, not after: wrapping a spin box hands it
         # a new home in the form layout and shows it, so a row hidden first
         # comes back visible.
-        pink_spin_buttons(self)
         self._update_mode()
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -7816,7 +7715,6 @@ class FakeSliderFunctionDialog(BarlineFunctionDialog):
         snaps = self.mode_combo.findData("snaps")
         if snaps >= 0:
             self.mode_combo.setCurrentIndex(snaps)
-        pink_spin_buttons(self)
         self._load_kind_multiplier()
         self._update_object_mode()
 
@@ -7919,7 +7817,6 @@ class MultiFakeSliderDialog(QDialog):
         buttons.accepted.connect(self._accept)
         buttons.rejected.connect(self.reject)
         layout.addRow(buttons)
-        pink_spin_buttons(self)
 
     def _accept(self) -> None:
         # Clamped up rather than refused: End below Start is "I want just the
@@ -7999,7 +7896,6 @@ class TimingLineDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addRow(buttons)
-        pink_spin_buttons(self)
 
     def effects(self, point: TimingPoint) -> int:
         """`point.effects` with only the two checkboxes' bits rewritten.
@@ -8579,10 +8475,6 @@ class SVFunctionDialog(QDialog):
 
         self._update_preview()
         self._update_placement_controls()
-        pink_spin_buttons(self)
-        # After pink_spin_buttons, not before: the BPM spin is no longer the
-        # widget its form row is keyed on once it has been wrapped, and
-        # set_row_visible only knows that from the property the wrap sets.
         self._update_bpm_filter_row()
         self._update_length_filter_row()
 
@@ -9506,10 +9398,6 @@ class LibraryPageController:
             QFrame#continueCard:hover {{ background: {ROW_HOVER}; border-color: #ff66aa55; }}
             QProgressBar {{ background: #252d39; border: 0; border-radius: 2px; }}
             QProgressBar::chunk {{ background: #f3a6bd; border-radius: 2px; }}
-            QScrollBar:vertical {{ background: transparent; width: 10px; margin: 2px; }}
-            QScrollBar::handle:vertical {{ background: #3a4554; border-radius: 3px; min-height: 32px; }}
-            QScrollBar::handle:vertical:hover {{ background: #ff66aa; }}
-            QScrollBar::add-line, QScrollBar::sub-line, QScrollBar::add-page, QScrollBar::sub-page {{ height: 0; background: none; }}
             """
         )
         self.refresh_continue_row()
@@ -11127,7 +11015,6 @@ class MainWindow(QMainWindow):
         dialog = SettingsDialog(self.settings, self.shortcuts, self)
         # Applied from here because settings_dialog cannot import gui -- gui
         # imports it. Same route ImageTraceDialog's spin boxes take.
-        pink_spin_buttons(dialog)
         dialog.exec()
         self._apply_audio_settings()
 
@@ -11312,12 +11199,13 @@ class MainWindow(QMainWindow):
                parent painted every plain QWidget in it as a lighter block. */
             QStatusBar { border-top: 1px solid #303947; color: #aeb8c5; }
             QStatusBar::item { border: 0; }
-            QComboBox, QSpinBox, QDoubleSpinBox {
+            QComboBox {
                 background: #252d39;
                 border: 1px solid #3a4554;
                 border-radius: 5px;
                 padding: 5px;
             }
+            """ + control_stylesheet() + """
             QTabWidget::pane { border: 1px solid #303947; }
             QTabBar::tab {
                 /* 8px/18px made the tab strip taller than the controls under
@@ -12157,10 +12045,8 @@ class MainWindow(QMainWindow):
         status_row.addWidget(self.hitsound_source_combo)
         status_row.addSpacing(12)
 
-        # Its own container so `pink_spin_buttons` has a layout to swap the
-        # spin out of -- run on the whole row it would wrap the combo's
-        # neighbours too. The label is here rather than in the tooltip because
-        # a bare number box says nothing about what it is a number of.
+        # The label is here rather than in the tooltip because a bare number
+        # box says nothing about what it is a number of.
         height_box = QWidget()
         height_row = QHBoxLayout(height_box)
         height_row.setContentsMargins(0, 0, 0, 0)
@@ -12168,7 +12054,6 @@ class MainWindow(QMainWindow):
         height_row.addWidget(QLabel(tr("MainWindow", "View size")))
         height_row.addWidget(self.editor_view_height_spin)
         status_row.addWidget(height_box)
-        pink_spin_buttons(height_box)
         # A stepper nobody reaches for often: quiet, like the rest of the bar.
         for button in height_box.findChildren(QPushButton):
             button.setProperty("role", "ghost")

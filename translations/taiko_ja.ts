@@ -141,6 +141,18 @@
     <context>
         <name>MainWindow</name>
         <message>
+            <source>Restore defaults</source>
+            <translation>初期値に戻す</translation>
+        </message>
+        <message>
+            <source>Drag sideways to change</source>
+            <translation>左右にドラッグして変更</translation>
+        </message>
+        <message>
+            <source>Default: {value}</source>
+            <translation>初期値: {value}</translation>
+        </message>
+        <message>
             <source>This song's audio could not be decoded.</source>
             <translation>この曲の音声をデコードできませんでした。</translation>
         </message>

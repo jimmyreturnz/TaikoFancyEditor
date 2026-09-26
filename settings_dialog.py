@@ -47,7 +47,7 @@ from settings import (
 
 
 class SettingsDialog(QDialog):
-    """Plain native Settings dialog for Phase 1 infrastructure."""
+    """The app-wide settings, in the window's own theme."""
 
     def __init__(self, settings: SettingsManager, shortcuts: ShortcutRegistry, parent=None) -> None:
         super().__init__(parent)
@@ -57,15 +57,6 @@ class SettingsDialog(QDialog):
         self.resize(760, 500)
         # Small enough to fit a short laptop screen once the pages scroll.
         self.setMinimumSize(560, 360)
-        self.setStyleSheet(
-            """
-            QDialog, QWidget { background: #ffffff; color: #000000; }
-            QPushButton { background: #f0f0f0; color: #000000; border: 1px solid #9a9a9a; border-radius: 3px; padding: 5px 10px; }
-            QPushButton:hover { background: #e6e6e6; }
-            QComboBox, QLineEdit, QKeySequenceEdit { background: #ffffff; color: #000000; border: 1px solid #9a9a9a; padding: 3px; }
-            QListWidget, QTableWidget { background: #ffffff; color: #000000; border: 1px solid #b8b8b8; }
-            """
-        )
         self._shortcut_editors: dict[str, QKeySequenceEdit] = {}
         self._update_check: object | None = None
         self._build_ui()
@@ -324,7 +315,7 @@ class SettingsDialog(QDialog):
             self.shortcuts_table.setCellWidget(row, 1, editor)
             self._shortcut_editors[definition.action_id] = editor
         self.validation_label = QLabel("")
-        self.validation_label.setStyleSheet("color: #b00020;")
+        self.validation_label.setStyleSheet("color: #ffb347;")
         self.validation_label.setWordWrap(True)
         layout.addWidget(self.shortcuts_table)
         layout.addWidget(self.validation_label)
