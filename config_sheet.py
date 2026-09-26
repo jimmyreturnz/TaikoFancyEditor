@@ -89,7 +89,7 @@ def control_stylesheet() -> str:
     return f"""
             QAbstractSpinBox {{
                 background: #252d39; border: 1px solid #3a4554; border-radius: 6px;
-                padding: 4px 26px 4px 8px; min-height: 20px;
+                padding: 4px 4px 4px 8px; min-height: 20px;
             }}
             QAbstractSpinBox:hover {{ border-color: #4a5668; }}
             QAbstractSpinBox:focus {{ border-color: #ff66aa; }}
@@ -367,6 +367,11 @@ class _Scrub(QObject):
             self.origin = None
             return True
         return False
+
+
+def scrub_label(label: QLabel, spin: QAbstractSpinBox) -> None:
+    """Let `label` be dragged sideways to change `spin` (kept alive by label)."""
+    _Scrub(label, spin)
 
 
 class _HelpWatch(QObject):

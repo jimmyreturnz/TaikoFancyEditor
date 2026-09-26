@@ -141,6 +141,34 @@
     <context>
         <name>MainWindow</name>
         <message>
+            <source>1 beat</source>
+            <translation>1 拍</translation>
+        </message>
+        <message>
+            <source>1 snap</source>
+            <translation>1 スナップ</translation>
+        </message>
+        <message>
+            <source>Background</source>
+            <translation>背景</translation>
+        </message>
+        <message>
+            <source>Parameters</source>
+            <translation>パラメーター</translation>
+        </message>
+        <message>
+            <source>Shape</source>
+            <translation>形</translation>
+        </message>
+        <message>
+            <source>Wheel</source>
+            <translation>ホイール</translation>
+        </message>
+        <message>
+            <source>zoom</source>
+            <translation>拡大縮小</translation>
+        </message>
+        <message>
             <source>A red line's BPM is also its scroll speed, so retiming a structure's own line is how it gets room to move. The named multiples are the ones this is used at.</source>
             <translation>赤線の BPM はスクロール速度でもあるため、構造自身の線の BPM を変えると動く余地が生まれます。名前の付いた倍率はよく使われるものです。</translation>
         </message>

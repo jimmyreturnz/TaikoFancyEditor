@@ -878,6 +878,12 @@ rounded; green-line click placement and its ghost did not. Both do now.
 11. ~~Larger items~~ -- **cleared by the owner 2026-09-26** (UI and assets
     rework, song library rework, updater rework, Thai localization).
 12. Fancy Arranger redesign is not finished (added by the owner 2026-09-26).
+    -- DONE 2026-09-26: shape tiles with line icons, parameters as name +
+    number over a full-width slider (no pink +/- pair), Don/Kat pills and
+    Swap beside the mode, AR/CS as compact boxes, one pink Export, the
+    wheel hints as key caps, and notes gliding to a new shape (260ms,
+    off under reduced motion and while a note is dragged). Not done: the
+    star-rating pill on the difficulty picker.
 13. The window still overextends the screen border. -- DONE 2026-09-26: the
     Fancy Arranger's top row needed 1948px against a 1904px viewport at
     1920 wide (`tools/measure_window_fit.py`; every other page fits). The

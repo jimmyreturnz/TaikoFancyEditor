@@ -170,7 +170,17 @@ class FancyArrangerPageTests(unittest.TestCase):
         self._temp.cleanup()
 
     def test_transform_controls_panel_is_wide_enough_for_its_button_text(self):
-        self.assertGreaterEqual(self.window.transform_controls_panel.minimumWidth(), 460)
+        """340px as the mockup draws it -- every button in it still has to
+        fit its own label at that width."""
+        panel = self.window.transform_controls_panel
+        self.window.page_stack.setCurrentWidget(self.window.fancy_arranger_page)
+        self.window.mode_buttons["split"].click()
+        panel.resize(panel.minimumWidth(), panel.height())
+        gui.QApplication.processEvents()
+        for button in panel.findChildren(gui.QPushButton):
+            if button.isVisibleTo(panel) and button.text():
+                with self.subTest(text=button.text()):
+                    self.assertGreaterEqual(button.width(), gui.button_text_width(button) - 1)
 
     def test_fancy_arranger_has_its_own_timing_bar_and_density(self):
         self.assertIsInstance(self.window.fancy_timing_bar, gui.TimingOverviewBar)
@@ -299,14 +309,14 @@ class FancyArrangerPageTests(unittest.TestCase):
                         button.width(), gui.button_text_width(button),
                     )
 
-    def test_the_fancy_arranger_step_buttons_show_their_glyphs(self):
-        """`ParameterControl` and `DifficultyValueControl` build the +/- pair
-        themselves, and both used to type a width smaller than the padding."""
+    def test_the_fancy_arranger_numbers_carry_their_own_arrows(self):
+        """The pink +/- pair beside each number is gone (Fancy Arranger
+        mockup): the box steps itself, like every other number in the app."""
         from PySide6.QtWidgets import QPushButton
 
         controls = [
             gui.ParameterControl(
-                {"key": "x", "label": "X", "type": "int", "min": 0, "max": 10, "default": 1}
+                {"key": "x", "label": "X", "type": "int", "min": 0, "max": 10, "default": 1}, "X"
             ),
             gui.ParameterControl(
                 {"key": "seed", "label": "Seed", "type": "int", "min": 0, "max": 99, "default": 0}
@@ -316,16 +326,16 @@ class FancyArrangerPageTests(unittest.TestCase):
         for control in controls:
             control.setParent(self.window)
             control.show()
-        steps = [
-            button
-            for control in controls
-            for button in control.findChildren(QPushButton)
-            if button.text() in {"+", "-"}
-        ]
-        self.assertEqual(len(steps), 6)
-        for button in steps:
-            with self.subTest(text=button.text()):
-                self.assertGreaterEqual(button.width(), gui.button_text_width(button))
+            self.assertFalse(
+                [b for b in control.findChildren(QPushButton) if b.text() in {"+", "-"}]
+            )
+        spins = [controls[0].spin, controls[1].spin, controls[2].value_box]
+        for spin in spins:
+            self.assertNotEqual(spin.buttonSymbols(), gui.QAbstractSpinBox.NoButtons)
+            # The value fits: the box's text area is not eaten by its arrows.
+            self.assertGreaterEqual(
+                spin.lineEdit().width(), spin.fontMetrics().horizontalAdvance(spin.text()),
+            )
         for control in controls:
             control.deleteLater()
 

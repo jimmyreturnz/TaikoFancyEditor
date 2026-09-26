@@ -127,6 +127,23 @@ class DockTests(_Window):
         self.assertEqual(len(texts), 3)
 
 
+class GlideTests(unittest.TestCase):
+    def test_a_note_is_drawn_between_its_old_place_and_its_target(self):
+        """The target is what callers and hit tests read; the drawing eases
+        to it. Tested on the arithmetic because the offscreen platform runs
+        with animation off."""
+        from types import SimpleNamespace
+        canvas = gui.TransformCanvas()
+        note = SimpleNamespace(original_index=7, x=0, y=0)
+        canvas.positions = {7: (100.0, 40.0)}
+        canvas._glide_from = {7: (0.0, 0.0)}
+        canvas._glide_t = 0.25
+        self.assertEqual(canvas._drawn_position(note), (25.0, 10.0))
+        canvas._glide_t = 1.0
+        self.assertEqual(canvas._drawn_position(note), (100.0, 40.0))
+        canvas.deleteLater()
+
+
 class FancyButtonTests(_Window):
     def test_the_duplicate_save_button_is_gone(self):
         self.assertFalse(hasattr(self.window, "apply_original_button"))

@@ -40,7 +40,6 @@ Full notes: [`docs/releases/v3.3.3.md`](docs/releases/v3.3.3.md).
 - improving the smoothness when scrolling too fast, been actively trying to find solutions and improve it for a while now. It is much better than before, and there is still a room for an improvement.
 - Will also try to come up with a way that you can make barline kat or fake slider kat to have different approaching behavior (like adding an increasing SV speed to barline kat to make them look harder to read). 
 - Further optimization when applicable.
-- Finishing the Fancy Arranger redesign.
 - Reworking the settings of every transformation.
 
 Full development log detail lives in [`docs/DEVELOPMENT_PLAN.md`](docs/DEVELOPMENT_PLAN.md).

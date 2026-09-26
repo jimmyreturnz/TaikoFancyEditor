@@ -36,7 +36,8 @@ from PySide6.QtWidgets import (
 import osu_db
 from smooth_scroll import SMOOTH_SCROLL_MS, SmoothScroller, reduced_motion, smooth
 from config_sheet import (
-    SEGMENT_STYLE, WARN_COLOR, Diagram, SheetDialog, TrimmedDoubleSpinBox, bind_segments, set_field_visible, bind_tiles, control_stylesheet,
+    SEGMENT_STYLE, WARN_COLOR, Diagram, SheetDialog, TrimmedDoubleSpinBox, bind_segments, scrub_label,
+    set_field_visible, bind_tiles, control_stylesheet,
     own_or_custom, segmented, set_warning,
 )
 from audio_engine import DEFAULT_HITSOUND_OFFSET_MS, WHEEL_SEEK_HOLD_MS, TrackPlayer
@@ -1146,77 +1147,111 @@ def set_document_background(document, filename: str) -> None:
                 note.source_line_index += 1
 
 
+PARAM_STYLE = """
+QLabel#paramLabel { color: #aeb8c5; font-size: 12px; font-weight: 600; background: transparent; }
+"""
+
+
 class ParameterControl(QWidget):
+    """One transformation parameter, as the approved Fancy Arranger mockup
+    draws it: its name and its number on one line, the slider under them.
+
+    With no `label` it is the compact form (slider, then number) for the
+    sub-toolbar and anywhere else a caption already sits beside it. The
+    number box carries its own step arrows (the window stylesheet's); the
+    pink +/- pair beside it is gone, as it is from every other number.
+    """
+
     changed = Signal()
-    def __init__(self, definition: dict[str, Any]) -> None:
+
+    def __init__(self, definition: dict[str, Any], label: str | None = None) -> None:
         super().__init__(); self.definition = definition
-        layout = QHBoxLayout(self); layout.setContentsMargins(0,0,0,0); layout.setSpacing(8)
-        if definition["type"] == "font":
-            self.font_combo=QFontComboBox();self.font_combo.setCurrentFont(QFont(str(definition.get("default","Segoe UI"))))
-            self.font_combo.currentFontChanged.connect(lambda _font:self.changed.emit());layout.addWidget(self.font_combo,1)
-            self.choice=None;self.slider=None;self.spin=None;return
-        if definition["type"] == "text":
+        self.setStyleSheet(PARAM_STYLE)
+        self.choice = None; self.slider = None; self.spin = None
+        outer = QVBoxLayout(self); outer.setContentsMargins(0, 0, 0, 0); outer.setSpacing(4)
+        head = QHBoxLayout(); head.setContentsMargins(0, 0, 0, 0); head.setSpacing(8)
+        self.caption = None
+        if label is not None:
+            self.caption = QLabel(label); self.caption.setObjectName("paramLabel")
+            head.addWidget(self.caption)
+            head.addStretch(1)
+            outer.addLayout(head)
+        kind = definition["type"]
+        if kind == "font":
+            self.font_combo = QFontComboBox(); self.font_combo.setCurrentFont(QFont(str(definition.get("default", "Segoe UI"))))
+            self.font_combo.currentFontChanged.connect(lambda _font: self.changed.emit())
+            outer.addWidget(self.font_combo)
+            return
+        if kind == "text":
             self.text_input = QLineEdit(str(definition.get("default", "")))
             self.text_input.setPlaceholderText(tr("Parameters", "Enter text, for example 67, 日本, or ภาษาไทย"))
             self.text_input.textChanged.connect(self.changed)
-            layout.addWidget(self.text_input, 1)
-            self.choice = None; self.slider = None; self.spin = None
+            outer.addWidget(self.text_input)
             return
-        if definition["type"] == "choice":
-            self.choice_group=QButtonGroup(self); self.choice_group.setExclusive(True); self.choice_buttons={}
-            for label,value in definition["choices"]:
-                button=QPushButton(tr("Parameters", str(label))); button.setCheckable(True); button.setProperty("choice_value",value)
-                self.choice_group.addButton(button); self.choice_buttons[value]=button; layout.addWidget(button)
+        if kind == "choice":
+            self.choice_group = QButtonGroup(self); self.choice_group.setExclusive(True); self.choice_buttons = {}
+            buttons = []
+            for choice_label, value in definition["choices"]:
+                button = QPushButton(tr("Parameters", str(choice_label))); button.setCheckable(True)
+                button.setProperty("choice_value", value)
+                self.choice_group.addButton(button); self.choice_buttons[value] = button; buttons.append(button)
             self.choice_buttons[definition["default"]].setChecked(True)
             self.choice_group.buttonClicked.connect(self.changed)
-            self.choice=None; self.slider=None; self.spin=None
+            pills = segmented(buttons)
+            row = QHBoxLayout(); row.setContentsMargins(0, 0, 0, 0)
+            row.addWidget(pills); row.addStretch(1)
+            outer.addLayout(row)
             return
         if definition["key"] == "seed" or definition["key"].endswith("_seed"):
             self.scale = 1
-            self.slider = None
-            self.choice = None
             self.spin = QSpinBox()
             self.spin.setRange(int(definition["min"]), int(definition["max"]))
             self.spin.setValue(int(definition.get("default", 0)))
             self.spin.setMinimumWidth(110)
-            self.spin.setButtonSymbols(QAbstractSpinBox.NoButtons)
             random_button = QPushButton(tr("Parameters", "Random Seed"))
+            random_button.setProperty("role", "ghost")
+            random_button.setStyleSheet("QPushButton { border: 1px solid #3a4554; }")
             random_button.clicked.connect(self.randomize)
-            # A typed 30px here left the glyph negative room under the window
-            # stylesheet's padding, so the button covered its own "+".
-            increase_button = step_button("+", self.spin.stepUp)
-            decrease_button = step_button("-", self.spin.stepDown)
-            layout.addWidget(self.spin)
-            layout.addWidget(random_button, 1)
-            layout.addWidget(increase_button)
-            layout.addWidget(decrease_button)
+            row = QHBoxLayout(); row.setContentsMargins(0, 0, 0, 0); row.setSpacing(8)
+            row.addWidget(self.spin, 1); row.addWidget(random_button)
+            outer.addLayout(row)
             self.spin.valueChanged.connect(lambda _value: self.changed.emit())
+            if self.caption is not None:
+                scrub_label(self.caption, self.spin)
             return
-        step=float(definition.get("step",1 if definition["type"]=="int" else .1))
-        self.scale=1 if definition["type"]=="int" or step>=1 else 10 if step>=.1 else 100
-        self.slider=QSlider(Qt.Horizontal); self.slider.setRange(round(float(definition["min"])*self.scale),round(float(definition["max"])*self.scale))
-        if definition["type"]=="int":
-            self.spin=QSpinBox(); self.spin.setRange(int(definition["min"]),int(definition["max"])); self.spin.setSingleStep(int(definition.get("step",1)))
+        step = float(definition.get("step", 1 if kind == "int" else .1))
+        self.scale = 1 if kind == "int" or step >= 1 else 10 if step >= .1 else 100
+        self.slider = QSlider(Qt.Horizontal)
+        self.slider.setRange(round(float(definition["min"]) * self.scale), round(float(definition["max"]) * self.scale))
+        if kind == "int":
+            self.spin = QSpinBox(); self.spin.setRange(int(definition["min"]), int(definition["max"])); self.spin.setSingleStep(int(definition.get("step", 1)))
         else:
-            self.spin=QDoubleSpinBox(); self.spin.setRange(float(definition["min"]),float(definition["max"])); self.spin.setSingleStep(step); self.spin.setDecimals(2)
-        self.spin.setMinimumWidth(104)
-        self.spin.setButtonSymbols(QAbstractSpinBox.NoButtons)
-        decrease_button=step_button("-", self.spin.stepDown)
-        increase_button=step_button("+", self.spin.stepUp)
-        layout.addWidget(self.slider,1)
-        layout.addWidget(self.spin)
-        layout.addWidget(increase_button)
-        layout.addWidget(decrease_button)
+            self.spin = QDoubleSpinBox(); self.spin.setRange(float(definition["min"]), float(definition["max"])); self.spin.setSingleStep(step); self.spin.setDecimals(2)
+        self.spin.setFixedWidth(96)
+        if self.caption is not None:
+            # The number sits on the name's line, right-aligned; the slider
+            # gets the full width under it, which is what makes it draggable.
+            head.addWidget(self.spin)
+            outer.addWidget(self.slider)
+            scrub_label(self.caption, self.spin)
+        else:
+            row = QHBoxLayout(); row.setContentsMargins(0, 0, 0, 0); row.setSpacing(8)
+            row.addWidget(self.slider, 1); row.addWidget(self.spin)
+            outer.addLayout(row)
         self.slider.valueChanged.connect(self._from_slider); self.spin.valueChanged.connect(self._from_spin); self.set_value(definition["default"])
-    def _from_slider(self,raw):
-        self.spin.blockSignals(True); self.spin.setValue(raw/self.scale); self.spin.blockSignals(False); self.changed.emit()
-    def _from_spin(self,value):
-        self.slider.blockSignals(True); self.slider.setValue(round(float(value)*self.scale)); self.slider.blockSignals(False); self.changed.emit()
+
+    def _from_slider(self, raw):
+        self.spin.blockSignals(True); self.spin.setValue(raw / self.scale); self.spin.blockSignals(False); self.changed.emit()
+
+    def _from_spin(self, value):
+        self.slider.blockSignals(True); self.slider.setValue(round(float(value) * self.scale)); self.slider.blockSignals(False); self.changed.emit()
+
     def randomize(self):
-        self.set_value(random.SystemRandom().randint(int(self.definition["min"]),int(self.definition["max"]))); self.changed.emit()
+        self.set_value(random.SystemRandom().randint(int(self.definition["min"]), int(self.definition["max"]))); self.changed.emit()
+
     def set_value(self, value):
         if self.definition["type"] == "font":
-            self.font_combo.blockSignals(True);self.font_combo.setCurrentFont(QFont(str(value)));self.font_combo.blockSignals(False);return
+            self.font_combo.blockSignals(True); self.font_combo.setCurrentFont(QFont(str(value))); self.font_combo.blockSignals(False); return
         if self.definition["type"] == "text":
             self.text_input.blockSignals(True)
             self.text_input.setText(str(value))
@@ -1243,36 +1278,48 @@ class ParameterControl(QWidget):
             self.slider.blockSignals(False)
 
         self.spin.blockSignals(False)
+
     def value(self):
-        if self.definition["type"]=="font":return self.font_combo.currentFont().family()
-        return self.text_input.text() if self.definition["type"]=="text" else self.choice_group.checkedButton().property("choice_value") if self.definition["type"]=="choice" else self.spin.value()
+        if self.definition["type"] == "font": return self.font_combo.currentFont().family()
+        return self.text_input.text() if self.definition["type"] == "text" else self.choice_group.checkedButton().property("choice_value") if self.definition["type"] == "choice" else self.spin.value()
 
 
 class DifficultyValueControl(QWidget):
+    """AR or CS for the export: its short name and a number box, one field.
+
+    Was a caption, a 200px slider, a box and a pink +/- pair; the row ran off
+    a 1920 screen. The number is the exact thing written to the file, so a
+    box that steps by 0.1 (0.01 with the arrow keys held on the value) is the
+    whole control.
+    """
+
     changed = Signal(float)
+
     def __init__(self, label: str, default: float, tooltip: str) -> None:
         super().__init__()
         self.setToolTip(tooltip)
-        layout=QHBoxLayout(self);layout.setContentsMargins(0,0,0,0);layout.setSpacing(3)
-        caption=QLabel(label);caption.setToolTip(tooltip);layout.addWidget(caption)
-        self.slider=QSlider(Qt.Horizontal);self.slider.setRange(0,1000);self.slider.setSingleStep(1);self.slider.setPageStep(10);self.slider.setToolTip(tooltip)
-        # 200px when the row has it, down to 80 when it does not: fixed at 200
-        # the Fancy Arranger's row needed 1948px and ran off a 1920 screen.
-        self.slider.setMinimumWidth(80);self.slider.setMaximumWidth(200);layout.addWidget(self.slider,1)
-        self.value_box=QDoubleSpinBox();self.value_box.setRange(0.0,10.0);self.value_box.setDecimals(2);self.value_box.setSingleStep(0.01);self.value_box.setFixedWidth(62);self.value_box.setButtonSymbols(QAbstractSpinBox.NoButtons);self.value_box.setToolTip(tooltip);layout.addWidget(self.value_box)
-        decrease=step_button("-", self.value_box.stepDown);increase=step_button("+", self.value_box.stepUp)
-        # Height typed, width measured: 28px was wide enough for the glyph
-        # only until the window stylesheet's horizontal padding landed on it.
-        for button in (decrease,increase):button.setFixedHeight(28);button.setToolTip(tr("MainWindow", "Adjust by 0.01"))
-        layout.addWidget(increase);layout.addWidget(decrease)
-        self.slider.valueChanged.connect(self._slider_changed);self.value_box.valueChanged.connect(self._box_changed);self.set_value(default)
-    def _slider_changed(self, raw: int) -> None:
-        value=raw/100.0;self.value_box.blockSignals(True);self.value_box.setValue(value);self.value_box.blockSignals(False);self.changed.emit(value)
+        self.setObjectName("stepper")
+        self.setStyleSheet(
+            "QWidget#stepper { background: #252d39; border: 1px solid #3a4554; border-radius: 6px; }"
+            "QWidget#stepper QLabel { color: #7d8794; font-size: 11px; font-weight: 700; background: transparent;"
+            " padding-left: 8px; }"
+            "QWidget#stepper QDoubleSpinBox { border: 0; background: transparent; }")
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        layout = QHBoxLayout(self); layout.setContentsMargins(0, 0, 0, 0); layout.setSpacing(2)
+        caption = QLabel(label); caption.setToolTip(tooltip); layout.addWidget(caption)
+        self.value_box = QDoubleSpinBox(); self.value_box.setRange(0.0, 10.0); self.value_box.setDecimals(2)
+        self.value_box.setSingleStep(0.1); self.value_box.setFixedWidth(84); self.value_box.setToolTip(tooltip)
+        layout.addWidget(self.value_box)
+        scrub_label(caption, self.value_box)
+        self.value_box.valueChanged.connect(self._box_changed); self.set_value(default)
+
     def _box_changed(self, value: float) -> None:
-        self.slider.blockSignals(True);self.slider.setValue(round(float(value)*100));self.slider.blockSignals(False);self.changed.emit(float(value))
-    def value(self) -> float:return float(self.value_box.value())
+        self.changed.emit(float(value))
+
+    def value(self) -> float: return float(self.value_box.value())
+
     def set_value(self, value: float) -> None:
-        value=max(0.0,min(10.0,float(value)));self.value_box.setValue(value);self.slider.setValue(round(value*100))
+        self.value_box.setValue(max(0.0, min(10.0, float(value))))
 
 
 class DrawingSurface(QWidget):
@@ -1359,6 +1406,167 @@ class DrawingDialog(QDialog):
         super().accept()
 
 
+def shape_icon(name: str) -> QIcon:
+    """A small line drawing of transformation `name`, for its tile.
+
+    Two pixmaps: grey for the tile at rest, pink for the chosen one (QIcon's
+    On state, which a checked QToolButton draws). Drawn rather than shipped
+    as files so a new transformation needs one branch here, not an asset.
+    """
+    icon = QIcon()
+    for colour, state in (("#aeb8c5", QIcon.Off), ("#f3a6bd", QIcon.On)):
+        pixmap = QPixmap(64, 44)
+        pixmap.setDevicePixelRatio(2.0)
+        pixmap.fill(Qt.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(QPen(QColor(colour), 1.6, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        painter.setBrush(Qt.NoBrush)
+        _draw_shape_glyph(painter, name, colour)
+        painter.end()
+        icon.addPixmap(pixmap, QIcon.Normal, state)
+    return icon
+
+
+def _draw_shape_glyph(painter: QPainter, name: str, colour: str) -> None:
+    """Draw `name` in a 32x22 box (the icon at 1x)."""
+    cx, cy = 16.0, 11.0
+
+    def poly(points, closed=True):
+        path = QPainterPath(QPointF(*points[0]))
+        for point in points[1:]:
+            path.lineTo(QPointF(*point))
+        if closed:
+            path.closeSubpath()
+        painter.drawPath(path)
+
+    def curve(fn, steps=48):
+        poly([fn(i / steps) for i in range(steps + 1)], closed=False)
+
+    def dot(x, y, r=1.4):
+        painter.save()
+        painter.setBrush(QColor(colour))
+        painter.drawEllipse(QPointF(x, y), r, r)
+        painter.restore()
+
+    if name == "circle":
+        painter.drawEllipse(QPointF(cx, cy), 8, 8)
+    elif name in ("ellipse", "arc"):
+        if name == "ellipse":
+            painter.drawEllipse(QPointF(cx, cy), 12, 7)
+        else:
+            curve(lambda t: (cx + 12 * math.cos(math.pi * (1 + t)), cy + 4 + 12 * math.sin(math.pi * (1 + t)) * 0.8))
+    elif name == "square":
+        painter.drawRect(QRectF(cx - 8, cy - 8, 16, 16))
+    elif name == "triangle":
+        poly([(cx, 3), (cx + 9, 19), (cx - 9, 19)])
+    elif name == "diamond":
+        poly([(cx, 2), (cx + 8, cy), (cx, 20), (cx - 8, cy)])
+    elif name == "infinity":
+        curve(lambda t: (cx + 12 * math.cos(2 * math.pi * t) / (1 + math.sin(2 * math.pi * t) ** 2),
+                         cy + 12 * math.sin(2 * math.pi * t) * math.cos(2 * math.pi * t) / (1 + math.sin(2 * math.pi * t) ** 2)))
+    elif name == "star":
+        points = []
+        for k in range(10):
+            radius = 9 if k % 2 == 0 else 3.8
+            angle = -math.pi / 2 + k * math.pi / 5
+            points.append((cx + radius * math.cos(angle), cy + 1 + radius * math.sin(angle)))
+        poly(points)
+    elif name == "spiral":
+        curve(lambda t: (cx + 9 * t * math.cos(6 * math.pi * t), cy + 9 * t * math.sin(6 * math.pi * t)), 80)
+    elif name == "straight_line":
+        poly([(4, 18), (28, 4)], closed=False)
+    elif name == "wave":
+        curve(lambda t: (3 + 26 * t, cy - 7 * math.sin(4 * math.pi * t)))
+    elif name == "zigzag":
+        poly([(3, 16), (9, 6), (15, 16), (21, 6), (27, 16)], closed=False)
+    elif name in ("horizontal", "vertical"):
+        for row in range(3):
+            for column in range(5):
+                x, y = 6 + column * 5, 5 + row * 6
+                dot(x, y) if name == "horizontal" else dot(10 + row * 6, 2 + column * 4.5)
+    elif name in ("taiko", "vertical_taiko"):
+        for index in range(3):
+            if name == "taiko":
+                poly([(4, 5 + index * 6), (28, 5 + index * 6)], closed=False)
+            else:
+                poly([(9 + index * 7, 2), (9 + index * 7, 20)], closed=False)
+        dot(12, 11, 2.2) if name == "taiko" else dot(16, 9, 2.2)
+    elif name == "pinwheel":
+        for blade in range(4):
+            base = blade * math.pi / 2
+            curve(lambda t, b=base: (cx + 9 * t * math.cos(b + 1.3 * t), cy + 9 * t * math.sin(b + 1.3 * t)), 16)
+    elif name == "dvd_bouncing":
+        painter.drawRect(QRectF(3, 2, 26, 18))
+        poly([(6, 17), (14, 5), (22, 17), (26, 11)], closed=False)
+    elif name == "random_walk":
+        poly([(4, 14), (8, 9), (11, 13), (15, 6), (19, 11), (23, 8), (28, 15)], closed=False)
+    elif name == "random":
+        for x, y in ((6, 6), (13, 15), (19, 5), (25, 13), (9, 18), (22, 19), (28, 6)):
+            dot(x, y)
+    elif name == "text":
+        font = QFont("Segoe UI", 11)
+        font.setBold(True)
+        painter.setFont(font)
+        painter.drawText(QRectF(0, 0, 32, 22), Qt.AlignCenter, "Aa")
+    elif name == "drawn_path":
+        path = QPainterPath(QPointF(4, 16))
+        path.cubicTo(QPointF(9, 2), QPointF(16, 22), QPointF(28, 5))
+        painter.drawPath(path)
+    elif name == "equation":
+        font = QFont("Segoe UI", 10)
+        font.setItalic(True)
+        painter.setFont(font)
+        painter.drawText(QRectF(0, 0, 32, 22), Qt.AlignCenter, "f(x)")
+    else:  # none
+        painter.drawEllipse(QPointF(cx, cy), 7, 7)
+        poly([(cx - 5, cy + 5), (cx + 5, cy - 5)], closed=False)
+
+
+TILE_GRID_STYLE = """
+QToolButton#shapeTile {
+    background: #222a36; color: #aeb8c5; border: 1px solid #303947; border-radius: 6px;
+    padding: 5px 2px 4px; font-size: 11px; font-weight: 600;
+}
+QToolButton#shapeTile:hover { background: #2a3341; color: #e8edf3; }
+QToolButton#shapeTile:checked { background: #2a2230; color: #ffffff; border: 1px solid #ff66aa; }
+QLabel#sectionCaption { color: #7d8794; font-size: 10.5px; font-weight: 700; letter-spacing: 1px; background: transparent; }
+QLabel#kbd { background: #252d39; border: 1px solid #3a4554; border-bottom: 2px solid #3a4554; border-radius: 3px;
+    color: #aeb8c5; font-size: 10.5px; font-weight: 600; padding: 0 4px; }
+QLabel#kbdText { color: #7d8794; font-size: 11.5px; background: transparent; }
+"""
+
+
+def section_caption(text: str) -> QLabel:
+    label = QLabel(text.upper())
+    label.setObjectName("sectionCaption")
+    return label
+
+
+def key_hint(keys: list[str], text: str) -> QWidget:
+    """"[Shift] + [Wheel] 1 beat": key caps, so a hint reads as the keys."""
+    box = QWidget()
+    row = QHBoxLayout(box)
+    row.setContentsMargins(0, 0, 0, 0)
+    row.setSpacing(3)
+    for index, key in enumerate(keys):
+        if index:
+            plus = QLabel("+")
+            plus.setObjectName("kbdText")
+            row.addWidget(plus)
+        cap = QLabel(key)
+        cap.setObjectName("kbd")
+        cap.setFixedHeight(18)
+        cap.setAlignment(Qt.AlignCenter)
+        row.addWidget(cap, 0, Qt.AlignVCenter)
+    words = QLabel(text)
+    words.setObjectName("kbdText")
+    row.addSpacing(3)
+    row.addWidget(words, 0, Qt.AlignVCenter)
+    box.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+    return box
+
+
 class TransformCanvas(QWidget):
     background_dropped = Signal(str)
     drag_offset_requested = Signal(object, float, float)
@@ -1378,6 +1586,17 @@ class TransformCanvas(QWidget):
 
         self.background_pixmap = QPixmap()
         self.background_opacity = 0.55
+        # Where each note is drawn while it glides from its old place to
+        # `positions` (the target, which is what hit tests and callers read).
+        # Seeing where each note goes is the point of the page.
+        self._glide_from: dict[int, tuple[float, float]] = {}
+        self._glide_t = 1.0
+        self._glide = QVariantAnimation(self)
+        self._glide.setStartValue(0.0)
+        self._glide.setEndValue(1.0)
+        self._glide.setDuration(260)
+        self._glide.setEasingCurve(QEasingCurve.OutCubic)
+        self._glide.valueChanged.connect(self._glide_step)
         # The export's CS, which sizes the circles (osu_circle_radius).
         self.circle_size = 7.0
         self.setAcceptDrops(True)
@@ -1391,10 +1610,34 @@ class TransformCanvas(QWidget):
         positions: dict[int, tuple[int, int]],
         selected: set[int],
     ) -> None:
+        # A new target while the old one is still being reached starts from
+        # where the notes are drawn now, so a slider dragged across its range
+        # never makes them jump. Not while a note is being dragged by hand:
+        # there the note follows the pointer, and easing it would lag behind.
+        moved = positions is not self.positions and positions != self.positions
+        if moved and self.drag_last_position is None and not reduced_motion() and self.isVisible():
+            self._glide_from = {
+                note.original_index: self._drawn_position(note) for note in self.notes
+            }
+            self._glide_t = 0.0
+            self._glide.stop()
+            self._glide.start()
         self.notes = notes
         self.positions = positions
         self.selected = set(selected)
         self.update()
+
+    def _glide_step(self, value) -> None:
+        self._glide_t = float(value)
+        self.update()
+
+    def _drawn_position(self, note) -> tuple[float, float]:
+        target = self.positions.get(note.original_index, (note.x, note.y))
+        if self._glide_t >= 1.0:
+            return target
+        start = self._glide_from.get(note.original_index, target)
+        t = self._glide_t
+        return (start[0] + (target[0] - start[0]) * t, start[1] + (target[1] - start[1]) * t)
 
     def set_background(self, image_path: str | None) -> None:
         if image_path and Path(image_path).is_file():
@@ -1494,10 +1737,7 @@ class TransformCanvas(QWidget):
         )
 
         for note in self.notes:
-            position = self.positions.get(
-                note.original_index,
-                (note.x, note.y),
-            )
+            position = self._drawn_position(note)
 
             x = self.view_offset_x + position[0] * self.view_scale
             y = self.view_offset_y + position[1] * self.view_scale
@@ -11889,6 +12129,10 @@ class MainWindow(QMainWindow):
         self.reset_button = QPushButton(tr("MainWindow", "Reset Applied Transforms"))
         self.reset_button.clicked.connect(self.reset_applied)
         self.reset_button.setFocusPolicy(Qt.NoFocus)
+        # Quiet: the row has one action, Export. Reset is a way back, not the
+        # thing the page is for.
+        self.reset_button.setProperty("role", "ghost")
+        self.reset_button.setStyleSheet("QPushButton { border: 1px solid #3a4554; }")
 
         # What it does: writes the transformed notes as a new .osu beside this
         # one. Saving over this difficulty is the header's Save (Ctrl+S).
@@ -11908,10 +12152,11 @@ class MainWindow(QMainWindow):
         self.difficulty_combo.setMinimumWidth(260)
         self.difficulty_combo.setEnabled(False)
         self.difficulty_combo.currentIndexChanged.connect(self._difficulty_changed)
-        sub_toolbar.addWidget(QLabel(tr("MainWindow", "Difficulty")))
+        self.difficulty_combo.setToolTip(tr("MainWindow", "Difficulty"))
         sub_toolbar.addWidget(self.difficulty_combo)
-
-        sub_toolbar.addWidget(self.play_button)
+        # Play lives in the Timeline dock's transport, as on the other pages;
+        # the button stays (Space and the tests drive it) but not in this row.
+        self.play_button.hide()
         # Reset and Export are added once, at the far end (after Layout): a
         # second addWidget of a widget already in the row makes Qt free its old
         # item behind PySide's back, and the wrapper PySide keeps for it (made
@@ -11920,10 +12165,8 @@ class MainWindow(QMainWindow):
         # access violation inside show(), about one test_gimmick_editor run in six.
         self.approach_rate_control=DifficultyValueControl("AR",10.0,"Approach Rate: 0 is slowest, 10 is fastest. Export default is 10.00.")
         self.circle_size_control=DifficultyValueControl("CS",7.0,"Circle Size: 0 is biggest, 10 is smallest. Export default is 7.00.")
-        # Weighted well over the gap before Layout: a box layout shares room by
-        # stretch, so at equal weight the gap took as much as each slider.
-        sub_toolbar.addWidget(self.approach_rate_control, 10)
-        sub_toolbar.addWidget(self.circle_size_control, 10)
+        sub_toolbar.addWidget(self.approach_rate_control)
+        sub_toolbar.addWidget(self.circle_size_control)
         page_layout.addWidget(sub_toolbar_scroll)
 
         # Every box but the canvas is a dock: moved to any edge, floated, closed
@@ -11957,9 +12200,11 @@ class MainWindow(QMainWindow):
         self.transform_controls_panel = right
         # The panel keeps the width its widest label needs; the dock around it
         # scrolls instead, so a small window scrolls rather than clipping.
-        right.setMinimumWidth(460)
+        right.setMinimumWidth(340)
+        right.setStyleSheet(TILE_GRID_STYLE)
         right_layout = QVBoxLayout(right)
-        right_layout.setContentsMargins(8, 8, 8, 8)
+        right_layout.setContentsMargins(10, 10, 10, 10)
+        right_layout.setSpacing(10)
 
         self.background_opacity_control = ParameterControl(
             {"key": "background_opacity", "label": "Background Opacity", "type": "int", "min": 0, "max": 100, "default": 55}
@@ -11967,9 +12212,13 @@ class MainWindow(QMainWindow):
         self.background_opacity_control.changed.connect(
             lambda: self.canvas.set_background_opacity(int(self.background_opacity_control.value()))
         )
-        sub_toolbar.addWidget(QLabel(tr("MainWindow", "Background Opacity")))
+        background_caption = QLabel(tr("MainWindow", "Background"))
+        background_caption.setStyleSheet("color: #7d8794; font-size: 11px; font-weight: 700; padding-left: 6px;")
+        background_caption.setToolTip(tr("MainWindow", "Background Opacity"))
+        sub_toolbar.addWidget(background_caption)
+        self.background_opacity_control.setToolTip(tr("MainWindow", "Background Opacity"))
         self.background_opacity_control.setMaximumWidth(220)
-        sub_toolbar.addWidget(self.background_opacity_control)
+        sub_toolbar.addWidget(self.background_opacity_control, 1)
         sub_toolbar.addStretch(1)
         self.fancy_layout_button = QToolButton()
         self.fancy_layout_button.setText(tr("MainWindow", "Layout"))
@@ -11985,8 +12234,6 @@ class MainWindow(QMainWindow):
         # Its own height, plus the scroll bar's when the row is too wide.
         sub_toolbar_scroll.setFixedHeight(sub_toolbar_row.sizeHint().height() + 8)
 
-        right_layout.addWidget(QLabel(tr("MainWindow", "Transformation mode")))
-
         self.mode_combo = QComboBox()
         # Item data is the stable mode identifier. The display text is localized,
         # so mode logic reads currentData() and never currentText().
@@ -11994,6 +12241,9 @@ class MainWindow(QMainWindow):
         self.mode_combo.addItem(tr("MainWindow", "Split Don / Kat"), "split")
         self.mode_combo.currentIndexChanged.connect(
             self._rebuild_control_tabs
+        )
+        self.mode_combo.currentIndexChanged.connect(
+            lambda _index: self.swap_don_kat_button.setVisible(self._is_split_mode())
         )
         right_layout.addWidget(self.mode_combo)
         self.mode_combo.setVisible(False)
@@ -12006,21 +12256,40 @@ class MainWindow(QMainWindow):
             self.mode_buttons[mode_id] = button
         mode_row = QHBoxLayout()
         mode_row.addWidget(segmented(list(self.mode_buttons.values())))
-        mode_row.addStretch(1)
-        right_layout.addLayout(mode_row)
         self.mode_combo.currentIndexChanged.connect(self._sync_mode_buttons)
         self._sync_mode_buttons()
+        # Beside the mode, and only in Split: it is what Split is for.
         self.swap_don_kat_button = QPushButton(tr("MainWindow", "Swap Don ↔ Kat"))
         self.swap_don_kat_button.setVisible(False)
+        self.swap_don_kat_button.setProperty("role", "ghost")
+        self.swap_don_kat_button.setStyleSheet("QPushButton { border: 1px solid #3a4554; }")
         self.swap_don_kat_button.setToolTip(tr("MainWindow", "Swap transformation, parameters, and position between Don and Kat"))
         self.swap_don_kat_button.clicked.connect(self._swap_don_kat_transformations)
-        right_layout.addWidget(self.swap_don_kat_button)
-        self.mode_combo.currentIndexChanged.connect(
-            lambda _index: self.swap_don_kat_button.setVisible(self._is_split_mode())
-        )
+        mode_row.addWidget(self.swap_don_kat_button)
+        mode_row.addStretch(1)
+        right_layout.addLayout(mode_row)
+
+        # Split's "which half am I editing" as sub-pills under the mode. The
+        # tab widget stays the model (one page per group, as _spec reads it);
+        # its own tab bar is hidden and these drive it.
+        self.split_side_buttons = [QPushButton(tr("MainWindow", "Don")), QPushButton(tr("MainWindow", "Kat"))]
+        for index, button in enumerate(self.split_side_buttons):
+            button.setCheckable(True)
+            button.clicked.connect(lambda _checked=False, i=index: self.control_tabs.setCurrentIndex(i))
+        self.split_side_pills = segmented(self.split_side_buttons)
+        side_row = QHBoxLayout()
+        side_row.addWidget(self.split_side_pills)
+        side_row.addStretch(1)
+        right_layout.addLayout(side_row)
 
         self.control_tabs = QTabWidget()
+        self.control_tabs.tabBar().hide()
+        self.control_tabs.setDocumentMode(True)
+        self.control_tabs.setStyleSheet("QTabWidget::pane { border: 0; }")
+        self.control_tabs.currentChanged.connect(self._sync_split_side_buttons)
         right_layout.addWidget(self.control_tabs, 1)
+        self.mode_combo.currentIndexChanged.connect(self._sync_split_side_buttons)
+        self._sync_split_side_buttons()
 
         self.apply_button = QPushButton(tr("MainWindow", "Transform Selected Notes"))
         self.apply_button.clicked.connect(self.apply_selection)
@@ -12061,6 +12330,18 @@ class MainWindow(QMainWindow):
         self.timeline_info = QLabel(self._timeline_info_text("--", "--", "1/4"))
         self.timeline_info.setStyleSheet("color: #aeb8c5; padding-left: 10px;")
         timeline_controls.addWidget(self.timeline_info, 1)
+        # The wheel's three steps as key caps, not a sentence at the end of
+        # the info line.
+        hints = QWidget()
+        hints.setStyleSheet(TILE_GRID_STYLE)
+        hint_row = QHBoxLayout(hints)
+        hint_row.setContentsMargins(0, 0, 0, 0)
+        hint_row.setSpacing(14)
+        wheel = tr("MainWindow", "Wheel")
+        hint_row.addWidget(key_hint([wheel], tr("MainWindow", "1 snap")))
+        hint_row.addWidget(key_hint(["Shift", wheel], tr("MainWindow", "1 beat")))
+        hint_row.addWidget(key_hint(["Ctrl", wheel], tr("MainWindow", "zoom")))
+        timeline_controls.addWidget(hints)
         layout.addLayout(timeline_controls)
 
         self.timeline = TimelineGameplay()
@@ -12162,6 +12443,15 @@ class MainWindow(QMainWindow):
         current = self.mode_combo.currentData()
         for mode_id, button in self.mode_buttons.items():
             button.setChecked(mode_id == current)
+
+    def _sync_split_side_buttons(self, _index: int = 0) -> None:
+        if not hasattr(self, "split_side_pills"):
+            return
+        split = self._is_split_mode()
+        self.split_side_pills.setVisible(split)
+        current = self.control_tabs.currentIndex() if hasattr(self, "control_tabs") else 0
+        for index, button in enumerate(self.split_side_buttons):
+            button.setChecked(split and index == current)
 
     def _switch_page(self, index: int) -> None:
         current = self.page_stack.currentIndex()
@@ -17450,26 +17740,63 @@ class MainWindow(QMainWindow):
         self.status.setText(tr("MainWindow", "Swapped Don and Kat transformations."))
 
     def _control_page(self, group: str) -> QWidget:
-        page = QWidget()
-        layout = QVBoxLayout(page)
+        """One group's shape and parameters (the mockup's Transform dock body).
 
-        combo = QComboBox()
+        The shape is picked from tiles with a line drawing each: two dozen
+        transformations are recognised faster than they are read in a list.
+        The combo stays, hidden, as the model `_spec` and the tests read.
+        """
+        page = QWidget()
+        page.setStyleSheet(TILE_GRID_STYLE)
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+
+        combo = QComboBox(page)
+        combo.hide()
         combo.addItem(tr("MainWindow", "None"), "")
         for name in GUI_TRANSFORMATIONS: combo.addItem(display_name(name), name)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
+        layout.addWidget(section_caption(tr("MainWindow", "Shape")))
+        tiles = QWidget()
+        grid = QGridLayout(tiles)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setSpacing(6)
+        tile_group = QButtonGroup(page)
+        tile_group.setExclusive(True)
+        columns = 4
+        for index in range(combo.count()):
+            tile = QToolButton()
+            tile.setObjectName("shapeTile")
+            tile.setCheckable(True)
+            tile.setFocusPolicy(Qt.NoFocus)
+            tile.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
+            tile.setIcon(shape_icon(str(combo.itemData(index) or "none")))
+            tile.setIconSize(QSize(32, 22))
+            tile.setText(combo.itemText(index))
+            tile.setToolTip(combo.itemText(index))
+            tile.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            tile.setMinimumWidth(0)
+            tile_group.addButton(tile, index)
+            grid.addWidget(tile, index // columns, index % columns)
+        for column in range(columns):
+            grid.setColumnStretch(column, 1)
+        tile_group.idClicked.connect(combo.setCurrentIndex)
+        combo.currentIndexChanged.connect(lambda index: tile_group.button(index).setChecked(True))
+        tile_group.button(0).setChecked(True)
+        layout.addWidget(tiles)
 
+        layout.addWidget(section_caption(tr("MainWindow", "Parameters")))
         form_widget = QWidget()
-        form = QFormLayout(form_widget)
-        scroll.setWidget(form_widget)
-        smooth(scroll)
-
-        layout.addWidget(combo)
-        layout.addWidget(scroll, 1)
+        form = QVBoxLayout(form_widget)
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setSpacing(10)
+        layout.addWidget(form_widget)
         equation_keyboard_button = QPushButton("⌨")
         equation_keyboard_button.setToolTip(tr("MainWindow", "Show or hide equation keyboard"))
         equation_keyboard_button.setCheckable(True)
+        equation_keyboard_button.setProperty("role", "ghost")
+        equation_keyboard_button.setStyleSheet("QPushButton { border: 1px solid #3a4554; }")
         # No typed width. 38px was narrower than the window stylesheet's own
         # 16px of padding either side left room for, so the button covered its
         # keyboard glyph; AlignLeft below already keeps it to its own hint,
@@ -17479,12 +17806,18 @@ class MainWindow(QMainWindow):
         equation_keyboard_button.toggled.connect(equation_keyboard.setVisible)
         layout.addWidget(equation_keyboard_button, 0, Qt.AlignLeft)
         layout.addWidget(equation_keyboard)
+        layout.addStretch(1)
 
         self.controls[group] = {}
 
         def rebuild() -> None:
-            while form.rowCount():
-                form.removeRow(0)
+            while form.count():
+                item = form.takeAt(0)
+                if item.widget() is not None:
+                    # Hidden now: deleteLater waits for the event loop, and
+                    # until then the old shape's rows drew over the new ones.
+                    item.widget().hide()
+                    item.widget().deleteLater()
 
             self.controls[group] = {}
 
@@ -17495,13 +17828,13 @@ class MainWindow(QMainWindow):
                 equation_keyboard_button.setChecked(False)
 
             for definition in PARAMETERS.get(transformation_name, []):
-                control = ParameterControl(definition)
+                control = ParameterControl(definition, tr("Parameters", str(definition["label"])))
                 control.changed.connect(self.schedule_preview)
                 if definition["key"] == "equation_mode":
                     control.changed.connect(lambda active_group=group: self._update_equation_control_visibility(active_group))
 
                 self.controls[group][definition["key"]] = control
-                form.addRow(tr("Parameters", str(definition["label"])), control)
+                form.addWidget(control)
 
             if transformation_name=="drawn_path":
                 draw_button=QPushButton(tr("MainWindow", "Open Drawing Window"))
@@ -17519,7 +17852,8 @@ class MainWindow(QMainWindow):
                                 if str(refs["combo"].currentData() or "")=="drawn_path":self.drawing_points[group_name]=points
                             self.preview_cache.clear();self.schedule_preview()
                     finally:self.drawing_dialog_active=False
-                draw_button.clicked.connect(open_drawing);form.addRow(draw_button)
+                draw_button.setProperty("role","ghost");draw_button.setStyleSheet("QPushButton { border: 1px solid #3a4554; }")
+                draw_button.clicked.connect(open_drawing);form.addWidget(draw_button)
             self.position_controls[group] = {}
             for axis, label, minimum, maximum in (
                 ("x", "Position X", -512, 512),
@@ -17533,13 +17867,14 @@ class MainWindow(QMainWindow):
                         "min": minimum,
                         "max": maximum,
                         "default": round(self.preview_offsets[group][0 if axis == "x" else 1]),
-                    }
+                    },
+                    tr("Parameters", label),
                 )
                 position_control.changed.connect(
                     lambda active_group=group: self._position_slider_changed(active_group)
                 )
                 self.position_controls[group][axis] = position_control
-                form.addRow(tr("Parameters", label), position_control)
+                form.addWidget(position_control)
 
             self.schedule_preview()
 
@@ -18372,13 +18707,11 @@ class MainWindow(QMainWindow):
         The wheel hints describe the real step size in wheelEvent, which moves
         one snap division per notch and one whole beat with Shift held.
         """
+        # The snap is the slider beside this, and the wheel hints are key
+        # caps after it; this line is what they cannot say.
         return (
-            f"{tr('MainWindow', 'Duration')}: {duration_text}   |   "
-            f"{tr('MainWindow', 'Now')}: {position_text}   |   "
-            f"{tr('MainWindow', 'Snap')}: {snap_text}   |   "
-            f"{tr('MainWindow', 'Wheel: 1 snap')}   |   "
-            f"{tr('MainWindow', 'Shift+wheel: 1 beat')}   |   "
-            f"{tr('MainWindow', 'Ctrl+wheel: zoom')}"
+            f"{tr('MainWindow', 'Duration')}: {duration_text}   ·   "
+            f"{tr('MainWindow', 'Now')}: {position_text}"
         )
 
     def _update_timeline_info(self) -> None:
