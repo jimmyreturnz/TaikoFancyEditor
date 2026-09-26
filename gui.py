@@ -12312,7 +12312,11 @@ class MainWindow(QMainWindow):
         self.fancy_transform_dock = QDockWidget(tr("MainWindow", "Transform"), docks)
         self.fancy_transform_dock.setObjectName("fancy_transform_dock")
         self.fancy_transform_dock.setWidget(transform_scroll)
-        self.fancy_transform_dock.setMinimumWidth(200)
+        # Never narrower than the panel it holds: a saved layout from when the
+        # panel was sized differently restored the dock at ~190px, and the
+        # shape tiles and every number box were cut off at its edge.
+        self.fancy_transform_dock.setMinimumWidth(
+            right.minimumWidth() + transform_scroll.verticalScrollBar().sizeHint().width() + 4)
         docks.addDockWidget(Qt.RightDockWidgetArea, self.fancy_transform_dock)
 
         timeline_box = QWidget()

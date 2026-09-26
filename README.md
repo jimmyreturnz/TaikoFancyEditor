@@ -27,6 +27,35 @@ The main inspirations include Alchyr's ranked maps *13 Stairs* and *Helios*, whi
 
 ---
 
+## Screenshots
+
+All taken on Hyper Bass (RENKA chan Drop) [Drop the GIMMICK].
+
+**Song select**: star ratings from your osu!.db, each difficulty's own background and preview.
+
+![Song select](docs/images/song-select.png)
+
+**Editor**: chart, SV and the gameplay preview, stacked on one timeline.
+
+![Editor](docs/images/editor.png)
+
+**Gimmick editor**: one layer per kind of gimmick, the fake sliders, barlines and each layer's SV.
+
+![Gimmick editor](docs/images/gimmick-editor.png)
+
+**Fancy Arranger**: selected notes previewed as a star over the map's background, at osu!'s playfield proportions.
+
+![Fancy Arranger](docs/images/fancy-arranger.png)
+
+**Config sheets**: settings grouped by tool, with a side panel that explains each field and draws what it writes.
+
+| | |
+|---|---|
+| ![Barline settings](docs/images/config-barline.png) | ![Convert notes](docs/images/convert-notes.png) |
+| ![Generate SV](docs/images/generate-sv.png) | ![Settings](docs/images/settings.png) |
+
+---
+
 ## What is new in 3.4.0
 
 A redesign release: song select, the editor, the Fancy Arranger and every settings dialog were rebuilt, and the gameplay preview now shows what osu! shows.

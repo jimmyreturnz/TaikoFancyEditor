@@ -16,6 +16,35 @@ Taiko Fancy Arrangerは、osu!taikoのノーツを手作業で1つずつ置く�
 
 ---
 
+## スクリーンショット
+
+すべて Hyper Bass (RENKA chan Drop) [Drop the GIMMICK] で撮影しています。
+
+**曲選択**：osu!.dbからの★難易度、難易度ごとの背景とプレビュー。
+
+![曲選択](docs/images/song-select.png)
+
+**エディター**：チャート、SV、ゲームプレイプレビューを1つのタイムラインに並べて表示。
+
+![エディター](docs/images/editor.png)
+
+**ギミックエディター**：フェイクスライダー、小節線、各レイヤーのSVなど、ギミックの種類ごとに1レイヤー。
+
+![ギミックエディター](docs/images/gimmick-editor.png)
+
+**Fancy Arranger**：選択したノーツを譜面の背景の上に星形でプレビュー（osu!のプレイフィールド比率）。
+
+![Fancy Arranger](docs/images/fancy-arranger.png)
+
+**設定ダイアログ**：ツールごとにまとめ、各項目の説明とその数値が書き込む内容の図をサイドパネルに表示。
+
+| | |
+|---|---|
+| ![小節線の設定](docs/images/config-barline.png) | ![ノート変換](docs/images/convert-notes.png) |
+| ![SV生成](docs/images/generate-sv.png) | ![設定](docs/images/settings.png) |
+
+---
+
 ## 3.4.0の新機能
 
 デザインを一新したリリースです。曲選択、エディター、Fancy Arranger、すべての設定ダイアログを作り直し、ゲームプレイプレビューがosu!と同じ表示になりました。
