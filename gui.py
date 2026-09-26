@@ -4962,6 +4962,11 @@ class GameplayViewerView(QWidget):
         last = bisect_left(self._velocity_times, end_ms)
         return min(self._velocities[first:max(last, first + 1)])
 
+    def _arrival_ms(self, note) -> float:
+        """When `note` crosses osu!'s edge of the playfield on its way in."""
+        speed = max(1e-9, self.velocity_at(note.time) * self.px_per_beat)
+        return note.time - (self.osu_edge_x() - self._hit_x()) / speed
+
     def x_for_time(self, time_ms: float) -> float:
         """Where an object at `time_ms` currently sits.
 
@@ -5242,27 +5247,17 @@ class GameplayViewerView(QWidget):
         first = bisect_left(self.note_times, start_time - self._max_extend_ms)
         after_last = bisect_right(self.note_times, end_time)
 
-        # Three layers, bottom to top: real drumrolls and spinners, then the
-        # hittable notes, then fake sliders.
-        #
-        # * **anything with a body goes under everything**, barlines included.
-        #   One is a band tens of seconds wide, so drawn in with the notes it
-        #   covered every barline and every object stacked on top of it.
-        # * **fake sliders go on top of the notes and the barlines**, which is
-        #   what the game does -- a fake slider is a hit object like any other
-        #   and nothing puts it behind one. Drawn under the notes, a shiny
-        #   note's stack was hidden by the very note it is decorating, so the
-        #   shine only showed where it stuck out past the circle.
-        # * hittable notes between the two.
+        # Two layers: real drumrolls and spinners, then everything else.
+        # **Anything with a body goes under everything**, barlines included.
+        # One is a band tens of seconds wide, so drawn in with the notes it
+        # covered every barline and every object stacked on top of it.
         painter.setRenderHint(QPainter.Antialiasing, True)
-        bodies, fakes, plain = [], [], []
+        bodies, heads = [], []
         for note in self.notes[first:after_last]:
             if note.is_spinner or (note.is_slider and self._note_end_time(note) is not None):
                 bodies.append(note)
-            elif note.is_slider:
-                fakes.append(note)
             else:
-                plain.append(note)
+                heads.append(note)
         for note in reversed(bodies):
             self._draw_note(painter, note, center_y, normal_radius, big_radius)
 
@@ -5294,12 +5289,16 @@ class GameplayViewerView(QWidget):
             painter.setPen(self.hit_pen)
             painter.setBrush(Qt.NoBrush)
             painter.drawEllipse(QPointF(hit_x, center_y), normal_radius, normal_radius)
-        # Back to front within each layer: the note nearest the hit position is
-        # the one being played, so it belongs on top -- osu!taiko draws them the
-        # same way. Bodies are already down, under the barlines.
-        for note in reversed(plain):
-            self._draw_note(painter, note, center_y, normal_radius, big_radius)
-        for note in reversed(fakes):
+        # Whatever came on screen first is on top, as in game. At one speed
+        # that is the note nearest the hit position; across speeds it is SV
+        # that decides. A shiny (Hyper Bass [Drop the GIMMICK]) is a note at
+        # 2.5x with fake sliders 1-3ms later at ~6x: they arrive after it and
+        # go under, so the note keeps its colour and the stack only shows in
+        # the kiai flash below. A slower fake slider would arrive first and
+        # cover it. A dead heat (same millisecond, same speed) goes to the
+        # fake slider, which is how a stack at one SV shows at all. Bodies are
+        # already down, under the barlines.
+        for note in sorted(heads, key=lambda note: (-self._arrival_ms(note), note.is_slider)):
             self._draw_note(painter, note, center_y, normal_radius, big_radius)
 
         # Second pass, so stacked objects compound: a note drawn on top of an
@@ -17687,12 +17686,11 @@ class MainWindow(QMainWindow):
     _mods: frozenset = frozenset()
 
     def _build_mod_strip(self, strip) -> None:
-        """HD | NC DT DC HT | HR EZ | FL, then the rate/pitch readout. Grouped
+        """HD | NC DT DC HT | HR EZ | FL. Grouped
         the way osu! orders them (MOD_ORDER), so every row and every string
         reads the same."""
         if not hasattr(self, "_mod_buttons"):
             self._mod_buttons: list[dict[str, QPushButton]] = []
-            self._mod_readouts: list[QLabel] = []
         tips = {
             "HD": tr("MainWindow", "Hidden: notes fade out as they come in, gone after 37.5% of the scroll"),
             "NC": tr("MainWindow", "Nightcore: 1.5x speed, pitch raised with it"),
@@ -17712,11 +17710,7 @@ class MainWindow(QMainWindow):
             buttons[mod] = button
         for group in (("HD",), ("NC", "DT", "DC", "HT"), ("HR", "EZ"), ("FL",)):
             strip.addWidget(segmented([buttons[mod] for mod in group]))
-        readout = QLabel()
-        readout.setStyleSheet("color: #aeb8c5; font-weight: 600;")
-        strip.addWidget(readout)
         self._mod_buttons.append(buttons)
-        self._mod_readouts.append(readout)
 
     def _rate_mod(self) -> str | None:
         return next((mod for mod in MOD_ORDER if mod in self._mods and mod in RATE_MODS), None)
@@ -17771,13 +17765,6 @@ class MainWindow(QMainWindow):
                 button.blockSignals(True)
                 button.setChecked(mod in self._mods)
                 button.blockSignals(False)
-        rate = self.player.playbackRate()
-        rate_mod = self._rate_mod()
-        shift = round((rate - 1.0) * 100) if rate_mod and RATE_MODS[rate_mod][1] else 0
-        pitch = "±0" if shift == 0 else f"{shift:+d}%"
-        text = tr("MainWindow", "{rate}x · pitch {pitch}").format(rate=f"{rate:.2f}", pitch=pitch)
-        for readout in getattr(self, "_mod_readouts", []):
-            readout.setText(text)
         chip = getattr(self, "mods_chip", None)
         if chip is not None:
             chip.setText(mod_string(self._mods))

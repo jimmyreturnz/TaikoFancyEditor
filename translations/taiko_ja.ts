@@ -1553,10 +1553,6 @@ Every beatmap in it is checked once for taiko difficulties, and the result is re
             <translation>Flashlight: 判定位置の周りの円だけが見え、コンボが増えると小さくなります</translation>
         </message>
         <message>
-            <source>{rate}x · pitch {pitch}</source>
-            <translation>{rate}x · ピッチ {pitch}</translation>
-        </message>
-        <message>
             <source>Export as new difficulty…</source>
             <translation>新しい難易度としてエクスポート…</translation>
         </message>

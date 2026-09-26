@@ -116,11 +116,6 @@ class ModToggleTests(_Window):
         self.assertEqual(self.window.mods_chip.text(), "HDHR")
         self.assertFalse(self.window.mods_chip.isHidden())
 
-    def test_the_readout_does_the_arithmetic(self):
-        self.window._toggle_mod("NC")
-        self.assertIn("1.50", self.window._mod_readouts[0].text())
-        self.assertIn("+50%", self.window._mod_readouts[0].text())
-
     def test_mods_come_back_next_time(self):
         self.window._toggle_mod("HD")
         self.window._toggle_mod("DT")

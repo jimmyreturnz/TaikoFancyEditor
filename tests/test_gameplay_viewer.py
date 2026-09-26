@@ -588,16 +588,15 @@ class DrumrollPartsTests(unittest.TestCase):
 
 
 class DrawOrderTests(unittest.TestCase):
-    """Bottom to top: anything with a body, then the hittable notes, then
-    fake sliders. A fake slider is a hit object like any other and nothing
-    puts it behind one, so it covers the note it is stacked on and the
-    barlines both."""
+    """Bottom to top: anything with a body, then the barlines, then every
+    head in reverse order of arrival on screen -- so SV, not the millisecond,
+    decides whether a fake slider covers the note it is stacked on."""
 
-    def _order(self, notes, at):
+    def _order(self, notes, at, green=()):
         view = gui.GameplayViewerView()
         view.resize(900, 200)
         point = TimingPoint(time=0.0, beat_length=500.0, meter=4)
-        view.timing_points = [point]
+        view.timing_points = [point, *green]
         view.beat_points = [point]
         view._beat_times = [0.0]
         view.slider_multiplier = 1.4
@@ -637,6 +636,25 @@ class DrawOrderTests(unittest.TestCase):
                          extras=("L|624:192", "1", "-400.0"))
         order = self._order([circle, fake], at=1000.0)
         self.assertLess(order.index(circle.uid), order.index(fake.uid))
+
+    def _shiny(self, fake_sv):
+        """Hyper Bass [Drop the GIMMICK]: the note at 2.5x, its fake slider
+        1ms later at `fake_sv`."""
+        circle = HitObject(x=256, y=192, time=1500, type=1, hit_sound=0)
+        fake = HitObject(x=256, y=192, time=1501, type=2, hit_sound=0,
+                         extras=("L|624:192", "1", "-0.001"))
+        green = (TimingPoint(time=1500.0, beat_length=-40.0, meter=4, uninherited_flag=0),
+                 TimingPoint(time=1501.0, beat_length=-100.0 / fake_sv, meter=4, uninherited_flag=0))
+        order = self._order([circle, fake], at=1000.0, green=green)
+        return order.index(circle.uid), order.index(fake.uid)
+
+    def test_a_faster_fake_slider_arrives_later_and_goes_under(self):
+        circle, fake = self._shiny(6.2)
+        self.assertGreater(circle, fake)
+
+    def test_a_slower_fake_slider_arrives_first_and_covers(self):
+        circle, fake = self._shiny(1.0)
+        self.assertLess(circle, fake)
 
     def test_a_real_drumroll_is_painted_before_both(self):
         circle = HitObject(x=256, y=192, time=1500, type=1, hit_sound=0)
