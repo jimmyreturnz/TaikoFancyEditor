@@ -470,6 +470,39 @@ class LibraryPageTests(unittest.TestCase):
         self.window._open_selected_difficulty()
         self.assertEqual(sorted(frame.view_type for frame in self.window._editor_views), ["chart", "sv"])
 
+    def test_going_back_keeps_the_song_playing_from_the_playhead(self):
+        self.run_scan()
+        self.window.song_list.setCurrentRow(0)
+        self.window._open_selected_difficulty()
+        state = self.window.state
+        playhead = round(self.window.timeline.current_time)
+        handed = []
+        self.window._library.continue_song = lambda *args: handed.append(args)
+        self.window._back_to_library()
+        self.assertEqual(handed, [(state.audio_path, playhead, 3000)])
+
+    def test_a_continued_song_starts_where_it_was_then_loops_to_the_preview(self):
+        library = self.window._library
+        positions = []
+
+        class Player:
+            def setPosition(self, ms): positions.append(ms)
+            def play(self): pass
+            def duration(self): return 10000
+
+        class Fade:
+            def __getattr__(self, name): return lambda *args: None
+
+        real = library.preview_player
+        library.preview_player, library.preview_fade = Player(), Fade()
+        library._preview_ms, library._resume_ms = 2000, 7345
+        try:
+            library._play_preview()
+            library._play_preview()  # EndOfMedia: round again
+        finally:
+            library.preview_player = real
+        self.assertEqual(positions, [7345, 2000])
+
     def test_every_configurable_shortcut_is_wired(self):
         from settings import all_shortcut_definitions
 

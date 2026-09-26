@@ -41,8 +41,6 @@ Full notes: [`docs/releases/v3.3.3.md`](docs/releases/v3.3.3.md).
 - Will also try to come up with a way that you can make barline kat or fake slider kat to have different approaching behavior (like adding an increasing SV speed to barline kat to make them look harder to read). 
 - Further optimization when applicable.
 - Finishing the Fancy Arranger redesign.
-- The window still extends past the screen border in places.
-- Leaving the editor should keep the song playing at 1.00x with normal pitch, whatever speed or mod it was at.
 - Reworking the config UI.
 - Reworking the settings of every transformation.
 

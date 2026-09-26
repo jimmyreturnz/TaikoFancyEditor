@@ -878,9 +878,16 @@ rounded; green-line click placement and its ghost did not. Both do now.
 11. ~~Larger items~~ -- **cleared by the owner 2026-09-26** (UI and assets
     rework, song library rework, updater rework, Thai localization).
 12. Fancy Arranger redesign is not finished (added by the owner 2026-09-26).
-13. The window still overextends the screen border.
+13. The window still overextends the screen border. -- DONE 2026-09-26: the
+    Fancy Arranger's top row needed 1948px against a 1904px viewport at
+    1920 wide (`tools/measure_window_fit.py`; every other page fits). The
+    AR/CS sliders were fixed at 200px; they now run 80-200, and the row
+    needs 1708px (1644 in Japanese). Narrower than ~1724px it scrolls, as
+    designed.
 14. Leaving the editor keeps the current song playing, reset to 1.00x and
-    normal pitch whatever speed, rate mod or pitch it was at.
+    normal pitch whatever speed, rate mod or pitch it was at. -- DONE
+    2026-09-26: the song list's preview player takes it over from the
+    playhead (`continue_song`), then loops to the PreviewTime as usual.
 15. Config UI rework.
 16. Rework of every transformation's configurable settings.
 

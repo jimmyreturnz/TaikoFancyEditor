@@ -1340,7 +1340,10 @@ class DifficultyValueControl(QWidget):
         self.setToolTip(tooltip)
         layout=QHBoxLayout(self);layout.setContentsMargins(0,0,0,0);layout.setSpacing(3)
         caption=QLabel(label);caption.setToolTip(tooltip);layout.addWidget(caption)
-        self.slider=QSlider(Qt.Horizontal);self.slider.setRange(0,1000);self.slider.setSingleStep(1);self.slider.setPageStep(10);self.slider.setFixedWidth(200);self.slider.setToolTip(tooltip);layout.addWidget(self.slider)
+        self.slider=QSlider(Qt.Horizontal);self.slider.setRange(0,1000);self.slider.setSingleStep(1);self.slider.setPageStep(10);self.slider.setToolTip(tooltip)
+        # 200px when the row has it, down to 80 when it does not: fixed at 200
+        # the Fancy Arranger's row needed 1948px and ran off a 1920 screen.
+        self.slider.setMinimumWidth(80);self.slider.setMaximumWidth(200);layout.addWidget(self.slider,1)
         self.value_box=QDoubleSpinBox();self.value_box.setRange(0.0,10.0);self.value_box.setDecimals(2);self.value_box.setSingleStep(0.01);self.value_box.setFixedWidth(62);self.value_box.setButtonSymbols(QAbstractSpinBox.NoButtons);self.value_box.setToolTip(tooltip);layout.addWidget(self.value_box)
         decrease=step_button("-", self.value_box.stepDown);increase=step_button("+", self.value_box.stepUp)
         # Height typed, width measured: 28px was wide enough for the glyph
@@ -9278,6 +9281,9 @@ class LibraryPageController:
         self._preview_audio: Path | None = None
         self._preview_ms = -1
         self._preview_pending: tuple[Path, int] | None = None
+        # One start somewhere other than the preview point: the editor's
+        # playhead, handed over on the way back to the song list.
+        self._resume_ms: int | None = None
         self._preview_loading = False
         self.preview_timer = QTimer(window)
         self.preview_timer.setSingleShot(True)
@@ -10091,10 +10097,19 @@ class LibraryPageController:
         elif status == QMediaPlayer.EndOfMedia and self._preview_audio is not None:
             self._play_preview()  # round again from the preview point, as song select does
 
+    def continue_song(self, audio: Path, position_ms: int, preview_ms: int | None) -> None:
+        """Play `audio` from `position_ms` now, looping to its preview point."""
+        self.preview_timer.stop()
+        self._preview_pending = (audio, -1 if preview_ms is None else preview_ms)
+        self._resume_ms = position_ms
+        self.start_preview()
+
     def _play_preview(self) -> None:
         player = self.preview_player
         # osu! starts an unset PreviewTime at 40% of the track.
         start = self._preview_ms if self._preview_ms >= 0 else int(player.duration() * 0.4)
+        if self._resume_ms is not None:
+            start, self._resume_ms = self._resume_ms, None
         player.setPosition(max(0, start))
         player.play()
         volume = self.window.settings.int_value("audio/music_volume", 65) / 100.0
@@ -10108,6 +10123,7 @@ class LibraryPageController:
         self._preview_pending = None
         self._preview_loading = False
         self._preview_audio = None
+        self._resume_ms = None
         if self.preview_player is not None:
             self.preview_fade.stop()
             self.preview_player.stop()
@@ -11483,8 +11499,10 @@ class MainWindow(QMainWindow):
         # access violation inside show(), about one test_gimmick_editor run in six.
         self.approach_rate_control=DifficultyValueControl("AR",10.0,"Approach Rate: 0 is slowest, 10 is fastest. Export default is 10.00.")
         self.circle_size_control=DifficultyValueControl("CS",7.0,"Circle Size: 0 is biggest, 10 is smallest. Export default is 7.00.")
-        sub_toolbar.addWidget(self.approach_rate_control)
-        sub_toolbar.addWidget(self.circle_size_control)
+        # Weighted well over the gap before Layout: a box layout shares room by
+        # stretch, so at equal weight the gap took as much as each slider.
+        sub_toolbar.addWidget(self.approach_rate_control, 10)
+        sub_toolbar.addWidget(self.circle_size_control, 10)
         page_layout.addWidget(sub_toolbar_scroll)
 
         # Every box but the canvas is a dock: moved to any edge, floated, closed
@@ -11767,6 +11785,7 @@ class MainWindow(QMainWindow):
 
     def _show_page(self, index: int) -> None:
         """Switch page and keep the header tab that owns it checked."""
+        leaving = self.page_stack.currentIndex()
         self.page_stack.setCurrentIndex(index)
         button = self.page_button_group.button(index)
         if button is not None:
@@ -11783,6 +11802,14 @@ class MainWindow(QMainWindow):
         if index == PAGE_LIBRARY:
             # Arrows step through the songs straight away, no click first.
             self._library.song_list.setFocus()
+            state = getattr(self, "state", None)
+            if leaving != PAGE_LIBRARY and state is not None and state.audio_path is not None:
+                # The song goes on from the playhead, on the library's own
+                # player: 1.00x and the track's own pitch whatever speed or
+                # rate mod the editor was at.
+                self._library.continue_song(
+                    state.audio_path, round(self.timeline.current_time),
+                    editor_timeline_metadata(state.document)[1])
         else:
             self._library.stop_preview()
 
