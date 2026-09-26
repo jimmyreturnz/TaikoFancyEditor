@@ -136,12 +136,18 @@ class HeaderStatusPositionTests(WindowTestCase):
 
 
 class DifficultyLabelTests(WindowTestCase):
-    def test_every_view_frame_labels_its_difficulty_on_the_right(self):
+    def test_every_view_frame_names_its_difficulty_in_its_header(self):
+        # Once per view, in the header beside it -- not above it.
         for frame in self.window._editor_views:
-            chrome = frame.layout().itemAt(0).layout()
-            widgets = [chrome.itemAt(i).widget() for i in range(chrome.count())]
-            self.assertIs(widgets[-1], frame.difficulty_name_label)
+            self.assertIs(frame.layout().itemAt(0).widget(), frame.header)
+            self.assertTrue(frame.header.isAncestorOf(frame.difficulty_name_label))
             self.assertEqual(frame.difficulty_name_label.text(), self.state.document.version)
+
+    def test_focusing_a_view_rims_its_frame_only(self):
+        frames = self.window._editor_views
+        self.assertGreaterEqual(len(frames), 2)
+        self.window._mark_focused_view(frames[1].content)
+        self.assertEqual([f.focused for f in frames[:2]], [False, True])
 
     def test_difficulty_group_has_no_second_label_on_the_left(self):
         group_layout = self.window._editor_view_groups[self.path]

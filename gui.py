@@ -6110,16 +6110,41 @@ class ElidedLabel(QLabel):
         super().setText(elided)
 
 
-class EditorViewFrame(QWidget):
-    """Chrome around one Editor-page view: close, reorder, lock, and a label.
+def view_type_caption(view_type: str) -> str:
+    """The name AddViewDialog gives `view_type`, for a view's header.
 
-    The difficulty name is shown exactly once per view, at the **right** of
-    this chrome row. It used to appear twice for a chart view -- once here and
-    once in the group header above the whole difficulty group -- which is what
-    made every difficulty read as if it were labelled on both sides. The group
-    header no longer carries a label, so this is the only place it appears,
-    and it is shown for every view type (not just chart) since nothing else
-    identifies an SV/density/gimmick view's difficulty anymore.
+    Literal tr() calls, one per type, for the same reason AddViewDialog uses
+    them: the i18n gate scans for tr("context", "constant") pairs.
+    """
+    return {
+        "chart": tr("MainWindow", "Chart"),
+        "chart_regular": tr("MainWindow", "Regular Chart Only"),
+        "chart_fake_slider": tr("MainWindow", "Fake Sliders Only"),
+        "chart_barline": tr("MainWindow", "Barlines Only"),
+        "sv": tr("MainWindow", "SV Editor"),
+        "kiai_sound": tr("MainWindow", "Kiai and Sound Volume"),
+        "gameplay": tr("MainWindow", "Gameplay Viewer"),
+        "gameplay_regular": tr("MainWindow", "Gameplay: Regular Chart Only"),
+        "gameplay_fake_slider": tr("MainWindow", "Gameplay: Fake Sliders Only"),
+        "gameplay_barline": tr("MainWindow", "Gameplay: Barlines Only"),
+        "density": tr("MainWindow", "Density"),
+    }.get(view_type, "")
+
+
+class EditorViewFrame(QWidget):
+    """One view with a header on its left: what it is, and close/move/lock.
+
+    The header used to be a row of four pink buttons above every view, with
+    the difficulty at the far right of it. Stacked seven deep on the gimmick
+    page that was ~180px of chrome and 28 pink buttons, all equally loud. It
+    is now a strip beside the view (HEADER_WIDTH): the kind of view, then the
+    name -- the difficulty in pink on the Editor page, the layer's own name on
+    the gimmick page -- and the four buttons, quiet, shown while the pointer
+    is over the view or the view is locked. Every view loses the same width,
+    so the hit positions, each centred in its own view, still line up.
+
+    The difficulty is still shown once per view and nowhere else; the group
+    header above a difficulty's views carries no label.
 
     Holds no MainWindow reference; the owner wires content in via set_content
     and listens for `closed`.
@@ -6131,94 +6156,129 @@ class EditorViewFrame(QWidget):
     # views underneath it, every one of which already drags.
     move_requested = Signal(object, int)
 
+    HEADER_WIDTH = 148
+    # The frame's own sheet is selector-less, so it reaches every descendant:
+    # each rule below names its own border to undo that.
+    FRAME_STYLE = "background: #1b212b; border: 1px solid #303947; border-radius: 6px;"
+    FOCUSED_FRAME_STYLE = "background: #1b212b; border: 1px solid #8a4a6a; border-radius: 6px;"
+    HEADER_STYLE = "QWidget#viewHeader { border: 0; border-right: 1px solid #303947; border-radius: 0; }"
+    # The song select's selection: a pink rim at the left edge and a tint.
+    FOCUSED_HEADER_STYLE = (
+        "QWidget#viewHeader { border: 0; border-left: 3px solid #ff66aa;"
+        " border-right: 1px solid #303947; border-radius: 0;"
+        " background: qlineargradient(x1:0, y1:0, x2:1, y2:0,"
+        " stop:0 rgba(255,102,170,46), stop:0.7 rgba(255,102,170,10)); }"
+    )
+
     def __init__(self, view_type: str, difficulty_label: str, compact: bool = False) -> None:
         super().__init__()
         self.view_type = view_type
         self.locked = False
         self.compact = compact
+        self.focused = False
         self.content: QWidget | None = None
 
-        self.setStyleSheet("background: #1b212b; border: 1px solid #303947; border-radius: 6px;")
+        self.setStyleSheet(self.FRAME_STYLE)
 
-        layout = QVBoxLayout(self)
-        margin = 3 if compact else 6
-        layout.setContentsMargins(margin, margin, margin, margin)
-        layout.setSpacing(2 if compact else 4)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(1, 1, 1, 1)
+        layout.setSpacing(0)
 
-        # EditorViewFrame's own bare (selector-less) stylesheet above breaks
-        # the app-wide pink QPushButton cascade for its descendants, so the
-        # chrome buttons render small and low-contrast unless styled here
-        # explicitly.
-        #
-        # One padding for both pages. It was trimmed for the gimmick page,
-        # where six frames of chrome are stacked in one screen and the buttons
-        # cost more room than the layers they belong to -- and the Editor page
-        # is now the same shape, with a view height that goes down to 90px and
-        # a chart per difficulty stacked in it. Padding rather than a typed
-        # size: the glyph still decides how much space it needs, which is what
-        # stops a font change from drawing blank pink squares.
-        chrome_padding = "2px 5px"
+        self.header = QWidget()
+        self.header.setObjectName("viewHeader")
+        self.header.setAttribute(Qt.WA_StyledBackground, True)
+        self.header.setFixedWidth(self.HEADER_WIDTH)
+        self.header.setStyleSheet(self.HEADER_STYLE)
+        header = QVBoxLayout(self.header)
+        header.setContentsMargins(10, 5 if compact else 7, 6, 4 if compact else 6)
+        header.setSpacing(1)
+
+        # A gimmick layer's name already says what it is ("SV (barlines)"),
+        # so only the Editor page's views, named by difficulty, get a kind.
+        self.kind_label = QLabel("" if compact else view_type_caption(view_type).upper())
+        self.kind_label.setStyleSheet(
+            "color: #7d8794; font-size: 10px; font-weight: 700; border: 0; background: transparent;")
+        self.kind_label.setVisible(bool(self.kind_label.text()))
+        header.addWidget(self.kind_label)
+
+        # Wrapped, not elided: two lines fit in the shortest view, and
+        # "The Pharaoh's C..." cut off the part that told two apart.
+        self.difficulty_name_label = QLabel(difficulty_label)
+        self.difficulty_name_label.setTextFormat(Qt.PlainText)
+        self.difficulty_name_label.setWordWrap(True)
+        colour = "#e8edf3" if compact else ACCENT_PINK
+        self.difficulty_name_label.setStyleSheet(
+            f"color: {colour}; font-weight: 700; border: 0; background: transparent;")
+        header.addWidget(self.difficulty_name_label)
+        header.addStretch(1)
+
+        # Quiet until wanted: shown while the pointer is over this view, and
+        # always while it is locked, so a locked view says so.
+        self.controls = QWidget()
+        self.controls.setStyleSheet("border: 0; background: transparent;")
+        controls = QHBoxLayout(self.controls)
+        controls.setContentsMargins(0, 0, 0, 0)
+        controls.setSpacing(1)
         chrome_button_style = (
-            "QPushButton { background: #f3a6bd; color: #17191f; border: 0;"
-            f" border-radius: 6px; font-weight: 600; padding: {chrome_padding}; }}"
-            "QPushButton:hover { background: #f7bfd0; }"
-            "QPushButton:checked { background-color: #ff66aa; color: #ffffff;"
-            " border: 1px solid #ff9dcc; font-weight: 700; }"
+            "QPushButton { background: transparent; color: #7d8794; border: 0;"
+            " border-radius: 4px; font-weight: 600; padding: 1px 5px; }"
+            "QPushButton:hover { background: #2a3341; color: #e8edf3; }"
+            "QPushButton:checked { color: #ffb347; }"
         )
 
-        chrome = QHBoxLayout()
-        self.close_button = QPushButton("✕")
+        self.close_button = QPushButton("\u2715")
         self.close_button.setToolTip(tr("MainWindow", "Close view"))
-        self.close_button.setFocusPolicy(Qt.NoFocus)
-        self.close_button.setStyleSheet(chrome_button_style)
         self.close_button.clicked.connect(lambda: self.closed.emit(self))
-        chrome.addWidget(self.close_button)
-
-        # Between close and lock, in the order the row reads: get rid of it,
-        # move it, freeze it.
-        self.move_up_button = QPushButton("▲")
+        self.move_up_button = QPushButton("\u25b2")
         self.move_up_button.setToolTip(tr("MainWindow", "Move view up"))
-        self.move_up_button.setFocusPolicy(Qt.NoFocus)
-        self.move_up_button.setStyleSheet(chrome_button_style)
         self.move_up_button.clicked.connect(lambda: self.move_requested.emit(self, -1))
-        chrome.addWidget(self.move_up_button)
-
-        self.move_down_button = QPushButton("▼")
+        self.move_down_button = QPushButton("\u25bc")
         self.move_down_button.setToolTip(tr("MainWindow", "Move view down"))
-        self.move_down_button.setFocusPolicy(Qt.NoFocus)
-        self.move_down_button.setStyleSheet(chrome_button_style)
         self.move_down_button.clicked.connect(lambda: self.move_requested.emit(self, 1))
-        chrome.addWidget(self.move_down_button)
-
-        self.lock_button = QPushButton("🔒")
+        self.lock_button = QPushButton("\U0001f512")
         self.lock_button.setCheckable(True)
         self.lock_button.setToolTip(tr("MainWindow", "Lock view (read-only)"))
-        self.lock_button.setFocusPolicy(Qt.NoFocus)
-        self.lock_button.setStyleSheet(chrome_button_style)
         self.lock_button.toggled.connect(self._set_locked)
-        chrome.addWidget(self.lock_button)
+        # In the order the row reads: move it, freeze it, get rid of it.
+        for button in (self.move_up_button, self.move_down_button, self.lock_button, self.close_button):
+            button.setFocusPolicy(Qt.NoFocus)
+            button.setStyleSheet(chrome_button_style)
+            controls.addWidget(button)
+        controls.addStretch(1)
+        header.addWidget(self.controls)
+        self.controls.setVisible(False)
 
-        chrome.addStretch(1)
-        self.difficulty_name_label = QLabel(difficulty_label)
-        self.difficulty_name_label.setStyleSheet("color:#f3a6bd;font-weight:700;border:0;")
-        chrome.addWidget(self.difficulty_name_label)
-
-        layout.addLayout(chrome)
-
+        layout.addWidget(self.header)
         self._content_layout = QVBoxLayout()
         self._content_layout.setContentsMargins(0, 0, 0, 0)
         layout.addLayout(self._content_layout, 1)
 
     def showEvent(self, event) -> None:
-        # Both glyphs vanished when the window stylesheet's button padding grew
-        # to 8px 16px: a typed 28px width left the label negative room, so Qt
-        # drew nothing. Measured after polish (and after parenting, which is
-        # what makes the app-wide sheet apply), like the playback rows.
+        # Measured after polish (and after parenting, which is what makes the
+        # app-wide sheet apply): a typed width once left the glyphs negative
+        # room and Qt drew nothing.
         super().showEvent(event)
         equalize_button_widths((
             self.close_button, self.move_up_button, self.move_down_button,
             self.lock_button,
         ))
+
+    def enterEvent(self, event) -> None:
+        super().enterEvent(event)
+        self.controls.setVisible(True)
+
+    def leaveEvent(self, event) -> None:
+        super().leaveEvent(event)
+        self.controls.setVisible(self.locked)
+
+    def set_focused(self, focused: bool) -> None:
+        """Mark this as the view the tool row acts on. Nothing on screen said
+        which one that was; the row follows whichever view last had focus."""
+        if focused == self.focused:
+            return
+        self.focused = focused
+        self.setStyleSheet(self.FOCUSED_FRAME_STYLE if focused else self.FRAME_STYLE)
+        self.header.setStyleSheet(self.FOCUSED_HEADER_STYLE if focused else self.HEADER_STYLE)
 
     def set_content(self, widget: QWidget) -> None:
         self.content = widget
@@ -6228,6 +6288,28 @@ class EditorViewFrame(QWidget):
         self.locked = locked
         if self.content is not None:
             self.content.setEnabled(not locked)
+        self.controls.setVisible(locked or self.underMouse())
+
+
+def add_view_row(on_click) -> QPushButton:
+    """"+ Add view" as a dashed row under a page's stack of views.
+
+    It was a "+" in the playback strip, beside the view-size stepper's own
+    +/-, and three "+" in a row said nothing about which one opened a view.
+    Under the stack is where the new view appears. Not inside the stack's
+    layout: that ends in its stretch, and group reordering and insertion both
+    count on it.
+    """
+    button = QPushButton("+  " + tr("MainWindow", "Add view"))
+    button.setToolTip(tr("MainWindow", "open new view"))
+    button.setFocusPolicy(Qt.NoFocus)
+    button.setStyleSheet(
+        "QPushButton { background: transparent; color: #7d8794; border: 1px dashed #3a4554;"
+        " border-radius: 6px; padding: 5px; font-weight: 600; }"
+        "QPushButton:hover { color: #f3a6bd; border-color: #b0587f; background: rgba(255,102,170,13); }"
+    )
+    button.clicked.connect(on_click)
+    return button
 
 
 class AddViewDialog(QDialog):
@@ -10210,6 +10292,10 @@ class ToolStateController:
         # a modal dialog, say) is not a move, so an active tool survives that.
         moved = new is not self.last_focused_editor_view
 
+        if (getattr(new, "gimmick_layer", None) is not None or isinstance(new, SVEditorView)
+                or (isinstance(new, TimelineGameplay) and new.symmetric)):
+            self.window._mark_focused_view(new)
+
         if getattr(new, "gimmick_layer", None) is not None:
             if isinstance(new, SVEditorView):
                 self.active_sv_view = new
@@ -11929,12 +12015,6 @@ class MainWindow(QMainWindow):
         for button in height_box.findChildren(QPushButton):
             button.setProperty("role", "ghost")
 
-        add_view_button = QPushButton("+")
-        add_view_button.setToolTip(tr("MainWindow", "open new view"))
-        add_view_button.setFocusPolicy(Qt.NoFocus)
-        add_view_button.clicked.connect(self._open_add_view_dialog)
-        strip.addWidget(add_view_button)
-
         layout.addLayout(strip)
 
         scroll = QScrollArea()
@@ -11946,6 +12026,7 @@ class MainWindow(QMainWindow):
         self.editor_views_layout.addStretch(1)
         scroll.setWidget(views_container)
         layout.addWidget(scroll, 1)
+        layout.addWidget(add_view_row(self._open_add_view_dialog))
 
         # Global, not per-view: applies to whichever view has focus. Only
         # one of these two rows is visible at a time (chart vs SV).
@@ -11991,14 +12072,6 @@ class MainWindow(QMainWindow):
         strip.addWidget(self.gimmick_timing_bar, 1)
         self._timing_bars.append(self.gimmick_timing_bar)
 
-        # The Editor page's own "+", which this strip was missing. It adds to
-        # the layer stack below rather than to a difficulty group: the gimmick
-        # page edits one difficulty, so there is only one place a view can go.
-        self.gimmick_add_view_button = QPushButton("+")
-        self.gimmick_add_view_button.setToolTip(tr("MainWindow", "open new view"))
-        self.gimmick_add_view_button.setFocusPolicy(Qt.NoFocus)
-        self.gimmick_add_view_button.clicked.connect(self._open_gimmick_add_view_dialog)
-        strip.addWidget(self.gimmick_add_view_button)
 
         self.gimmick_play_button = QPushButton("▶")
         self.gimmick_play_button.setFocusPolicy(Qt.NoFocus)
@@ -12049,6 +12122,10 @@ class MainWindow(QMainWindow):
         self.gimmick_views_layout.addStretch(1)
         scroll.setWidget(views_container)
         layout.addWidget(scroll, 1)
+        # Adds to the layer stack rather than to a difficulty group: the
+        # gimmick page edits one difficulty, so there is one place it can go.
+        self.gimmick_add_view_button = add_view_row(self._open_gimmick_add_view_dialog)
+        layout.addWidget(self.gimmick_add_view_button)
 
         # One row per layer, only ever one visible: clicking a layer brings up
         # that layer's own toolbox. Six rows and not three shared ones because
@@ -12175,6 +12252,11 @@ class MainWindow(QMainWindow):
         # set -- Config included, or it alone stays narrower than the tools.
         self._gimmick_row_buttons.extend([*buttons.values(), config_button])
         return row
+
+    def _mark_focused_view(self, view) -> None:
+        """Rim the frame holding `view`, the one the tool row now acts on."""
+        for frame in (*self._editor_views, *self._gimmick_views):
+            frame.set_focused(frame.isAncestorOf(view))
 
     def _show_gimmick_row_for(self, view) -> None:
         """Bring up the toolbox belonging to the layer that just got focus."""

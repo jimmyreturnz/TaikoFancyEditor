@@ -723,7 +723,15 @@ started.
 
 ## Owner requests, 2026-09-17
 
-### Editor shell: one pink thing per job -- APPROVED 2026-09-26, not started
+### Editor shell: one pink thing per job -- DONE 2026-09-26 (f338a9c, bb38676, and the view-header commit)
+
+**Not built from the mockup:** tool digits as key caps (a QPushButton label
+cannot style part of its text; needs a painted button), and the tool row's
+"Tools for <view>" caption -- the focused view's pink rim says it instead.
+The Fancy Arranger's sub-toolbar still has its pink buttons (open question
+below). The hover-only view buttons were checked by test and by code, not by
+eye: a screenshot has no pointer.
+
 
 Mockup: https://claude.ai/artifact/VdtijCJLWtSMSzgpt6oG9e ("Editor Shell
 Redesign"). Counted on 0b3d48d at 1920x1040 with Nbt-Hwt open: 49 filled pink
