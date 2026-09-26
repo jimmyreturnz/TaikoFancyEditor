@@ -283,15 +283,23 @@ class ShinyGlowTests(unittest.TestCase):
         self.assertFalse(hasattr(gui, "SHINY_GLOW_COLOR"))
         self.assertFalse(hasattr(gui, "draw_shiny_glow"))
 
-    def test_a_pile_covers_the_note_it_is_stacked_on(self):
-        """A fake slider is a hit object like any other and draws over the
-        note, so outside a chorus a shiny reads as flat drumroll yellow
-        however deep -- the note under it is not part of the picture."""
+    def test_a_note_first_in_the_file_stays_over_its_pile(self):
+        """One millisecond, so file order decides (ppy/osu
+        HitObjectContainer.Compare): outside a chorus the note shows as
+        itself however deep the pile under it."""
         for stack in (3, 8):
             with self.subTest(stack=stack):
                 shown = self._colour(stack, note=True)
-                self.assertEqual(
+                self.assertNotEqual(
                     (shown.red(), shown.green(), shown.blue()), gui.DRUMROLL_COLOR)
+
+    def test_a_lone_note_flashes_white_and_a_pile_yellow(self):
+        """CirclePiece's flash is white; the shiny's light is its heads' yellow."""
+        lone = self._colour(0, note=True, kiai=True)
+        plain = self._colour(0, note=True)
+        self.assertGreater(lone.blue() - plain.blue(), 20, "white lifts blue too")
+        shiny = self._colour(8, note=True, kiai=True)
+        self.assertGreater(shiny.green() - lone.green(), shiny.blue() - lone.blue())
 
     def test_in_kiai_a_deeper_pile_pulses_harder(self):
         """Every object on the pile takes its own stamp, so the pile compounds

@@ -833,17 +833,15 @@ DRUMROLL_COLOR = (251, 183, 6)
 # Several richer models were tried against real readings and none of them
 # closed; this is the one that is simply true by construction.
 #
-# The pulse is the drumroll's own yellow, and **nothing goes white**. Additive
-# light keeps whatever hue it is given, and #fbb706 carries 6 of 255 blue, so
-# it saturates to a hot yellow and stops there.
-#
-# That is the right end point rather than a limitation. osu! composites hit
-# sprites with normal alpha and reserves additive for one thing, `CirclePiece`'s
-# flash box -- and alpha compositing *converges* on the sprite's own colour, it
-# cannot pass it. A stack of drumroll heads therefore gets rapidly more solid
-# and stops at yellow; it never washes out. A white term was added here to make
-# it do otherwise and was simply wrong.
+# A drumroll head's pulse is the drumroll's own yellow, and a pile of them
+# (a shiny) adds that yellow to the note on top: the owner's Hyper Bass in
+# game reads #ea452c -> #ff9236 on a shiny don, green +77 against blue +10,
+# which is yellow light and not white.
 KIAI_PULSE_COLOR = DRUMROLL_COLOR
+# A don or kat on its own flashes **white**, as ppy/osu `CirclePiece`'s flash
+# box does (`Colour = Color4.White`, additive): the note lifts toward a paler
+# version of itself rather than toward yellow.
+KIAI_CIRCLE_PULSE_COLOR = (255, 255, 255)
 # osu!taiko's CirclePiece flashes at `kiai_flash_opacity = 0.15f` on each kiai
 # beat, and does it with `BlendingParameters.Additive`. Both matter: 0.31 (what
 # this was) is twice the brightness, and drawn as ordinary alpha it lays a film
@@ -1087,11 +1085,12 @@ def draw_kiai_flash(
     painter: QPainter, x: float, y: float, radius: float, pulse: float,
     strength: float = 1.0, skin=None, big: bool = False,
     element: str | None = None, top_left: bool = False,
+    colour: tuple[int, int, int] = KIAI_PULSE_COLOR,
 ) -> None:
     """The kiai beat pulse. See `draw_note_light` and `KIAI_PULSE_COLOR`."""
     draw_note_light(
         painter, x, y, radius, round(KIAI_PULSE_ALPHA * pulse * strength),
-        KIAI_PULSE_COLOR, skin, big, element, top_left,
+        colour, skin, big, element, top_left,
     )
 
 
@@ -4962,11 +4961,6 @@ class GameplayViewerView(QWidget):
         last = bisect_left(self._velocity_times, end_ms)
         return min(self._velocities[first:max(last, first + 1)])
 
-    def _arrival_ms(self, note) -> float:
-        """When `note` crosses osu!'s edge of the playfield on its way in."""
-        speed = max(1e-9, self.velocity_at(note.time) * self.px_per_beat)
-        return note.time - (self.osu_edge_x() - self._hit_x()) / speed
-
     def x_for_time(self, time_ms: float) -> float:
         """Where an object at `time_ms` currently sits.
 
@@ -5247,20 +5241,6 @@ class GameplayViewerView(QWidget):
         first = bisect_left(self.note_times, start_time - self._max_extend_ms)
         after_last = bisect_right(self.note_times, end_time)
 
-        # Two layers: real drumrolls and spinners, then everything else.
-        # **Anything with a body goes under everything**, barlines included.
-        # One is a band tens of seconds wide, so drawn in with the notes it
-        # covered every barline and every object stacked on top of it.
-        painter.setRenderHint(QPainter.Antialiasing, True)
-        bodies, heads = [], []
-        for note in self.notes[first:after_last]:
-            if note.is_spinner or (note.is_slider and self._note_end_time(note) is not None):
-                bodies.append(note)
-            else:
-                heads.append(note)
-        for note in reversed(bodies):
-            self._draw_note(painter, note, center_y, normal_radius, big_radius)
-
         painter.setRenderHint(QPainter.Antialiasing, False)
         marker = self.skin.stretched(
             "taiko-barline",
@@ -5289,16 +5269,18 @@ class GameplayViewerView(QWidget):
             painter.setPen(self.hit_pen)
             painter.setBrush(Qt.NoBrush)
             painter.drawEllipse(QPointF(hit_x, center_y), normal_radius, normal_radius)
-        # Whatever came on screen first is on top, as in game. At one speed
-        # that is the note nearest the hit position; across speeds it is SV
-        # that decides. A shiny (Hyper Bass [Drop the GIMMICK]) is a note at
-        # 2.5x with fake sliders 1-3ms later at ~6x: they arrive after it and
-        # go under, so the note keeps its colour and the stack only shows in
-        # the kiai flash below. A slower fake slider would arrive first and
-        # cover it. A dead heat (same millisecond, same speed) goes to the
-        # fake slider, which is how a stack at one SV shows at all. Bodies are
-        # already down, under the barlines.
-        for note in sorted(heads, key=lambda note: (-self._arrival_ms(note), note.is_slider)):
+        # osu!'s own order (ppy/osu HitObjectContainer.Compare): the earlier
+        # StartTime is on top, whatever the SV -- a shiny's note at T covers the
+        # fake sliders it carries at T+1..3. A tie goes to the object added
+        # first -- added when it comes on screen, and two objects on one
+        # millisecond scroll at one speed, so that is file order. Barlines and
+        # the hit target are an
+        # underlay beneath all of it (TaikoPlayfield), drumrolls and spinners
+        # included -- they share the one container with the notes.
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        visible = list(enumerate(self.notes[first:after_last], first))
+        visible.sort(key=lambda item: (-item[1].time, -item[0]))
+        for _index, note in visible:
             self._draw_note(painter, note, center_y, normal_radius, big_radius)
 
         # Second pass, so stacked objects compound: a note drawn on top of an
@@ -5353,7 +5335,8 @@ class GameplayViewerView(QWidget):
                         painter.save()
                         painter.setOpacity(alpha)
                         draw_kiai_flash(
-                            painter, x, center_y, radius, pulse, strength, self.skin, big)
+                            painter, x, center_y, radius, pulse, strength, self.skin, big,
+                            colour=KIAI_CIRCLE_PULSE_COLOR if note.is_circle else KIAI_PULSE_COLOR)
                         painter.restore()
                 # A roll's cap is part of the object and pulses with it. Its own
                 # shape and its own anchor, or the light lands on the track

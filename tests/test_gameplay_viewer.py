@@ -588,9 +588,8 @@ class DrumrollPartsTests(unittest.TestCase):
 
 
 class DrawOrderTests(unittest.TestCase):
-    """Bottom to top: anything with a body, then the barlines, then every
-    head in reverse order of arrival on screen -- so SV, not the millisecond,
-    decides whether a fake slider covers the note it is stacked on."""
+    """ppy/osu HitObjectContainer.Compare: the earlier StartTime is on top,
+    whatever the SV and whatever the object. On one millisecond, file order."""
 
     def _order(self, notes, at, green=()):
         view = gui.GameplayViewerView()
@@ -628,50 +627,50 @@ class DrawOrderTests(unittest.TestCase):
             gui.GameplayViewerView._draw_note = original
         return painted
 
-    def test_a_fake_slider_is_painted_over_the_note_it_decorates(self):
-        """Under the note, a shiny note's stack was hidden by the very note it
-        decorates and the shine only showed where it stuck out past it."""
+    def _pair(self, second_time, second_sv, second=None):
+        """A note at 1500 at 2.5x, and `second` (a fake slider by default) at
+        `second_time` and `second_sv`. Returns their positions in paint order."""
         circle = HitObject(x=256, y=192, time=1500, type=1, hit_sound=0)
-        fake = HitObject(x=256, y=192, time=1500, type=2, hit_sound=0,
-                         extras=("L|624:192", "1", "-400.0"))
-        order = self._order([circle, fake], at=1000.0)
-        self.assertLess(order.index(circle.uid), order.index(fake.uid))
+        other = second or HitObject(x=256, y=192, time=second_time, type=2, hit_sound=0,
+                                    extras=("L|624:192", "1", "-0.001"))
+        green = [TimingPoint(time=1500.0, beat_length=-40.0, meter=4, uninherited_flag=0)]
+        if second_time != 1500:
+            green.append(TimingPoint(time=float(second_time), beat_length=-100.0 / second_sv,
+                                     meter=4, uninherited_flag=0))
+        else:
+            green[0].beat_length = -100.0 / second_sv
+        order = self._order([circle, other], at=1000.0, green=green)
+        return order.index(circle.uid), order.index(other.uid)
 
-    def _shiny(self, fake_sv):
-        """Hyper Bass [Drop the GIMMICK]: the note at 2.5x, its fake slider
-        1ms later at `fake_sv`."""
-        circle = HitObject(x=256, y=192, time=1500, type=1, hit_sound=0)
-        fake = HitObject(x=256, y=192, time=1501, type=2, hit_sound=0,
-                         extras=("L|624:192", "1", "-0.001"))
-        green = (TimingPoint(time=1500.0, beat_length=-40.0, meter=4, uninherited_flag=0),
-                 TimingPoint(time=1501.0, beat_length=-100.0 / fake_sv, meter=4, uninherited_flag=0))
-        order = self._order([circle, fake], at=1000.0, green=green)
-        return order.index(circle.uid), order.index(fake.uid)
-
-    def test_a_faster_fake_slider_arrives_later_and_goes_under(self):
-        circle, fake = self._shiny(6.2)
+    def test_a_shiny_stack_goes_under_its_note(self):
+        """Hyper Bass [Drop the GIMMICK]: the note at T, fake sliders at T+1."""
+        circle, fake = self._pair(1501, 6.2)
         self.assertGreater(circle, fake)
 
-    def test_a_slower_fake_slider_arrives_first_and_covers(self):
-        circle, fake = self._shiny(1.0)
-        self.assertLess(circle, fake)
+    def test_sv_does_not_lift_a_later_object_over_an_earlier_one(self):
+        circle, fake = self._pair(1501, 0.5)
+        self.assertGreater(circle, fake)
 
-    def test_a_real_drumroll_is_painted_before_both(self):
+    def test_on_one_millisecond_the_first_in_the_file_is_on_top(self):
         circle = HitObject(x=256, y=192, time=1500, type=1, hit_sound=0)
         fake = HitObject(x=256, y=192, time=1500, type=2, hit_sound=0,
-                         extras=("L|624:192", "1", "-400.0"))
-        roll = HitObject(x=256, y=192, time=1500, type=2, hit_sound=0,
-                         extras=("L|624:192", "1", "400.0"))
-        order = self._order([circle, fake, roll], at=1000.0)
-        self.assertLess(order.index(roll.uid), order.index(circle.uid))
-        self.assertLess(order.index(circle.uid), order.index(fake.uid))
+                         extras=("L|624:192", "1", "-0.001"))
+        order = self._order([circle, fake], at=1000.0)
+        self.assertGreater(order.index(circle.uid), order.index(fake.uid))
 
-    def test_a_spinner_goes_down_with_the_bodies(self):
+    def test_a_real_drumroll_is_ordered_by_time_like_a_note(self):
+        roll = HitObject(x=256, y=192, time=1400, type=2, hit_sound=0,
+                         extras=("L|624:192", "1", "400.0"))
         circle = HitObject(x=256, y=192, time=1500, type=1, hit_sound=0)
-        spinner = HitObject(x=256, y=192, time=1500, type=8, hit_sound=0,
+        order = self._order([roll, circle], at=1000.0)
+        self.assertGreater(order.index(roll.uid), order.index(circle.uid))
+
+    def test_a_spinner_is_ordered_by_time_like_a_note(self):
+        circle = HitObject(x=256, y=192, time=1500, type=1, hit_sound=0)
+        spinner = HitObject(x=256, y=192, time=1600, type=8, hit_sound=0,
                             extras=("2500",))
         order = self._order([circle, spinner], at=1000.0)
-        self.assertLess(order.index(spinner.uid), order.index(circle.uid))
+        self.assertGreater(order.index(circle.uid), order.index(spinner.uid))
 
 
 class PlayfieldTests(unittest.TestCase):
@@ -1136,10 +1135,9 @@ class PaintAndInputTests(unittest.TestCase):
         self.view.current_time = 1500.0
         self.view.grab()
 
-    def test_a_real_drumroll_is_drawn_under_the_barlines(self):
-        """Its body is a band seconds wide. Drawn in with the notes it covered
-        every barline and every fake slider stacked on top of it, which is the
-        whole picture in a gimmick section."""
+    def test_a_real_drumroll_is_drawn_over_the_barlines(self):
+        """TaikoPlayfield puts the barlines in an underlay beneath every hit
+        object, drumroll bodies included."""
         from model.hit_object import HitObject
 
         document = parse_osu(write_fixture(Path(self._temp.name), "full_v14"))
@@ -1153,10 +1151,10 @@ class PaintAndInputTests(unittest.TestCase):
         image = view.grab().toImage()
         row = view.height() // 2
         barline_x = round(view.x_for_time(4000.0))
-        self.assertNotEqual(
+        self.assertEqual(
             image.pixel(barline_x, row),
             image.pixel(barline_x + 6, row),
-            "the barline is hidden under the drumroll body",
+            "the drumroll body covers the barline",
         )
 
     def test_notes_are_blitted_from_the_sprite_cache(self):
