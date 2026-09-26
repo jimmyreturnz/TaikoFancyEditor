@@ -22,26 +22,26 @@ Taiko Fancy Arrangerは、osu!taikoのノーツを手作業で1つずつ置く�
 
 **曲選択**：osu!.dbからの★難易度、難易度ごとの背景とプレビュー。
 
-![曲選択](docs/images/song-select.png)
+![曲選択](docs/screenshots/song-select.png)
 
 **エディター**：チャート、SV、ゲームプレイプレビューを1つのタイムラインに並べて表示。
 
-![エディター](docs/images/editor.png)
+![エディター](docs/screenshots/editor.png)
 
 **ギミックエディター**：フェイクスライダー、小節線、各レイヤーのSVなど、ギミックの種類ごとに1レイヤー。
 
-![ギミックエディター](docs/images/gimmick-editor.png)
+![ギミックエディター](docs/screenshots/gimmick-editor.png)
 
 **Fancy Arranger**：選択したノーツを譜面の背景の上に星形でプレビュー（osu!のプレイフィールド比率）。
 
-![Fancy Arranger](docs/images/fancy-arranger.png)
+![Fancy Arranger](docs/screenshots/fancy-arranger.png)
 
 **設定ダイアログ**：ツールごとにまとめ、各項目の説明とその数値が書き込む内容の図をサイドパネルに表示。
 
 | | |
 |---|---|
-| ![小節線の設定](docs/images/config-barline.png) | ![ノート変換](docs/images/convert-notes.png) |
-| ![SV生成](docs/images/generate-sv.png) | ![設定](docs/images/settings.png) |
+| ![小節線の設定](docs/screenshots/config-barline.png) | ![ノート変換](docs/screenshots/convert-notes.png) |
+| ![SV生成](docs/screenshots/generate-sv.png) | ![設定](docs/screenshots/settings.png) |
 
 ---
 

@@ -32,7 +32,7 @@ from settings import APPLICATION_NAME, ORGANIZATION_NAME  # noqa: E402
 
 args = [a for a in sys.argv[1:] if not a.startswith("--")]
 MAP = Path(args[0]).resolve()
-OUT = Path(args[1]) if len(args) > 1 else ROOT / "docs" / "images"
+OUT = Path(args[1]) if len(args) > 1 else ROOT / "docs" / "screenshots"
 AT_MS = float(sys.argv[sys.argv.index("--at") + 1]) if "--at" in sys.argv else 115800.0
 OUT.mkdir(parents=True, exist_ok=True)
 
