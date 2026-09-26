@@ -126,6 +126,14 @@ class HeaderStatusPositionTests(WindowTestCase):
                       self.window.status, self.window.gimmick_status):
             self.assertEqual(label.textFormat(), Qt.PlainText)
 
+    def test_playhead_readouts_never_shrink_below_their_widest_text(self):
+        # A readout sized to its own text changed width as the digits ticked,
+        # and moved the timing bar beside it: 16 positions over one song.
+        for label in (self.window.editor_timeline_strip, self.window.gimmick_timeline_strip,
+                      self.window.timeline_time):
+            self.assertGreaterEqual(
+                label.minimumWidth(), label.fontMetrics().horizontalAdvance(gui.READOUT_WIDEST))
+
     def test_session_settings_follow_the_page(self):
         self.window._show_page(gui.PAGE_EDITOR)
         self.assertFalse(self.window.editor_status_box.isHidden())

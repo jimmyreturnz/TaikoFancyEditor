@@ -176,6 +176,27 @@ class PageTests(unittest.TestCase):
         self.assertEqual(self.window._library.continue_cards[0].path, str(song))
         self.assertEqual(self.window._library.continue_cards[0].when.text(), "")
 
+    def _last_song_file(self):
+        row = self.window.song_list.count() - 1
+        return row, next(Path(self.window.song_list.item(row).data(Qt.UserRole)).glob("*.osu"))
+
+    def test_a_continue_card_selects_its_chart_and_does_not_open_it(self):
+        row, song = self._last_song_file()
+        self.window.song_list.setCurrentRow(0)
+        self.window._library.show_recent(str(song))
+        from gui import PAGE_LIBRARY
+        self.assertEqual(self.window.page_stack.currentIndex(), PAGE_LIBRARY)
+        self.assertIsNone(self.window.state)
+        self.assertEqual(self.window.song_list.currentRow(), row)
+        self.assertEqual(Path(self.window.difficulty_list.currentItem().data(Qt.UserRole)), song)
+
+    def test_a_continue_card_clears_a_search_that_hides_its_song(self):
+        row, song = self._last_song_file()
+        self.window.library_search.setText("no song is called this")
+        self.window._library.show_recent(str(song))
+        self.assertEqual(self.window.library_search.text(), "")
+        self.assertEqual(Path(self.window.difficulty_list.currentItem().data(Qt.UserRole)), song)
+
     def test_no_osu_db_says_so_and_rates_nothing(self):
         library = self.window._library
         self.assertIsNone(library.star_ratings)

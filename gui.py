@@ -8859,6 +8859,25 @@ def tabular(font: QFont) -> QFont:
     return font
 
 
+# The widest the playhead readouts ever get: format_time's mm.ss.mmm, three
+# spaces, and a percentage.
+READOUT_WIDEST = "00.00.000   100.0%"
+
+
+def steady_readout(label: QLabel, widest: str = READOUT_WIDEST) -> None:
+    """Stop a ticking number from moving what is beside it.
+
+    Exo 2's default figures are proportional, so "01.58.111" is narrower than
+    "01.58.000", and a label sized to its own text changed width every few
+    frames during playback -- which, beside a stretching timing bar, shook the
+    bar left and right. Tabular figures make every digit one width, and the
+    floor at the widest text the readout can show keeps it from shrinking.
+    """
+    label.ensurePolished()
+    label.setFont(tabular(label.font()))
+    label.setMinimumWidth(label.fontMetrics().horizontalAdvance(widest) + 6)
+
+
 # The song and difficulty rows carry what they paint under this role; their
 # display text stays the plain label, which is what search, tests and screen
 # readers see.
@@ -9423,7 +9442,7 @@ class LibraryPageController:
         # OrphanedLayoutItemTests for what churning a layout's items costs here.
         self.continue_cards = [ContinueCard() for _ in range(RECENT_CHARTS_SHOWN)]
         for card in self.continue_cards:
-            card.clicked.connect(self.open_recent)
+            card.clicked.connect(self.show_recent)
             continue_layout.addWidget(card)
         continue_layout.addStretch(1)
         layout.addWidget(self.continue_row)
@@ -9597,6 +9616,42 @@ class LibraryPageController:
         for card in self.continue_cards[shown:]:
             card.hide()
         self.continue_row.setVisible(shown > 0)
+
+    def show_recent(self, path: str) -> None:
+        """Select a Continue card's song and difficulty, and stop there.
+
+        Opening it straight away skipped the one thing this page is for: the
+        card is often the song and not the difficulty wanted, and picking a
+        sibling meant opening, backing out and choosing again. Enter or a
+        double click opens it from here, as for any other selection.
+        """
+        wanted = os.path.normcase(str(Path(path).resolve()))
+        folder = os.path.normcase(str(Path(path).resolve().parent))
+        row = self._song_row_for(folder)
+        if row is None and self.library_search.text():
+            # Filtered out by a search, not missing: show it.
+            self.library_search.clear()
+            row = self._song_row_for(folder)
+        if row is None:
+            # Not in the library at all (a chart outside the Songs folder):
+            # there is nothing to select, so opening is the only thing to do.
+            self.open_recent(path)
+            return
+        self.song_list.setCurrentRow(row)
+        self.song_list.scrollToItem(self.song_list.item(row))
+        for index in range(self.difficulty_list.count()):
+            item = self.difficulty_list.item(index)
+            if os.path.normcase(str(Path(item.data(Qt.UserRole)).resolve())) == wanted:
+                self.difficulty_list.setCurrentRow(index)
+                break
+        self.difficulty_list.setFocus()
+
+    def _song_row_for(self, folder: str) -> int | None:
+        for row in range(self.song_list.count()):
+            data = self.song_list.item(row).data(Qt.UserRole)
+            if data is not None and os.path.normcase(str(Path(data).resolve())) == folder:
+                return row
+        return None
 
     def open_recent(self, path: str) -> None:
         self.stop_preview()
@@ -11511,6 +11566,7 @@ class MainWindow(QMainWindow):
         time_area=QWidget()
         time_area_layout=QHBoxLayout(time_area);time_area_layout.setContentsMargins(0,0,0,0);time_area_layout.addStretch()
         self.timeline_time=QLabel("00:00:000   0.0%");self.timeline_time.setAlignment(Qt.AlignCenter);self.timeline_time.setStyleSheet("font-size:18px;font-weight:700;");time_area_layout.addWidget(self.timeline_time)
+        steady_readout(self.timeline_time)
         # Wide enough for the longest readout this label ever shows, measured
         # in its own font rather than assumed in pixels. Polished first, or the
         # measurement uses the inherited font instead of the 18px one above.
@@ -11935,6 +11991,7 @@ class MainWindow(QMainWindow):
         strip.addWidget(self.editor_snap_combo)
 
         self.editor_timeline_strip = QLabel()
+        steady_readout(self.editor_timeline_strip)
         strip.addWidget(self.editor_timeline_strip)
 
         self.timing_bar = TimingOverviewBar()
@@ -12065,6 +12122,7 @@ class MainWindow(QMainWindow):
         strip.addWidget(self.gimmick_snap_combo)
 
         self.gimmick_timeline_strip = QLabel()
+        steady_readout(self.gimmick_timeline_strip)
         strip.addWidget(self.gimmick_timeline_strip)
 
         self.gimmick_timing_bar = TimingOverviewBar()
