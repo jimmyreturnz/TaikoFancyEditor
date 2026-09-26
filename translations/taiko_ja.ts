@@ -141,6 +141,86 @@
     <context>
         <name>MainWindow</name>
         <message>
+            <source>Curve</source>
+            <translation>カーブ</translation>
+        </message>
+        <message>
+            <source>Drive one gimmick run without touching the chart's own timing lines.</source>
+            <translation>譜面本来のタイミング線に触れずに、1 つのギミックだけを動かします。</translation>
+        </message>
+        <message>
+            <source>Each note puts a line just before every note in the range. Every snap puts one on every gridline of the snap below.</source>
+            <translation>「各ノート」は範囲内の各ノートの少し前に線を置きます。「毎スナップ」は下のスナップのグリッド線ごとに置きます。</translation>
+        </message>
+        <message>
+            <source>Exponent</source>
+            <translation>指数</translation>
+        </message>
+        <message>
+            <source>How far ahead of its note each line sits. An SV point governs what comes after it, so a note needs its line slightly early.</source>
+            <translation>各線をノートからどれだけ前に置くかです。SV ポイントはその後ろに効くため、ノートには少し早めの線が必要です。</translation>
+        </message>
+        <message>
+            <source>How the value moves from Initial to Final. Sin In is fast at the start and slow at the end, following TaikoEditor's naming (the reverse of easings.net). True Exp bends by the range itself, so 1× to 10× is a hard curve and 1× to 1.1× is nearly straight.</source>
+            <translation>開始値から終了値への変化の仕方です。Sin In は最初が速く最後が遅い形で、TaikoEditor の名前に合わせています（easings.net とは逆）。True Exp は範囲そのものに応じて曲がるため、1× から 10× は強いカーブ、1× から 1.1× はほぼ直線になります。</translation>
+        </message>
+        <message>
+            <source>Only matters where a generated point lands on a red line.</source>
+            <translation>生成したポイントが赤線と重なる場所でのみ効きます。</translation>
+        </message>
+        <message>
+            <source>Rates</source>
+            <translation>倍率</translation>
+        </message>
+        <message>
+            <source>Scales each rate so the scroll speed holds across BPM changes in the range.</source>
+            <translation>範囲内で BPM が変わってもスクロール速度が保たれるよう、各倍率を補正します。</translation>
+        </message>
+        <message>
+            <source>Sweep eases from Initial to Final. Oscillate fans out either side of Initial, reaching Final at the last point: per point on every step, per pair once per up/down pair.</source>
+            <translation>スイープは開始値から終了値へなめらかに変わります。振動は開始値の上下に広がり、最後のポイントで終了値に達します。ポイントごとは毎回、ペアごとは上下 1 組ごとに広がります。</translation>
+        </message>
+        <message>
+            <source>Sweep one length family of fake sliders and leave the rest.</source>
+            <translation>特定の長さのフェイクスライダーだけを対象にし、残りはそのままにします。</translation>
+        </message>
+        <message>
+            <source>The gridline spacing for Every snap.</source>
+            <translation>「毎スナップ」で使うグリッドの間隔です。</translation>
+        </message>
+        <message>
+            <source>The plot shows every value Generate will write, in order. This picture is the curve alone, first point to last.</source>
+            <translation>グラフは生成される値を順にすべて表示します。この図は最初から最後のポイントまでのカーブだけを示します。</translation>
+        </message>
+        <message>
+            <source>The value at the first point.</source>
+            <translation>最初のポイントの値です。</translation>
+        </message>
+        <message>
+            <source>The value at the last point.</source>
+            <translation>最後のポイントの値です。</translation>
+        </message>
+        <message>
+            <source>The x in t^x for the Exp x curve. Floored at 1: below it the curve bends the other way.</source>
+            <translation>Exp x カーブの t^x の x です。1 未満にはできません（1 未満ではカーブが逆に曲がります）。</translation>
+        </message>
+        <message>
+            <source>Where the points go</source>
+            <translation>ポイントの置き方</translation>
+        </message>
+        <message>
+            <source>Which lines</source>
+            <translation>対象の線</translation>
+        </message>
+        <message>
+            <source>first point</source>
+            <translation>最初</translation>
+        </message>
+        <message>
+            <source>last point</source>
+            <translation>最後</translation>
+        </message>
+        <message>
             <source>Anything longer than 0.001 is a real, hittable drumroll.</source>
             <translation>0.001 より長いと叩ける本物の連打になります。</translation>
         </message>

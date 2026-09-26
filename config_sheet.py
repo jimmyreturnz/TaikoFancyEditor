@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
+    QDoubleSpinBox,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -274,6 +275,28 @@ def own_or_custom(check: QCheckBox, spin: QAbstractSpinBox, own_text: str, custo
     layout.addWidget(pills)
     layout.addWidget(spin, 1)
     return row
+
+
+class TrimmedDoubleSpinBox(QDoubleSpinBox):
+    """Full precision, shown without its trailing zeros.
+
+    SV is typed to 8 decimals because under a 60000 BPM line the rate that
+    moves a note a visible distance differs in the seventh; shown at 8 it is
+    "1.00000000x" at rest. This keeps every typed digit and drops the padding,
+    never below `min_decimals`.
+    """
+
+    def __init__(self, min_decimals: int = 2, parent=None) -> None:
+        super().__init__(parent)
+        self.min_decimals = min_decimals
+
+    def textFromValue(self, value: float) -> str:
+        text = f"{value:.{self.decimals()}f}"
+        if "." in text:
+            whole, fraction = text.split(".")
+            fraction = fraction.rstrip("0").ljust(min(self.min_decimals, self.decimals()), "0")
+            text = f"{whole}.{fraction}" if fraction else whole
+        return self.locale().toString(float(text), "f", len(text.split(".")[1]) if "." in text else 0)
 
 
 def dot_icon(color: str, size: int = 8) -> QIcon:
@@ -576,6 +599,10 @@ class ConfigSheet(QWidget):
             _Scrub(caption, target)
             caption.setToolTip(tr("MainWindow", "Drag sideways to change"))
         self.register_help(box, label, help_text, default, extra=(widget, target))
+        for each in (widget, target):
+            if each is not None:
+                # How set_row_visible finds the whole field (label included).
+                each.setProperty("sheetField", box)
         return box
 
     def switch(self, check: QCheckBox, note: str = "", help_text: str = "", default: str = "") -> QWidget:
@@ -594,6 +621,7 @@ class ConfigSheet(QWidget):
             line.setContentsMargins(40, 0, 0, 0)
             column.addWidget(line)
         self.register_help(box, check.text(), help_text or note, default, extra=(check,))
+        check.setProperty("sheetField", box)
         return box
 
     def register_help(self, box: QWidget, title: str, text: str, default: str = "", extra=()) -> None:

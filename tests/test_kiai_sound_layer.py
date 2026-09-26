@@ -441,14 +441,15 @@ class VolumeDialogRowTests(unittest.TestCase):
 
     def test_volume_mode_offers_no_placement_or_omit_barline(self):
         dialog = self._dialog(volume=True)
-        self.assertFalse(dialog.placement_combo.isVisibleTo(dialog))
+        # The combo is the model behind pills; the field is what is shown.
+        self.assertFalse(gui.is_row_visible(None, dialog.placement_combo))
         self.assertFalse(dialog.omit_barline_check.isVisibleTo(dialog))
         self.assertFalse(dialog.relative_to_final_bpm_check.isVisibleTo(dialog))
 
     def test_the_sv_dialog_still_offers_all_of_them(self):
         dialog = self._dialog(volume=False)
         self.assertTrue(dialog.position_offset_spin.isVisibleTo(dialog))
-        self.assertTrue(dialog.placement_combo.isVisibleTo(dialog))
+        self.assertTrue(gui.is_row_visible(None, dialog.placement_combo))
         self.assertTrue(dialog.omit_barline_check.isVisibleTo(dialog))
         self.assertEqual(
             dialog.parameters()["position_offset"],

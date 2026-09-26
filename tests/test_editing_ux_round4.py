@@ -883,7 +883,7 @@ class FunctionPrefillTests(WindowTestCase):
 
 
 class FunctionChooserTests(unittest.TestCase):
-    def test_every_function_gets_its_own_square_button(self):
+    def test_every_function_gets_its_own_chip(self):
         dialog = gui.SVFunctionDialog(1000.0, 2000.0)
         expected = {
             "linear", "sin_in", "sin_out", "exp1.3", "exp1.6", "true_exp", "sin",
@@ -893,7 +893,7 @@ class FunctionChooserTests(unittest.TestCase):
         self.assertEqual(set(dialog.function_buttons), expected)
         for button in dialog.function_buttons.values():
             self.assertTrue(button.isCheckable())
-            self.assertEqual(button.width(), button.height(), "the chooser buttons are square")
+            self.assertFalse(button.icon().isNull(), "a chip shows its curve")
         dialog.deleteLater()
 
     def test_the_drop_down_is_gone(self):
@@ -952,15 +952,22 @@ class FunctionChooserTests(unittest.TestCase):
         self.assertNotEqual(before, after)
         dialog.deleteLater()
 
-    def test_each_tile_carries_its_own_graph_and_there_is_no_separate_preview(self):
-        """The tile is the preview: seven curves side by side beat one curve
-        plus six names."""
+    def test_a_flat_range_still_shows_each_curve(self):
+        """At the default 1.00x -> 1.00x the old tiles all drew the same flat
+        line. A chip draws the curve's shape, so they differ."""
+        dialog = gui.SVFunctionDialog(1000.0, 2000.0, initial_rate=1.0, final_rate=1.0)
+        images = {
+            key: button.icon().pixmap(30, 20).toImage()
+            for key, button in dialog.function_buttons.items()
+        }
+        self.assertNotEqual(images["linear"], images["sin_in"])
+        self.assertNotEqual(images["sin_in"], images["sin_out"])
+        dialog.deleteLater()
+
+    def test_the_result_is_plotted_once_in_the_dialog(self):
         dialog = gui.SVFunctionDialog(1000.0, 2000.0, initial_rate=1.1, final_rate=0.9)
-        for function_id, button in dialog.function_buttons.items():
-            with self.subTest(function_id=function_id):
-                self.assertFalse(button.icon().isNull(), "tile has no graph")
-                self.assertGreaterEqual(button.width(), 120, "tile is too small to read")
-        self.assertIsNone(dialog.preview.parent(), "the preview widget is still in the layout")
+        self.assertIs(dialog.preview.window(), dialog)
+        self.assertGreaterEqual(dialog.preview.height(), 150, "the plot is the point of the dialog")
         dialog.deleteLater()
 
     def test_the_tiles_re_plot_when_the_rates_change(self):
@@ -972,35 +979,24 @@ class FunctionChooserTests(unittest.TestCase):
         self.assertNotEqual(before, after)
         dialog.deleteLater()
 
-    def test_configurables_are_in_the_left_column(self):
+    def test_the_plot_comes_before_the_numbers(self):
+        """Result first, then the curve chips, then the numbers that drive it."""
         dialog = gui.SVFunctionDialog(1000.0, 2000.0)
-        columns = dialog.layout().itemAt(0).layout()
-        left = columns.itemAt(0).layout()
-        # One level deep as well as directly: a spin box wears the pink +/-
-        # pair (gui.pink_spin_buttons), which puts it inside a small container
-        # in the row rather than in the row itself.
-        left_widgets = set()
-        pending = [left]
-        while pending:
-            layout = pending.pop()
-            for i in range(layout.count()):
-                item = layout.itemAt(i)
-                if item is None:
-                    continue
-                widget = item.widget()
-                if widget is not None:
-                    left_widgets.add(widget)
-                    if widget.layout() is not None:
-                        pending.append(widget.layout())
-                elif item.layout() is not None:
-                    pending.append(item.layout())
+        column = dialog.sheet.column.widget()
+
+        def top(widget):
+            return widget.mapTo(column, gui.QPointF(0, 0)).y()
+
+        dialog.resize(980, 700)
+        dialog.show()
+        self.assertLess(top(dialog.preview), top(dialog.function_buttons["linear"]))
+        self.assertLess(top(dialog.function_buttons["linear"]), top(dialog.initial_rate_spin))
         for control in (
-            dialog.initial_rate_spin, dialog.final_rate_spin, dialog.placement_combo,
-            dialog.snap_combo, dialog.position_offset_spin, dialog.omit_barline_check,
-            dialog.relative_to_final_bpm_check,
+            dialog.initial_rate_spin, dialog.final_rate_spin, dialog.position_offset_spin,
+            dialog.omit_barline_check, dialog.relative_to_final_bpm_check,
         ):
-            self.assertIn(control, left_widgets)
-        self.assertNotIn(dialog.preview, left_widgets)
+            self.assertTrue(column.isAncestorOf(control))
+        dialog.close()
         dialog.deleteLater()
 
 

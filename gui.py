@@ -36,8 +36,8 @@ from PySide6.QtWidgets import (
 import osu_db
 from smooth_scroll import SMOOTH_SCROLL_MS, SmoothScroller, reduced_motion, smooth
 from config_sheet import (
-    SEGMENT_STYLE, WARN_COLOR, Diagram, SheetDialog, bind_tiles, control_stylesheet, own_or_custom, segmented,
-    set_warning,
+    SEGMENT_STYLE, WARN_COLOR, Diagram, SheetDialog, TrimmedDoubleSpinBox, bind_segments, bind_tiles, control_stylesheet,
+    own_or_custom, segmented, set_warning,
 )
 from audio_engine import DEFAULT_HITSOUND_OFFSET_MS, WHEEL_SEEK_HOLD_MS, TrackPlayer
 from skin import UI_SOUNDS, TaikoSkin, skins_root
@@ -508,13 +508,22 @@ def shift_is_held() -> bool:
     return bool(QApplication.queryKeyboardModifiers() & Qt.ShiftModifier)
 
 
-def set_row_visible(layout: QFormLayout, widget: QWidget, visible: bool) -> None:
-    """`QFormLayout.setRowVisible`, kept as the one place rows are toggled."""
-    layout.setRowVisible(widget, visible)
+def set_row_visible(layout: QFormLayout | None, widget: QWidget, visible: bool) -> None:
+    """Show or hide `widget`'s row: its config sheet field, label and all, or
+    its QFormLayout row in a dialog not yet on a sheet."""
+    field = widget.property("sheetField")
+    if field is not None:
+        field.setVisible(visible)
+    elif layout is not None:
+        layout.setRowVisible(widget, visible)
 
 
-def is_row_visible(layout: QFormLayout, widget: QWidget) -> bool:
-    return layout.isRowVisible(widget)
+def is_row_visible(layout: QFormLayout | None, widget: QWidget) -> bool:
+    field = widget.property("sheetField")
+    if field is not None:
+        return not field.isHidden()
+    # A widget a sheet never placed has no row to show.
+    return layout is not None and layout.isRowVisible(widget)
 
 
 # -- hitsounds -------------------------------------------------------------
@@ -6782,7 +6791,7 @@ class GimmickConfigDialog(SheetDialog):
         self.length_spin.setDecimals(4)
         self.length_spin.setValue(config.fake_slider_length)
 
-        self.fake_sv_spin = QDoubleSpinBox()
+        self.fake_sv_spin = TrimmedDoubleSpinBox()
         self.fake_sv_spin.setRange(0.01, 100.0)
         self.fake_sv_spin.setDecimals(SV_DECIMALS)
         self.fake_sv_spin.setValue(config.fake_slider_sv)
@@ -7485,7 +7494,7 @@ class ConvertNotesDialog(SheetDialog):
         section.field(tr("MainWindow", "Fake slider length"), self.length_spin, tr(
             "MainWindow", "Anything longer than 0.001 is a real, hittable drumroll."))
 
-        self.fake_sv_spin = QDoubleSpinBox()
+        self.fake_sv_spin = TrimmedDoubleSpinBox()
         self.fake_sv_spin.setRange(0.01, 100.0)
         self.fake_sv_spin.setDecimals(SV_DECIMALS)
         self.fake_sv_spin.setSuffix("\u00d7")
@@ -7613,7 +7622,7 @@ class ConvertNotesDialog(SheetDialog):
 
     @staticmethod
     def _sv_spin(value: float) -> QDoubleSpinBox:
-        spin = QDoubleSpinBox()
+        spin = TrimmedDoubleSpinBox()
         spin.setRange(10.0 ** -SV_DECIMALS, 100.0)
         spin.setDecimals(SV_DECIMALS)
         spin.setSingleStep(0.0001)
@@ -8541,15 +8550,16 @@ class SVFunctionPreview(QWidget):
         painter.drawText(QPointF(self.width() - text_width - 4, dots[-1].y() - 6), final_text)
 
 
-class SVFunctionDialog(QDialog):
+class SVFunctionDialog(SheetDialog):
     """M4 function mode: drag-select a range, then generate an eased SV sweep
     across it.
 
-    Laid out in two columns: every configurable field on the **left**, and the
-    function chooser plus its preview on the **right**. The functions are a
-    grid of square toggle buttons rather than a drop-down -- there are only
-    seven, choosing one is the decision the preview exists to inform, and a
-    combo box hid six of them behind a click.
+    A config sheet: the plot of every rate Generate will write across the
+    top, the curves as a row of chips under it, then the numbers in sections.
+    The curves used to be eight 144px tiles, each plotting its own preview of
+    the typed range -- which at the default 1.00x -> 1.00x made all eight the
+    same flat line. A chip draws the *shape* (rising or falling with the
+    range) and the one large plot draws the result.
 
     "Generate at" decides the point positions:
 
@@ -8583,7 +8593,13 @@ class SVFunctionDialog(QDialog):
         base_timing: list[TimingPoint] | None = None,
         volume: bool = False,
     ) -> None:
-        super().__init__(parent)
+        title = tr("MainWindow", "Generate Volume") if volume else tr("MainWindow", "Generate SV")
+        super().__init__(
+            title,
+            tr("MainWindow", "Range: {0} to {1}").format(format_time(round(start_ms)), format_time(round(end_ms))),
+            action=tr("MainWindow", "Generate"), rail=False, restore=False, parent=parent)
+        self.action_button.clicked.disconnect()
+        self.action_button.clicked.connect(self._accept)
         self.start_ms = start_ms
         self.end_ms = end_ms
         # Only for the BPM filter's default, and only layer 6 asks for it. The
@@ -8604,30 +8620,12 @@ class SVFunctionDialog(QDialog):
         # wiped by the next uninherited line, so the two controls that can move
         # a point off its object are taken away rather than merely defaulted.
         self.gimmick_layer = gimmick_layer
-        self.setWindowTitle(
-            tr("MainWindow", "Generate Volume") if volume else tr("MainWindow", "Generate SV")
-        )
         icon = application_icon()
         if not icon.isNull():
             self.setWindowIcon(icon)
-        # The app-wide QPushButton:checked rule does not reach a QToolButton, so
-        # the chosen function tile had no selected state at all -- seven
-        # identical squares, none of them saying which one Generate would use.
-        self.setStyleSheet(
-            "QToolButton { background: #252d39; border: 1px solid #3a4554; border-radius: 6px; }"
-            "QToolButton:hover { border-color: #f3a6bd; }"
-            f"QToolButton:checked {{ background: {ACCENT_PINK}; color: #17191f;"
-            " border: 2px solid #ff66aa; font-weight: 700; }"
-        )
-
-        root = QVBoxLayout(self)
-        columns = QHBoxLayout()
-        columns.setSpacing(18)
-        root.addLayout(columns, 1)
-
-        # Left column: everything configurable.
-        layout = QFormLayout()
-        columns.addLayout(layout)
+        sheet = self.sheet
+        # Rows are fields on the sheet now; set_row_visible finds them there.
+        self._form_layout = None
 
         # Volume is a whole percent in 0..100 (what the .osu field holds and
         # what the writer validates), so the same two spin boxes are told to
@@ -8638,173 +8636,14 @@ class SVFunctionDialog(QDialog):
         # green line" value before Generate ever saw it -- so it looked like
         # the generator wasn't reading the existing line at all.
         step, decimals = (1.0, 0) if volume else (0.05, SV_DECIMALS)
+        suffix = "%" if volume else "\u00d7"
 
-        self.initial_rate_spin = QDoubleSpinBox()
-        self.initial_rate_spin.setRange(low, high)
-        self.initial_rate_spin.setSingleStep(step)
-        self.initial_rate_spin.setDecimals(decimals)
-        self.initial_rate_spin.setValue(round(float(initial_rate), decimals))
-        self.initial_rate_spin.valueChanged.connect(self._update_preview)
-        layout.addRow(
-            tr("MainWindow", "Initial volume") if volume else tr("MainWindow", "Initial rate"),
-            self.initial_rate_spin,
-        )
-
-        self.final_rate_spin = QDoubleSpinBox()
-        self.final_rate_spin.setRange(low, high)
-        self.final_rate_spin.setSingleStep(step)
-        self.final_rate_spin.setDecimals(decimals)
-        self.final_rate_spin.setValue(round(float(final_rate), decimals))
-        self.final_rate_spin.valueChanged.connect(self._update_preview)
-        layout.addRow(
-            tr("MainWindow", "Final volume") if volume else tr("MainWindow", "Final rate"),
-            self.final_rate_spin,
-        )
-
-        # Sweep or oscillation. The same growth function drives both: a sweep
-        # eases the rate from Initial to Final, an oscillation eases the
-        # *amplitude* it fans out to either side of Initial, reaching Final at
-        # the last point. Per point opens the fan on every step (the two sides
-        # peak at different widths); per pair opens it once per up/down pair,
-        # so every pair is symmetric about the base.
-        # Literal tr() calls, one per option -- see AddViewDialog's note on why
-        # a dict lookup here would silently escape the i18n coverage gate.
-        self.mode_combo = QComboBox()
-        self.mode_combo.addItem(tr("MainWindow", "Sweep"), "")
-        self.mode_combo.addItem(tr("MainWindow", "Oscillate (per point)"), "point")
-        self.mode_combo.addItem(tr("MainWindow", "Oscillate (per pair)"), "pair")
-        self.mode_combo.currentIndexChanged.connect(self._update_preview)
-        layout.addRow(tr("MainWindow", "Mode"), self.mode_combo)
-
-        self.placement_combo = QComboBox()
-        # Literal tr() calls, one per option -- see AddViewDialog's note on why
-        # a dict lookup here would silently escape the i18n coverage gate.
-        self.placement_combo.addItem(tr("MainWindow", "Each note"), "notes")
-        self.placement_combo.addItem(tr("MainWindow", "Every snap"), "snaps")
-        self.placement_combo.currentIndexChanged.connect(self._update_placement_controls)
-        layout.addRow(tr("MainWindow", "Generate at"), self.placement_combo)
-
-        self.snap_combo = QComboBox()
-        for divisor in SNAP_DIVISORS:
-            self.snap_combo.addItem(f"1/{divisor}", divisor)
-        found = self.snap_combo.findData(int(snap_divisor))
-        self.snap_combo.setCurrentIndex(found if found >= 0 else self.snap_combo.findData(4))
-        self.snap_label = QLabel(tr("MainWindow", "Snap"))
-        layout.addRow(self.snap_label, self.snap_combo)
-        self._form_layout = layout
-
-        self.position_offset_spin = QSpinBox()
-        self.position_offset_spin.setRange(-5000, 5000)
-        # An SV point governs what comes after it, so it has to land slightly
-        # before the note it is meant to affect. In a gimmick layer the value
-        # comes from that layer's config, which is also what decides which
-        # milliseconds the layer recognises as its own.
-        self.position_offset_spin.setValue(
-            self.DEFAULT_POSITION_OFFSET_MS if position_offset is None else int(position_offset)
-        )
-        layout.addRow(tr("MainWindow", "Position offset (ms)"), self.position_offset_spin)
-        if volume:
-            # Describes where an *inserted* point sits; the Volume tool edits
-            # the timing points already in the range instead, so there is
-            # nothing here to offset.
-            set_row_visible(layout, self.position_offset_spin, False)
-
-        self.omit_barline_check = QCheckBox()
-        self.omit_barline_check.setChecked(False)
-        layout.addRow(tr("MainWindow", "Omit barline"), self.omit_barline_check)
-        if volume:
-            # Also describes an inserted point's own flag; nothing is
-            # inserted in volume mode.
-            set_row_visible(layout, self.omit_barline_check, False)
-
-        self.relative_to_final_bpm_check = QCheckBox()
-        # Off in a gimmick layer. It multiplies every generated rate by
-        # local_bpm / start_bpm, and a gimmick's local BPM is 60000 against a
-        # chart's 180 -- so a "1.0x to 2.0x" sweep came out in the hundreds and
-        # neither end landed on the number that was typed.
-        self.relative_to_final_bpm_check.setChecked(not gimmick_layer and not volume)
-        layout.addRow(tr("MainWindow", "Relative to final BPM"), self.relative_to_final_bpm_check)
-        if volume:
-            # It scales the generated value by local_bpm / start_bpm, which is
-            # a statement about scroll speed. A hitsound is as loud as it is
-            # whatever the BPM is doing, so the option is not offered rather
-            # than merely defaulted off.
-            set_row_visible(layout, self.relative_to_final_bpm_check, False)
-
-        self.include_shiny_check = QCheckBox()
-        self.include_shiny_check.setChecked(False)
-        if gimmick_layer == "sv_fake_slider":
-            layout.addRow(tr("MainWindow", "Include shiny notes"), self.include_shiny_check)
-            hint = QLabel(tr(
-                "MainWindow",
-                "This layer holds the speed of plain fake sliders. Shiny notes "
-                "are left out by default -- their gimmick line sits on the note, "
-                "so the normal chart SV layer already moves the note and its "
-                "shine together -- but this sweep can add them in as well.",
-            ))
-            hint.setWordWrap(True)
-            hint.setStyleSheet("color:#ffb347;border:0;")
-            layout.addRow(hint)
-
-        # Layer 6 owns *every* red line -- the chart's own timing, a barline
-        # gimmick's 60000 BPM run, hand-placed lines -- and a sweep across a
-        # dragged range hits all of them indiscriminately. This narrows it to
-        # one BPM, which is how you drive a single gimmick run without
-        # disturbing the ordinary timing lines interleaved with it.
-        self.bpm_filter_check = QCheckBox()
-        self.bpm_filter_check.setChecked(False)
-        self.bpm_filter_spin = QDoubleSpinBox()
-        self.bpm_filter_spin.setRange(1.0, 1000000.0)
-        self.bpm_filter_spin.setDecimals(4)
-        # The BPM in force where the drag started -- the run you are looking at
-        # is almost always the one you want, so the default costs no typing.
-        self.bpm_filter_spin.setValue(
-            base_bpm_at(self.base_timing, start_ms) if self.base_timing else 120.0
-        )
-        # An inclusive range rather than one exact BPM: "500-1000 BPM" means
-        # every red line from 500 to 1000, and an exact match is just the
-        # degenerate case where the two ends are equal -- so there is no
-        # separate exact-value mode to keep in sync with this one.
-        self.bpm_filter_max_spin = QDoubleSpinBox()
-        self.bpm_filter_max_spin.setRange(1.0, 1000000.0)
-        self.bpm_filter_max_spin.setDecimals(4)
-        self.bpm_filter_max_spin.setValue(self.bpm_filter_spin.value())
-        if gimmick_layer == "sv_barline":
-            layout.addRow(tr("MainWindow", "Only red lines at this BPM"), self.bpm_filter_check)
-            layout.addRow(tr("MainWindow", "BPM from"), self.bpm_filter_spin)
-            layout.addRow(tr("MainWindow", "BPM to"), self.bpm_filter_max_spin)
-            self.bpm_filter_check.toggled.connect(self._update_bpm_filter_row)
-
-        # Layer 5's counterpart to the BPM filter above: two fake sliders can
-        # sit on the same millisecond and read identically in the editor while
-        # differing only in `length` (-0.001 vs -0.0011), which is how a
-        # mapper encodes "these get one SV, those get another" without a
-        # second structure to tell them apart by position. Off by default,
-        # same reasoning as the BPM filter -- most sweeps want every fake
-        # slider in range, not one length family of them.
-        self.length_filter_check = QCheckBox()
-        self.length_filter_check.setChecked(False)
-        self.length_filter_spin = QDoubleSpinBox()
-        self.length_filter_spin.setRange(-100000.0, FAKE_SLIDER_MAX_LENGTH)
-        self.length_filter_spin.setDecimals(4)
-        self.length_filter_spin.setValue(-0.001)
-        self.length_filter_max_spin = QDoubleSpinBox()
-        self.length_filter_max_spin.setRange(-100000.0, FAKE_SLIDER_MAX_LENGTH)
-        self.length_filter_max_spin.setDecimals(4)
-        self.length_filter_max_spin.setValue(-0.001)
-        if gimmick_layer == "sv_fake_slider":
-            layout.addRow(tr("MainWindow", "Only fake sliders with this length"), self.length_filter_check)
-            layout.addRow(tr("MainWindow", "Length from"), self.length_filter_spin)
-            layout.addRow(tr("MainWindow", "Length to"), self.length_filter_max_spin)
-            self.length_filter_check.toggled.connect(self._update_length_filter_row)
-
-        layout.addItem(QSpacerItem(0, 0, QSizePolicy.Minimum, QSizePolicy.Expanding))
-
-        # Right column: function choice and what it produces.
-        right = QVBoxLayout()
-        right.setSpacing(8)
-        columns.addLayout(right)
-        right.addWidget(QLabel(tr("MainWindow", "Function")))
+        # The result, large, at the top: every value Generate will write.
+        self.preview = SVFunctionPreview(420, 170)
+        self.preview.setMinimumWidth(0)
+        self.preview.setMaximumWidth(16777215)
+        self.preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        sheet.add_widget(self.preview)
 
         # Literal tr() calls, one per function -- see AddViewDialog's note on
         # why a dynamic lookup here would silently escape the i18n gate.
@@ -8821,60 +8660,268 @@ class SVFunctionDialog(QDialog):
         self.function_buttons: dict[str, QToolButton] = {}
         self._function_group = QButtonGroup(self)
         self._function_group.setExclusive(True)
-        grid = QGridLayout()
-        grid.setSpacing(6)
+        chips = QWidget()
+        chips.setStyleSheet(
+            "QToolButton { background: #222a36; color: #aeb8c5; border: 1px solid #303947;"
+            " border-radius: 6px; padding: 4px 9px 4px 5px; font-size: 12px; font-weight: 600; }"
+            "QToolButton:hover { background: #2a3341; color: #e8edf3; }"
+            "QToolButton:checked { background: #2a2230; color: #ffffff; border: 1px solid #ff66aa; }")
+        chip_rows = QGridLayout(chips)
+        chip_rows.setContentsMargins(0, 0, 0, 0)
+        chip_rows.setSpacing(6)
         for index, (function_id, label) in enumerate(functions):
             button = QToolButton()
             button.setText(label)
-            button.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
-            button.setIconSize(QSize(*self.TILE_GRAPH_SIZE))
+            button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+            button.setIconSize(QSize(*self.CHIP_ICON_SIZE))
             button.setCheckable(True)
-            button.setFixedSize(self.TILE_SIZE, self.TILE_SIZE)
             button.setFocusPolicy(Qt.NoFocus)
+            button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             button.setChecked(function_id == "linear")
             button.toggled.connect(
                 lambda checked, f=function_id: self._update_preview() if checked else None
             )
             self._function_group.addButton(button)
             self.function_buttons[function_id] = button
-            grid.addWidget(button, index // 3, index % 3)
-        right.addLayout(grid)
+            chip_rows.addWidget(button, index // 4, index % 4)
+        curve_help = tr(
+            "MainWindow",
+            "How the value moves from Initial to Final. Sin In is fast at the start and slow at "
+            "the end, following TaikoEditor's naming (the reverse of easings.net). True Exp bends "
+            "by the range itself, so 1\u00d7 to 10\u00d7 is a hard curve and 1\u00d7 to 1.1\u00d7 "
+            "is nearly straight.")
+        sheet.add_widget(sheet.field(tr("MainWindow", "Curve"), chips, curve_help))
 
-        # The exponent behind the "Exp x" tile. The two fixed exp curves are
+        rates = sheet.add_section("rates", tr("MainWindow", "Volume") if volume else tr("MainWindow", "Rates"))
+        self.initial_rate_spin = TrimmedDoubleSpinBox()
+        self.initial_rate_spin.setRange(low, high)
+        self.initial_rate_spin.setSingleStep(step)
+        self.initial_rate_spin.setDecimals(decimals)
+        self.initial_rate_spin.setSuffix(suffix)
+        self.initial_rate_spin.setValue(round(float(initial_rate), decimals))
+        self.initial_rate_spin.valueChanged.connect(self._update_preview)
+        rates.field(
+            tr("MainWindow", "Initial volume") if volume else tr("MainWindow", "Initial rate"),
+            self.initial_rate_spin,
+            tr("MainWindow", "The value at the first point."))
+
+        self.final_rate_spin = TrimmedDoubleSpinBox()
+        self.final_rate_spin.setRange(low, high)
+        self.final_rate_spin.setSingleStep(step)
+        self.final_rate_spin.setDecimals(decimals)
+        self.final_rate_spin.setSuffix(suffix)
+        self.final_rate_spin.setValue(round(float(final_rate), decimals))
+        self.final_rate_spin.valueChanged.connect(self._update_preview)
+        rates.field(
+            tr("MainWindow", "Final volume") if volume else tr("MainWindow", "Final rate"),
+            self.final_rate_spin,
+            tr("MainWindow", "The value at the last point."))
+
+        # The exponent behind the "Exp x" chip. The two fixed exp curves are
         # the shapes that get used most and stay as one click each; this is the
         # same curve with the number exposed, for a sweep that wants to bend
         # harder than 1.6 or softer than 1.3. Floored at 1, because below it
-        # the curve bends the other way and the tile would stop being an exp
-        # tile. Re-plots every tile on change, so the graph under the tile is
-        # the curve this number actually produces.
+        # the curve bends the other way and the chip would stop being an exp
+        # curve.
         self.exp_spin = QDoubleSpinBox()
         self.exp_spin.setRange(1.0, 10.0)
         self.exp_spin.setDecimals(2)
         self.exp_spin.setSingleStep(0.1)
         self.exp_spin.setValue(2.0)
         self.exp_spin.valueChanged.connect(self._update_preview)
-        exp_row = QHBoxLayout()
-        exp_row.setContentsMargins(0, 0, 0, 0)
-        exp_row.addWidget(QLabel(tr("MainWindow", "Exp x")))
-        exp_row.addWidget(self.exp_spin, 1)
-        right.addLayout(exp_row)
-        right.addStretch(1)
+        self._exp_field = rates.field(tr("MainWindow", "Exponent"), self.exp_spin, tr(
+            "MainWindow", "The x in t^x for the Exp x curve. Floored at 1: below it the curve bends the other way."))
 
-        # Not in the layout: each tile carries its own graph now, so this only
-        # renders them. One widget re-grabbed per function beats seven live
-        # ones -- and it keeps the plotting in a single paintEvent.
-        self.preview = SVFunctionPreview(*self.TILE_GRAPH_SIZE, labels=False)
+        # Sweep or oscillation. The same growth function drives both: a sweep
+        # eases the rate from Initial to Final, an oscillation eases the
+        # *amplitude* it fans out to either side of Initial, reaching Final at
+        # the last point. Per point opens the fan on every step (the two sides
+        # peak at different widths); per pair opens it once per up/down pair,
+        # so every pair is symmetric about the base.
+        # Literal tr() calls, one per option -- see AddViewDialog's note on why
+        # a dict lookup here would silently escape the i18n coverage gate.
+        where = sheet.add_section("where", tr("MainWindow", "Where the points go"))
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItem(tr("MainWindow", "Sweep"), "")
+        self.mode_combo.addItem(tr("MainWindow", "Oscillate (per point)"), "point")
+        self.mode_combo.addItem(tr("MainWindow", "Oscillate (per pair)"), "pair")
+        self.mode_combo.currentIndexChanged.connect(self._update_preview)
+        where.field(tr("MainWindow", "Mode"), bind_segments(self.mode_combo), tr(
+            "MainWindow",
+            "Sweep eases from Initial to Final. Oscillate fans out either side of Initial, "
+            "reaching Final at the last point: per point on every step, per pair once per "
+            "up/down pair."), span=2)
+        self.mode_combo.setProperty("sheetField", self.mode_combo.parentWidget().property("sheetField"))
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.button(QDialogButtonBox.Ok).setText(tr("MainWindow", "Generate"))
-        buttons.accepted.connect(self._accept)
-        buttons.rejected.connect(self.reject)
-        root.addWidget(buttons)
+        self.placement_combo = QComboBox()
+        # Literal tr() calls, one per option -- see AddViewDialog's note on why
+        # a dict lookup here would silently escape the i18n coverage gate.
+        self.placement_combo.addItem(tr("MainWindow", "Each note"), "notes")
+        self.placement_combo.addItem(tr("MainWindow", "Every snap"), "snaps")
+        self.placement_combo.currentIndexChanged.connect(self._update_placement_controls)
+        placement = bind_segments(self.placement_combo)
+        where.field(tr("MainWindow", "Generate at"), placement, tr(
+            "MainWindow",
+            "Each note puts a line just before every note in the range. Every snap puts one on "
+            "every gridline of the snap below."))
+        self.placement_combo.setProperty("sheetField", placement.property("sheetField"))
+
+        self.snap_combo = QComboBox()
+        for divisor in SNAP_DIVISORS:
+            self.snap_combo.addItem(f"1/{divisor}", divisor)
+        found = self.snap_combo.findData(int(snap_divisor))
+        self.snap_combo.setCurrentIndex(found if found >= 0 else self.snap_combo.findData(4))
+        self.snap_label = QLabel(tr("MainWindow", "Snap"))
+        where.field(tr("MainWindow", "Snap"), self.snap_combo, tr(
+            "MainWindow", "The gridline spacing for Every snap."))
+
+        self.position_offset_spin = QSpinBox()
+        self.position_offset_spin.setRange(-5000, 5000)
+        self.position_offset_spin.setSuffix(" ms")
+        # An SV point governs what comes after it, so it has to land slightly
+        # before the note it is meant to affect. In a gimmick layer the value
+        # comes from that layer's config, which is also what decides which
+        # milliseconds the layer recognises as its own.
+        self.position_offset_spin.setValue(
+            self.DEFAULT_POSITION_OFFSET_MS if position_offset is None else int(position_offset)
+        )
+        where.field(tr("MainWindow", "Position offset"), self.position_offset_spin, tr(
+            "MainWindow",
+            "How far ahead of its note each line sits. An SV point governs what comes after "
+            "it, so a note needs its line slightly early."))
+
+        self.omit_barline_check = QCheckBox(tr("MainWindow", "Omit barline"))
+        self.omit_barline_check.setChecked(False)
+        where.switch(self.omit_barline_check, tr(
+            "MainWindow", "Only matters where a generated point lands on a red line."), span=1)
+
+        self.relative_to_final_bpm_check = QCheckBox(tr("MainWindow", "Relative to final BPM"))
+        # Off in a gimmick layer. It multiplies every generated rate by
+        # local_bpm / start_bpm, and a gimmick's local BPM is 60000 against a
+        # chart's 180 -- so a "1.0x to 2.0x" sweep came out in the hundreds and
+        # neither end landed on the number that was typed.
+        self.relative_to_final_bpm_check.setChecked(not gimmick_layer and not volume)
+        where.switch(self.relative_to_final_bpm_check, tr(
+            "MainWindow", "Scales each rate so the scroll speed holds across BPM changes in the range."), span=1)
+        if volume:
+            # Position offset and Omit barline describe an *inserted* point;
+            # the Volume tool edits the timing points already in the range.
+            # Relative to final BPM is a statement about scroll speed, and a
+            # hitsound is as loud as it is whatever the BPM is doing.
+            for widget in (self.position_offset_spin, self.omit_barline_check,
+                           self.relative_to_final_bpm_check):
+                set_row_visible(None, widget, False)
+
+        self.include_shiny_check = QCheckBox(tr("MainWindow", "Include shiny notes"))
+        self.include_shiny_check.setChecked(False)
+        # Layer 6 owns *every* red line -- the chart's own timing, a barline
+        # gimmick's 60000 BPM run, hand-placed lines -- and a sweep across a
+        # dragged range hits all of them indiscriminately. This narrows it to
+        # one BPM range, which is how you drive a single gimmick run without
+        # disturbing the ordinary timing lines interleaved with it.
+        self.bpm_filter_check = QCheckBox(tr("MainWindow", "Only red lines at this BPM"))
+        self.bpm_filter_check.setChecked(False)
+        self.bpm_filter_spin = QDoubleSpinBox()
+        self.bpm_filter_spin.setRange(1.0, 1000000.0)
+        self.bpm_filter_spin.setDecimals(4)
+        self.bpm_filter_spin.setSuffix(" BPM")
+        # The BPM in force where the drag started -- the run you are looking at
+        # is almost always the one you want, so the default costs no typing.
+        self.bpm_filter_spin.setValue(
+            base_bpm_at(self.base_timing, start_ms) if self.base_timing else 120.0
+        )
+        # An inclusive range rather than one exact BPM: an exact match is just
+        # the degenerate case where the two ends are equal.
+        self.bpm_filter_max_spin = QDoubleSpinBox()
+        self.bpm_filter_max_spin.setRange(1.0, 1000000.0)
+        self.bpm_filter_max_spin.setDecimals(4)
+        self.bpm_filter_max_spin.setSuffix(" BPM")
+        self.bpm_filter_max_spin.setValue(self.bpm_filter_spin.value())
+        # Layer 5's counterpart: two fake sliders can sit on the same
+        # millisecond and differ only in `length` (-0.001 vs -0.0011), which is
+        # how a mapper encodes "these get one SV, those get another".
+        self.length_filter_check = QCheckBox(tr("MainWindow", "Only fake sliders with this length"))
+        self.length_filter_check.setChecked(False)
+        self.length_filter_spin = QDoubleSpinBox()
+        self.length_filter_spin.setRange(-100000.0, FAKE_SLIDER_MAX_LENGTH)
+        self.length_filter_spin.setDecimals(4)
+        self.length_filter_spin.setValue(-0.001)
+        self.length_filter_max_spin = QDoubleSpinBox()
+        self.length_filter_max_spin.setRange(-100000.0, FAKE_SLIDER_MAX_LENGTH)
+        self.length_filter_max_spin.setDecimals(4)
+        self.length_filter_max_spin.setValue(-0.001)
+        if gimmick_layer in ("sv_barline", "sv_fake_slider"):
+            filters = sheet.add_section("filters", tr("MainWindow", "Which lines"))
+            if gimmick_layer == "sv_fake_slider":
+                filters.switch(self.include_shiny_check, tr(
+                    "MainWindow",
+                    "This layer holds the speed of plain fake sliders. Shiny notes "
+                    "are left out by default -- their gimmick line sits on the note, "
+                    "so the normal chart SV layer already moves the note and its "
+                    "shine together -- but this sweep can add them in as well.",
+                ))
+                filters.switch(self.length_filter_check, tr(
+                    "MainWindow", "Sweep one length family of fake sliders and leave the rest."))
+                filters.field(tr("MainWindow", "Length from"), self.length_filter_spin)
+                filters.field(tr("MainWindow", "Length to"), self.length_filter_max_spin)
+                self.length_filter_check.toggled.connect(self._update_length_filter_row)
+            else:
+                filters.switch(self.bpm_filter_check, tr(
+                    "MainWindow", "Drive one gimmick run without touching the chart's own timing lines."))
+                filters.field(tr("MainWindow", "BPM from"), self.bpm_filter_spin)
+                filters.field(tr("MainWindow", "BPM to"), self.bpm_filter_max_spin)
+                self.bpm_filter_check.toggled.connect(self._update_bpm_filter_row)
+
+        sheet.set_help_default(
+            tr("MainWindow", "Curve"),
+            tr("MainWindow", "The plot shows every value Generate will write, in order. This picture is the curve alone, first point to last."))
+        self.curve = Diagram(self._paint_curve, 130)
+        sheet.set_diagram(self.curve, tr("MainWindow", "Curve"))
+        self.resize(980, 700)
 
         self._update_preview()
         self._update_placement_controls()
         self._update_bpm_filter_row()
         self._update_length_filter_row()
+
+    CHIP_ICON_SIZE = (30, 20)
+
+    def _curve_pixmap(self, function_id: str, size: tuple[int, int], width: float) -> QPixmap:
+        """`function_id`'s shape, rising or falling with the typed range.
+
+        Normalised, so a 1.00x -> 1.00x range still shows the curve rather
+        than eight flat lines -- but True Exp bends by the range itself, so it
+        is read with the real endpoints whenever they differ.
+        """
+        initial, final = self.initial_rate_spin.value(), self.final_rate_spin.value()
+        falling = final < initial
+        a, b = (initial, final) if initial != final else (1.0, 4.0)
+        w, h = size
+        pixmap = QPixmap(w * 2, h * 2)
+        pixmap.setDevicePixelRatio(2.0)
+        pixmap.fill(Qt.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        points = []
+        for index in range(33):
+            t = index / 32
+            eased = sv_ease(function_id, t, a, b)
+            y = eased if not falling else 1 - eased
+            points.append(QPointF(2 + t * (w - 4), h - 2 - y * (h - 4)))
+        painter.setPen(QPen(QColor("#f3a6bd"), width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        painter.drawPolyline(QPolygonF(points))
+        painter.end()
+        return pixmap
+
+    def _paint_curve(self, painter: QPainter, rect: QRect) -> None:
+        inner = rect.adjusted(16, 12, -16, -22)
+        painter.setPen(QPen(QColor("#3a4554"), 1))
+        painter.drawLine(inner.bottomLeft(), inner.bottomRight())
+        painter.drawLine(inner.bottomLeft(), inner.topLeft())
+        pixmap = self._curve_pixmap(self.selected_function(), (inner.width(), inner.height()), 2.2)
+        painter.drawPixmap(inner.topLeft(), pixmap)
+        _diagram_text(painter, inner.left(), rect.bottom() - 6, tr("MainWindow", "first point"))
+        _diagram_text(painter, inner.right(), rect.bottom() - 6, tr("MainWindow", "last point"), align=Qt.AlignRight)
 
     def _resolved_function(self, key: str) -> str:
         """The curve id a tile stands for.
@@ -8908,21 +8955,18 @@ class SVFunctionDialog(QDialog):
             button.setChecked(True)
 
     def _update_preview(self) -> None:
-        """Re-plot every tile against the current rates.
+        """Re-plot the result and every chip's curve against the current rates.
 
-        Every tile, not just the selected one: the tiles *are* the preview, and
-        their whole job is to be compared against each other for the range you
-        actually typed -- a 1.10x -> 0.90x sweep has to show every curve
-        descending. Driven by the exponent box as well as by the two rates, so
-        "Exp x" shows the curve the number in it produces rather than a
-        placeholder.
+        The chips follow the range's direction -- a 1.10x -> 0.90x sweep shows
+        every curve falling -- and "Exp x" draws the exponent in its box.
         """
         self.preview.set_range(self.initial_rate_spin.value(), self.final_rate_spin.value())
         self.preview.set_oscillate(str(self.mode_combo.currentData()))
         for key, button in self.function_buttons.items():
-            self.preview.set_function(self._resolved_function(key))
-            button.setIcon(QIcon(self.preview.grab()))
+            button.setIcon(QIcon(self._curve_pixmap(self._resolved_function(key), self.CHIP_ICON_SIZE, 1.6)))
         self.preview.set_function(self.selected_function())
+        self._exp_field.setVisible(self.function_buttons["exp_x"].isChecked())
+        self.curve.refresh()
 
     def _update_placement_controls(self) -> None:
         """The snap divisor only means anything in "Every snap" mode.
