@@ -23,7 +23,7 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import QCoreApplication, QEvent, QObject, QPoint, QRect, Qt, Signal
-from PySide6.QtGui import QColor, QCursor, QIcon, QPainter, QPixmap
+from PySide6.QtGui import QColor, QCursor, QFont, QFontMetrics, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
     QApplication,
@@ -160,6 +160,13 @@ def segmented(buttons) -> QFrame:
         button.setStyleSheet("")
         button.setFocusPolicy(Qt.NoFocus)
         layout.addWidget(button)
+        if button.isCheckable():
+            # A pressed pill is drawn bold, and its size hint was measured at
+            # the regular weight -- so the pressed one clipped its own label
+            # by a pixel (tools/check_button_widths.py). 9px padding each side.
+            bold = QFont(button.font())
+            bold.setWeight(QFont.Weight.Bold)
+            button.setMinimumWidth(QFontMetrics(bold).horizontalAdvance(button.text()) + 20)
     return frame
 
 
