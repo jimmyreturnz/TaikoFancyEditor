@@ -119,6 +119,13 @@ class HeaderStatusPositionTests(WindowTestCase):
             self.assertLess(order[label], order[self.window.page_tabs])
         self.assertEqual(self.window.chart_version_label.text(), self.state.document.version)
 
+    def test_file_derived_labels_never_render_markup(self):
+        # Difficulty, artist and file names are the mapper's text; a QLabel on
+        # AutoText would render "<img src=...>" in one as rich text.
+        for label in (self.window.chart_version_label, self.window.chart_title_label,
+                      self.window.status, self.window.gimmick_status):
+            self.assertEqual(label.textFormat(), Qt.PlainText)
+
     def test_session_settings_follow_the_page(self):
         self.window._show_page(gui.PAGE_EDITOR)
         self.assertFalse(self.window.editor_status_box.isHidden())

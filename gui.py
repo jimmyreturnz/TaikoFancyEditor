@@ -5935,11 +5935,153 @@ def freeze_preview_value(value):
         return tuple(sorted(freeze_preview_value(item) for item in value))
     return value
 
+class SnapSlider(QWidget):
+    """Beat snap as a slider over SNAP_DIVISORS: "Snap", the track, "1/4".
+
+    It stands in for the QComboBox each editor page had, so it answers the
+    handful of calls those combos got -- currentData, findData,
+    setCurrentIndex, currentIndexChanged -- and none of their callers change.
+    A combo hid 22 divisors behind a click; the slider shows where the current
+    one sits among them, with the ones people use labelled underneath.
+
+    The wheel is the slider's own (`_gimmick_wheel_target` leaves every
+    QAbstractSlider alone), which is what the combo's wheel did too.
+    """
+
+    currentIndexChanged = Signal(int)
+
+    # The divisors labelled under the track, and clickable. Not 2, 3 and 6:
+    # 1-16 are consecutive steps about 10px apart, so their labels ran into
+    # one another as "1234". Every divisor is still a drag or a notch away.
+    TICKS = (1, 4, 8, 12, 16, 32, 64)
+    HANDLE = 14
+    STYLE = f"""
+        QSlider::groove:horizontal {{ height: 4px; border-radius: 2px; background: #3a4554; }}
+        QSlider::sub-page:horizontal {{ border-radius: 2px; background: #ff66aa; }}
+        QSlider::handle:horizontal {{
+            width: {HANDLE}px; height: {HANDLE}px; margin: -5px 0; border-radius: 7px;
+            background: {ACCENT_PINK}; border: 1px solid #ff9dcc;
+        }}
+    """
+
+    def __init__(self, divisor: int = 4, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.divisors = tuple(SNAP_DIVISORS)
+        layout = QGridLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setHorizontalSpacing(8)
+        layout.setVerticalSpacing(0)
+        caption = QLabel(tr("MainWindow", "Snap"))
+        caption.setStyleSheet("color: #7d8794; font-size: 11px; font-weight: 700;")
+        layout.addWidget(caption, 0, 0, 2, 1)
+        self.slider = QSlider(Qt.Horizontal)
+        self.slider.setRange(0, len(self.divisors) - 1)
+        self.slider.setPageStep(1)
+        self.slider.setFixedWidth(220)
+        self.slider.setStyleSheet(self.STYLE)
+        self.slider.setFocusPolicy(Qt.NoFocus)
+        layout.addWidget(self.slider, 0, 1)
+        self.ticks = _SnapTicks(self)
+        layout.addWidget(self.ticks, 1, 1)
+        self.value_label = QLabel()
+        self.value_label.setStyleSheet(f"color: {ACCENT_PINK}; font-weight: 700;")
+        # Wide enough for "1/64", so the track does not shift as it changes.
+        self.value_label.setMinimumWidth(self.value_label.fontMetrics().horizontalAdvance("1/64") + 6)
+        layout.addWidget(self.value_label, 0, 2, 2, 1)
+        self.slider.valueChanged.connect(self._slider_moved)
+        self.slider.valueChanged.connect(self.ticks.update)
+        self.setCurrentIndex(max(0, self.findData(divisor)))
+
+    def _slider_moved(self, index: int) -> None:
+        self.value_label.setText(f"1/{self.divisors[index]}")
+        self.slider.setToolTip(tr("MainWindow", "Beat snap") + f" 1/{self.divisors[index]}")
+        self.currentIndexChanged.emit(index)
+
+    def wheelEvent(self, event) -> None:
+        # Over the caption, the ticks or the value, as over the track: one
+        # notch is one divisor, the way the combo's wheel was.
+        delta = event.angleDelta().y() or event.angleDelta().x()
+        if delta:
+            self.slider.setValue(self.slider.value() + (1 if delta > 0 else -1))
+        event.accept()
+
+    def currentIndex(self) -> int:
+        return self.slider.value()
+
+    def currentData(self) -> int:
+        return self.divisors[self.slider.value()]
+
+    def count(self) -> int:
+        return len(self.divisors)
+
+    def findData(self, divisor) -> int:
+        try:
+            return self.divisors.index(int(divisor))
+        except (ValueError, TypeError):
+            return -1
+
+    def setCurrentIndex(self, index: int) -> None:
+        # blockSignals on this widget still silences a caller's "quiet" set,
+        # as it did on the combo: the slider moves, but currentIndexChanged is
+        # emitted by this widget, and that is the signal that is blocked.
+        self.slider.setValue(index)
+        # The label has to exist on the first call too, when nothing moved.
+        self.value_label.setText(f"1/{self.divisors[index]}")
+
+    def tick_x(self, index: int) -> float:
+        """Where the handle's centre sits for `index`, in slider coordinates."""
+        span = self.slider.width() - self.HANDLE
+        return self.HANDLE / 2 + span * index / max(1, len(self.divisors) - 1)
+
+
+class _SnapTicks(QWidget):
+    """The labelled divisors under a SnapSlider's track. Click one to pick it."""
+
+    def __init__(self, owner: SnapSlider) -> None:
+        super().__init__(owner)
+        self.owner = owner
+        font = QFont(self.font())
+        font.setPixelSize(10)
+        self.setFont(font)
+        self.setFixedHeight(QFontMetrics(font).height())
+        self.setCursor(Qt.PointingHandCursor)
+
+    def _positions(self):
+        for divisor in SnapSlider.TICKS:
+            index = self.owner.findData(divisor)
+            if index >= 0:
+                yield divisor, index, self.owner.tick_x(index)
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setPen(QColor("#7d8794"))
+        metrics = painter.fontMetrics()
+        current = self.owner.currentData()
+        for divisor, _index, x in self._positions():
+            text = str(divisor)
+            if divisor == current:
+                painter.setPen(QColor("#e8edf3"))
+            painter.drawText(QPointF(x - metrics.horizontalAdvance(text) / 2, metrics.ascent()), text)
+            if divisor == current:
+                painter.setPen(QColor("#7d8794"))
+
+    def mousePressEvent(self, event) -> None:
+        x = event.position().x()
+        nearest = min(self._positions(), key=lambda item: abs(item[2] - x), default=None)
+        if nearest is not None:
+            self.owner.slider.setValue(nearest[1])
+            self.update()
+
+
 class ElidedLabel(QLabel):
     def __init__(self, text: str = "", parent=None) -> None:
         super().__init__(text, parent)
 
         self._full_text = text
+        # Plain, never auto-detected rich text: what this shows comes from
+        # .osu files (names, difficulty, artist), and a QLabel on AutoText
+        # renders a difficulty called "<img src=...>" as markup.
+        self.setTextFormat(Qt.PlainText)
         self.setSizePolicy(
             QSizePolicy.Ignored,
             QSizePolicy.Preferred,
@@ -10501,8 +10643,10 @@ class MainWindow(QMainWindow):
         if stack is None or stack.currentIndex() != PAGE_GIMMICK:
             return None
         if not self._gimmick_views or isinstance(
-            watched, (QComboBox, QAbstractSpinBox, QAbstractSlider)
-        ):
+            watched, (QComboBox, QAbstractSpinBox, QAbstractSlider, SnapSlider)
+        ) or isinstance(watched.parentWidget() if isinstance(watched, QWidget) else None, SnapSlider):
+            # A SnapSlider's caption, ticks and value label read the wheel as
+            # the snap too, not only its track.
             return None
         views = [
             getattr(frame, "chart_view", None) or getattr(frame, "sv_view", None)
@@ -10814,6 +10958,8 @@ class MainWindow(QMainWindow):
         # mapper, which elide first when the header runs out of room. The
         # status message that used to sit here moved to the status bar.
         self.chart_version_label = QLabel()
+        # The difficulty name is the mapper's text: plain, not markup.
+        self.chart_version_label.setTextFormat(Qt.PlainText)
         self.chart_version_label.setStyleSheet(f"color: {ACCENT_PINK}; font-weight: 700; padding-left: 10px;")
         header.addWidget(self.chart_version_label)
         self.chart_title_label = ElidedLabel()
@@ -11252,12 +11398,9 @@ class MainWindow(QMainWindow):
         layout.setSpacing(6)
 
         timeline_controls = QHBoxLayout()
-        timeline_controls.addWidget(QLabel(tr("MainWindow", "Beat snap")))
-
-        self.snap_combo = QComboBox()
-        for divisor in SNAP_DIVISORS:
-            self.snap_combo.addItem(f"1/{divisor}", divisor)
-        self.snap_combo.setCurrentText("1/4")
+        # The same snap slider as the Editor and Gimmick pages, with its own
+        # "Snap" caption; each page keeps its own divisor, as before.
+        self.snap_combo = SnapSlider(4)
         self.snap_combo.currentIndexChanged.connect(self._snap_changed)
         timeline_controls.addWidget(self.snap_combo)
 
@@ -11701,10 +11844,7 @@ class MainWindow(QMainWindow):
         strip = QHBoxLayout()
         strip.setSpacing(6)
 
-        self.editor_snap_combo = QComboBox()
-        for divisor in SNAP_DIVISORS:
-            self.editor_snap_combo.addItem(f"1/{divisor}", divisor)
-        self.editor_snap_combo.setCurrentText("1/4")
+        self.editor_snap_combo = SnapSlider(4)
         self.editor_snap_combo.currentIndexChanged.connect(self._editor_snap_changed)
         strip.addWidget(self.editor_snap_combo)
 
@@ -11839,10 +11979,7 @@ class MainWindow(QMainWindow):
         strip = QHBoxLayout()
         strip.setSpacing(6)
 
-        self.gimmick_snap_combo = QComboBox()
-        for divisor in SNAP_DIVISORS:
-            self.gimmick_snap_combo.addItem(f"1/{divisor}", divisor)
-        self.gimmick_snap_combo.setCurrentText("1/4")
+        self.gimmick_snap_combo = SnapSlider(4)
         self.gimmick_snap_combo.currentIndexChanged.connect(self._gimmick_snap_changed)
         strip.addWidget(self.gimmick_snap_combo)
 
@@ -11889,6 +12026,7 @@ class MainWindow(QMainWindow):
         status_row.setContentsMargins(0, 0, 0, 0)
         status_row.setSpacing(6)
         self.gimmick_status = QLabel()
+        self.gimmick_status.setTextFormat(Qt.PlainText)  # file names, not markup
         status_row.addWidget(self.gimmick_status)
         # The entry question is asked once and then remembered forever, so
         # without this there was no way to correct the answer -- including the
