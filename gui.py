@@ -13196,6 +13196,19 @@ class MainWindow(QMainWindow):
         ]
         if displaced:
             commands.insert(0, RemoveHitObjects(displaced))
+        # And the same for lines, per kind: a red and a green legitimately
+        # share a millisecond, two reds or two greens never do (osu! reads
+        # the first red and the last green, and the other is clutter the
+        # layers go on drawing and hit-testing).
+        moving_points = {point.uid for point in points}
+        landing = {(round(point.time) + delta, point.uninherited) for point in points}
+        displaced_points = [
+            point for point in state.document.timing_points
+            if point.uid not in moving_points
+            and (round(point.time), point.uninherited) in landing
+        ]
+        if displaced_points:
+            commands.insert(0, RemoveTimingPoints(displaced_points))
         state.history.push(CompositeCommand(commands, "move_objects"), state)
         with self._refresh_cycle():
             self._refresh_difficulty_views(difficulty_path)
@@ -15602,34 +15615,7 @@ class MainWindow(QMainWindow):
         divisor = getattr(self, "_clipboard_divisor", 0) or int(view.snap_divisor)
 
         def landing(entry) -> int:
-            """Where one clipboard entry goes, on the destination's grid.
-
-            `base + offset` alone is off by a millisecond or two, and always
-            was: both ends truncate their own beat positions to whole
-            milliseconds (`osu_snap_ms`), so shifting a pattern by an integer
-            carries the *source's* truncation to a destination whose fractional
-            beat positions are different. That is the "pasted +-1 or 2 ms off
-            the snap" report.
-
-            So: strip the object's deliberate offset from its snap, snap what
-            is left to the grid actually in force there, and put the offset
-            back. Nearest rather than down, because the error being corrected
-            goes both ways. Across a BPM change this lands on that section's
-            real snap, which is the grid a mapper pasting there is looking at.
-
-            Bailing out when the residual is half a division or more: at an
-            absurd BPM (a gimmick wall's 12345) a division is shorter than the
-            1-2ms a structure is offset by, so snapping would pull the object
-            onto the wrong division entirely. There the raw shift is right,
-            since such a section has no grid a mapper is aligning to.
-            """
-            raw = base + int(entry["offset"])
-            residual = int(entry.get("residual", 0))
-            timing = active_uninherited_at(view.snap_points, float(raw))
-            if timing is not None and abs(residual) * 2 >= timing.beat_length / divisor:
-                return raw
-            return osu_snap_ms(
-                snap_time(view.snap_points, float(raw - residual), divisor)) + residual
+            return self._paste_landing(view, base, divisor, entry)
 
         next_index = self._next_original_index(state)
         pasted = []
@@ -15685,6 +15671,36 @@ class MainWindow(QMainWindow):
             tr("MainWindow", "Pasted {count} notes.").format(count=len(pasted) + len(lines))
         )
 
+    def _paste_landing(self, view, base: int, divisor: int, entry) -> int:
+        """Where one clipboard entry goes, on the destination's grid.
+
+        `base + offset` alone is off by a millisecond or two, and always
+        was: both ends truncate their own beat positions to whole
+        milliseconds (`osu_snap_ms`), so shifting a pattern by an integer
+        carries the *source's* truncation to a destination whose fractional
+        beat positions are different. That is the "pasted +-1 or 2 ms off
+        the snap" report.
+
+        So: strip the object's deliberate offset from its snap, snap what
+        is left to the grid actually in force there, and put the offset
+        back. Nearest rather than down, because the error being corrected
+        goes both ways. Across a BPM change this lands on that section's
+        real snap, which is the grid a mapper pasting there is looking at.
+
+        Bailing out when the residual is half a division or more: at an
+        absurd BPM (a gimmick wall's 12345) a division is shorter than the
+        1-2ms a structure is offset by, so snapping would pull the object
+        onto the wrong division entirely. There the raw shift is right,
+        since such a section has no grid a mapper is aligning to.
+        """
+        raw = base + int(entry["offset"])
+        residual = int(entry.get("residual", 0))
+        timing = active_uninherited_at(view.snap_points, float(raw))
+        if timing is not None and abs(residual) * 2 >= timing.beat_length / divisor:
+            return raw
+        return osu_snap_ms(
+            snap_time(view.snap_points, float(raw - residual), divisor)) + residual
+
     def _copy_sv_points(self) -> None:
         view = self._active_sv_view
         if view is None:
@@ -15693,6 +15709,16 @@ class MainWindow(QMainWindow):
         if not points:
             return
         base = points[0].time
+        # Each point's distance off its own snap, as the note copy records it
+        # (see `_copy_notes`), so the delta paste lands on the destination's
+        # grid rather than carrying this one's truncation along.
+        divisor = int(view.snap_divisor)
+        self._sv_clipboard_divisor = divisor
+
+        def off_grid(time_ms: float) -> int:
+            return int(time_ms) - osu_snap_ms(snap_time(view.snap_points, float(time_ms), divisor))
+
+        base_off_grid = off_grid(base)
         # `offset` is what the millisecond-delta paste (the Editor page's own
         # SV view) uses; the list's own order is what the index-mapped paste
         # (a gimmick SV layer) walks instead, since `selected_points` is
@@ -15701,6 +15727,7 @@ class MainWindow(QMainWindow):
         self._sv_clipboard = [
             {
                 "offset": point.time - base,
+                "residual": off_grid(point.time) - base_off_grid,
                 "beat_length": point.beat_length, "meter": point.meter,
                 "sample_set": point.sample_set, "sample_index": point.sample_index,
                 "volume": point.volume, "effects": point.effects,
@@ -15778,9 +15805,11 @@ class MainWindow(QMainWindow):
         base = osu_snap_ms(max(0.0, snap_time(
             extract_timing_points(state.document), view.current_time, view.snap_divisor,
         )))
+        divisor = getattr(self, "_sv_clipboard_divisor", 0) or int(view.snap_divisor)
         pasted = [
             TimingPoint(
-                time=float(base + entry["offset"]), beat_length=entry["beat_length"],
+                time=float(self._paste_landing(view, base, divisor, entry)),
+                beat_length=entry["beat_length"],
                 meter=entry["meter"], sample_set=entry["sample_set"],
                 sample_index=entry["sample_index"], volume=entry["volume"],
                 uninherited_flag=0, effects=entry["effects"],

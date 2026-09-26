@@ -632,6 +632,37 @@ class ClipboardTests(WindowTestCase):
         self.assertTrue(pasted)
         self.assertFalse(pasted[0].uninherited)
 
+    def test_every_pasted_sv_point_lands_on_a_real_snap(self):
+        """The SV view's delta paste had the note paste's old bug: shifting by
+        a whole number of milliseconds carries the source's truncation."""
+        sv_view = self._sv_view()
+        self.window._editor_view_focus_changed(None, sv_view)
+        beat = 60000 / 172.0
+        for point in self.state.document.timing_points:
+            if point.uninherited:
+                point.beat_length = beat
+        sv_view.set_snap_divisor(4)
+        division = beat / 4.0
+        sources = [p for p in self.state.document.timing_points if not p.uninherited][:2]
+        for point, index in zip(sources, (40, 45)):
+            point.time = float(gui.osu_snap_ms(gui.snap_time(sv_view.snap_points, index * division, 4)))
+        self.state.document.timing_points.sort(key=lambda p: p.time)
+        sv_view.selected_uids = {p.uid for p in sources}
+        self.window.copy_selection()
+
+        grid = {
+            gui.osu_snap_ms(gui.snap_time(sv_view.snap_points, index * division, 4))
+            for index in range(400)
+        }
+        for index in (107, 111, 113, 117, 123):
+            sv_view.current_time = float(gui.osu_snap_ms(index * division))
+            before = {p.uid for p in self.state.document.timing_points}
+            self.window.paste_clipboard()
+            landed = [p.time for p in self.state.document.timing_points if p.uid not in before]
+            self.assertEqual(len(landed), 2, f"division {index}")
+            for time_ms in landed:
+                self.assertIn(int(time_ms), grid, f"division {index}: {time_ms} is off the grid")
+
     def test_clipboard_shortcuts_are_scoped_to_the_editor_page(self):
         """Application context would consume Ctrl+C everywhere, breaking copy
         in every line edit and spin box in the app."""

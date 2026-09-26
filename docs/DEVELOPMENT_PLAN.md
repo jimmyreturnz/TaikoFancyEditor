@@ -845,23 +845,29 @@ rounded; green-line click placement and its ghost did not. Both do now.
 **Still to do:**
 
 1. ~~Barline Don default: only the +1ms red line~~ -- **done** (98b786e).
-2. Separate "invisible note" BPM and red line BPM settings for the barline
-   and fake slider layers.
-3. At most one note, green line and red line per millisecond. Duplicated
-   green lines are the known SV bug on heavy gimmick sections.
-4. Paste lands exactly on the snap in every layer (fake sliders fixed in
-   3.3.3).
+2. ~~Separate "invisible note" BPM and red line BPM~~ -- **done** (6256332):
+   "Invisible note BPM" beside "Structure red line BPM" (`restore_bpm`).
+3. ~~At most one note, green line and red line per millisecond~~ -- **done
+   2026-09-26**. Placing, pasting, generating and dragging notes already
+   replaced or skipped; dragging a *line* onto another of its own kind now
+   replaces it too. A map loaded with duplicates keeps them: dropping them at
+   save would fight `_validate_output`'s count check and change a file behind
+   the mapper's back.
+4. ~~Paste lands exactly on the snap in every layer~~ -- **done 2026-09-26**.
+   The note paste already snapped each object on the destination's grid; the
+   Editor page's SV view pasted by raw delta and now shares
+   `_paste_landing`.
 5. ~~Auto-snap to each object's own nearest snap~~ -- **done 2026-09-24**: an
    object off the current grid moves along its own (`time_axis.own_divisor`),
    and Resnap (Ctrl+R) puts objects 1-2ms off their own grid back on it.
-6. Option to put a red line on the first fake slider (current or custom BPM),
-   with the chart's speed restored 1ms later. Also fixes the known issue
-   that a red line cannot be placed under, or moved after landing on, a
-   fake slider.
+6. ~~Red line on the fake slider, speed restored 1ms later~~ -- **done**
+   (6256332): "Write a red line for plain fake sliders" plus "Restore the
+   chart BPM 1 ms later", custom BPM through "Structure red line BPM".
 7. Different approach behaviour for barline and fake slider Kats, for example
    a rising SV.
-8. Opt-in exp(x>=1) curve in the SV generator.
-9. Separate "open view" lists for the regular editor and the gimmick editor.
+8. ~~Opt-in exp(x>=1) curve in the SV generator~~ -- **done**: the "Exp x"
+   tile, exponent floored at 1.
+9. ~~Separate "open view" lists~~ -- **done**: `AddViewDialog(gimmick=...)`.
 10. ~~Smoother fast scrolling~~ -- **measured and improved 2026-09-24**. The
     wheel was never the cost: on Nbt-Hwt's hidden anti-barline wall the
     Gimmick page ran 100-109 of 240 frames late with *no* wheel at all, and
@@ -869,8 +875,8 @@ rounded; green-line click placement and its ghost did not. Both do now.
     section instead of per tick now: 16-20 of 269 late. The median frame
     there is still ~11ms, so the next step is the next profile entry, not a
     guess. Harness: `tools/measure_wheel_seek.py --gimmick --from MS`.
-11. Larger items: UI and assets rework, song library rework, updater rework,
-    Thai localization.
+11. ~~Larger items~~ -- **cleared by the owner 2026-09-26** (UI and assets
+    rework, song library rework, updater rework, Thai localization).
 
 ### Gameplay preview: mods, and a range that matches osu! -- DONE 2026-09-25
 

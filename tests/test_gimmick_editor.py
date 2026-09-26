@@ -2431,6 +2431,25 @@ class GimmickMoveTests(_GimmickFixture, unittest.TestCase):
 
         self.assertEqual(self._red_times(), before)
 
+    def test_a_line_dragged_onto_its_own_kind_replaces_it(self):
+        """One red and one green per millisecond. A red and a green may share
+        one; a second of either kind is replaced, as a dragged note is."""
+        points = self.document.timing_points
+        red = gui.TimingPoint(time=20000.0, beat_length=500.0, uninherited_flag=1)
+        other_red = gui.TimingPoint(time=20300.0, beat_length=400.0, uninherited_flag=1)
+        green = gui.TimingPoint(time=20300.0, beat_length=-50.0, uninherited_flag=0)
+        points.extend([red, other_red, green])
+        points.sort(key=lambda p: p.time)
+
+        self.window._move_objects(self.target, [], [red.uid], 300)
+
+        at = [p for p in points if round(p.time) == 20300]
+        self.assertIn(red, at)
+        self.assertNotIn(other_red, at, "the red line landed on was replaced")
+        self.assertIn(green, at, "a green line is not the same kind")
+        self.state.history.undo(self.state)
+        self.assertIn(other_red, points)
+
     def test_a_drag_of_nothing_writes_nothing(self):
         self.window._move_objects(self.target, [], [], 0)
         self.assertFalse(self.state.history.can_undo())

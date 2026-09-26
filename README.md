@@ -37,20 +37,8 @@ The main inspirations include Alchyr's ranked maps *13 Stairs* and *Helios*, whi
 Full notes: [`docs/releases/v3.3.3.md`](docs/releases/v3.3.3.md).
 
 ## To be added / fixed:
-- Red line generator function with **preconfigured meter** (could be useful for 60000 bpm 1/4 meter static barlines gimmick.
 - improving the smoothness when scrolling too fast, been actively trying to find solutions and improve it for a while now. It is much better than before, and there is still a room for an improvement.
-- Will change barline note for don to default as only using redline at current bpm at +1 ms and not mirroring it to -1ms. 
-- Will add more config to the barline gimmick layer (or fake slider layer too) to allow presetting "invisible note" bpm and "red line" bpm separately. By saying invisible note bpm, you already know that placing high bpm at the note's position make it invisible, and you then put other things like either fake slider notes at +2ms or barline gimmick there.
-- Preventing regular note (don kat), green line, red line, from having more than one of each of them in the same millisecond\
-Currently there might still be a bug where SV line is duplicated, so if you can notice that in some parts the SV looks weird (the main suspects are where there are many gimmick objects), please check timingpoints in osu editor itself to see if there is any duplicated line for now.
-- Separate selection in fake slider layer.\
-Right now when you drag selects, it selects both layers inside it at once, will separate them from each other (hold shift to select both layers at once)
-- Sometimes copypasting objects in any layers might cause it to land in wrong millisecond (+- 1 or 2 milliseconds), this problem also happens in osu editor as well.\
-Within the editor, I will be ensuring that it get pasted exactly on where the snap is down to the millisecond on all objects and layer.
-- Might as well add auto snapping function that detects the object's nearest snaps first then snap to it, unlike osu stable auto snapper that currently snap notes to your current snaps.
-- Will add an option to place redline at the first fake slider at the current BPM (or custom BPM) to accommodate the behavior of you wanting the regular note to be invisible with high bpm, and reset the chart speed back to normal with current bpm at one millisecond later.
 - Will also try to come up with a way that you can make barline kat or fake slider kat to have different approaching behavior (like adding an increasing SV speed to barline kat to make them look harder to read). 
-- UI rework and adding proper assets to the app.
 - Further optimization when applicable.
 
 Full development log detail lives in [`docs/DEVELOPMENT_PLAN.md`](docs/DEVELOPMENT_PLAN.md).
@@ -142,8 +130,7 @@ View types:
 | Gameplay viewer | Read-only osu!taiko gameplay preview |
 | Density | The white-to-yellow note density heatmap |
 
-You can edit multiple difficulties at the same time as well, but I believe you still have to save each of them in each view.
-The very next update will come with Ctrl+Shift+s to save all difficulties at once, and will separate list of possible 'open view' between regular editor and gimmick editor.
+You can edit multiple difficulties at the same time as well. Ctrl+S saves every changed difficulty at once, and the Editor and the Gimmick editor each offer their own list of views to open.
 
 ### Note editing
 
@@ -478,9 +465,6 @@ Not yet implemented, and next in line:
 
 - Add rotation controls to transformations that do not support rotation yet
 - Improve the usability of the Equation transformation
-- Improve the overall UI design
-- updater rework so that users no longer have to redownload the entire app each time?
-- Thai localization ภาษาไทย
 
 ---
 
