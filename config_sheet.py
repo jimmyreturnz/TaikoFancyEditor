@@ -390,6 +390,10 @@ class Section(QFrame):
 class ConfigSheet(QWidget):
     """Rail | sections | explain panel. See the module docstring."""
 
+    # The key of the section the pointer or focus is now in: a diagram that
+    # draws a different picture per section (barline vs anti-barline) listens.
+    section_changed = Signal(str)
+
     def __init__(self, rail: bool = True, explain: bool = True, parent=None) -> None:
         super().__init__(parent)
         self.setStyleSheet(SHEET_STYLE)
@@ -431,6 +435,7 @@ class ConfigSheet(QWidget):
         self.column.verticalScrollBar().valueChanged.connect(self._follow_scroll)
         layout.addWidget(self.column, 1)
 
+        self.active_section = ""
         self.explain = None
         if explain:
             self.explain = QFrame()
@@ -505,6 +510,12 @@ class ConfigSheet(QWidget):
         column.addWidget(caption)
         column.addWidget(widget)
         target = scrub or (widget if isinstance(widget, QAbstractSpinBox) else None)
+        for spin in [widget, *widget.findChildren(QAbstractSpinBox)]:
+            if isinstance(spin, QAbstractSpinBox):
+                # A spin box sizes its minimum to its whole range: 1000000.000
+                # BPM is wider than half a card, and the column cannot scroll
+                # sideways, so the card clipped instead.
+                spin.setMinimumWidth(96)
         if target is not None:
             _Scrub(caption, target)
             caption.setToolTip(tr("MainWindow", "Drag sideways to change"))
@@ -561,6 +572,11 @@ class ConfigSheet(QWidget):
         self.help_meta.setText(tr("MainWindow", "Default: {value}").format(value=default) if default else "")
         self.help_meta.setVisible(bool(default))
         section = self._section_of(QApplication.focusWidget()) if key else None
+        if key and section is None:
+            section = self._section_of(QApplication.widgetAt(QCursor.pos()))
+        if section is not None and section.key != self.active_section:
+            self.active_section = section.key
+            self.section_changed.emit(section.key)
         for each in self.sections.values():
             active = each is section
             if bool(each.property("active")) != active:

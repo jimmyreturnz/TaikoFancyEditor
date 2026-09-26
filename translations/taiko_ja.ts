@@ -141,6 +141,274 @@
     <context>
         <name>MainWindow</name>
         <message>
+            <source>Length</source>
+            <translation>長さ</translation>
+        </message>
+        <message>
+            <source>sliders</source>
+            <translation>個</translation>
+        </message>
+        <message>
+            <source>ticks</source>
+            <translation>ティック</translation>
+        </message>
+        <message>
+            <source>A drumroll too short to hit: only its head is drawn</source>
+            <translation>叩けないほど短い連打。頭だけが描画されます</translation>
+        </message>
+        <message>
+            <source>A hittable note on the snap, so the bars are something the player plays.</source>
+            <translation>スナップ上に叩けるノートを置き、小節線がプレイヤーの叩く対象になるようにします。</translation>
+        </message>
+        <message>
+            <source>A note that becomes a fake slider in flight</source>
+            <translation>流れてくる途中でフェイクスライダーに変わるノート</translation>
+        </message>
+        <message>
+            <source>A plain red line where you click</source>
+            <translation>クリックした位置に置く普通の赤線</translation>
+        </message>
+        <message>
+            <source>A red line's BPM is also its scroll speed. Chart's own changes nothing but where the bars fall; a number is a speed change with no green line.</source>
+            <translation>赤線の BPM はスクロール速度でもあります。「譜面の値」は小節線の位置だけを変え、数値を入れると緑線なしで速度が変わります。</translation>
+        </message>
+        <message>
+            <source>A stack of fake sliders under one note</source>
+            <translation>1 つのノートの下に重ねたフェイクスライダー</translation>
+        </message>
+        <message>
+            <source>A wall of bars with a slit where each note is</source>
+            <translation>小節線の壁に、各ノートの位置で隙間を空けます</translation>
+        </message>
+        <message>
+            <source>Also place the note</source>
+            <translation>ノートも置く</translation>
+        </message>
+        <message>
+            <source>Anything longer than 0.001 is a real, hittable drumroll. -0.0001 is the canonical fake slider; long negative lengths draw a track to the right of the head.</source>
+            <translation>0.001 より長いと叩ける本物の連打になります。-0.0001 が標準のフェイクスライダーで、大きな負の長さでは頭の右側に帯が描かれます。</translation>
+        </message>
+        <message>
+            <source>Barline Don</source>
+            <translation>小節線ドン</translation>
+        </message>
+        <message>
+            <source>Barline Kat</source>
+            <translation>小節線カッ</translation>
+        </message>
+        <message>
+            <source>Beats per bar for the line. osu! reads meter from the red line in force, so this re-bars everything after it.</source>
+            <translation>この線の 1 小節あたりの拍数です。osu! は有効な赤線から拍子を読むため、以降すべての小節区切りが変わります。</translation>
+        </message>
+        <message>
+            <source>Below the chart's own BPM the wall packs tighter: a red line's BPM is also its scroll speed, so a third of the BPM draws the same lines a third as far apart.</source>
+            <translation>譜面の BPM より低いと壁が詰まります。赤線の BPM はスクロール速度でもあるため、BPM を 3 分の 1 にすると同じ線が 3 分の 1 の間隔で描かれます。</translation>
+        </message>
+        <message>
+            <source>Chart's own</source>
+            <translation>譜面の値</translation>
+        </message>
+        <message>
+            <source>Don / Kat</source>
+            <translation>ドン / カッ</translation>
+        </message>
+        <message>
+            <source>Don slit</source>
+            <translation>ドンの隙間</translation>
+        </message>
+        <message>
+            <source>Every structure</source>
+            <translation>すべての構造</translation>
+        </message>
+        <message>
+            <source>Gimmick SV</source>
+            <translation>ギミック SV</translation>
+        </message>
+        <message>
+            <source>Green lines</source>
+            <translation>緑線</translation>
+        </message>
+        <message>
+            <source>Hover or focus a setting</source>
+            <translation>設定にカーソルを合わせるか選択してください</translation>
+        </message>
+        <message>
+            <source>How far after the snap the fake slider sits. Must differ from the shiny offset and from every barline spacing.</source>
+            <translation>フェイクスライダーをスナップからどれだけ後ろに置くかです。シャイニーのオフセットや、どの小節線の間隔とも違う値にしてください。</translation>
+        </message>
+        <message>
+            <source>How far from the note each bar sits. 1 ms is the tightest the file format allows, and reads as one thin object.</source>
+            <translation>各小節線をノートからどれだけ離すかです。1 ms はファイル形式で最も狭い値で、1 本の細いオブジェクトに見えます。</translation>
+        </message>
+        <message>
+            <source>How fast the chart runs once the structure hands it back. Chart's own reads the BPM in force at that millisecond, which is what every structure written before this setting used.</source>
+            <translation>構造の後に譜面をどの速さで流すかです。「譜面の値」はそのミリ秒で有効な BPM を使い、この設定が追加される前の構造はすべてこれで書かれています。</translation>
+        </message>
+        <message>
+            <source>How many fake sliders sit under the note. In a kiai section each one adds its own flash, so a deeper stack shines brighter.</source>
+            <translation>ノートの下に重ねるフェイクスライダーの数です。キアイ区間ではそれぞれが光を足すため、重ねるほど明るく光ります。</translation>
+        </message>
+        <message>
+            <source>How tight the wall is. The reference section (mekurume) uses 72.</source>
+            <translation>壁の密度です。参考区間（mekurume）では 72 です。</translation>
+        </message>
+        <message>
+            <source>Kat slit</source>
+            <translation>カッの隙間</translation>
+        </message>
+        <message>
+            <source>Kat's three bars, each set on its own so several structures can be layered on one region. The three must all differ.</source>
+            <translation>カッの 3 本の小節線で、それぞれ個別に設定できるため、同じ範囲に複数の構造を重ねられます。3 つとも違う値にしてください。</translation>
+        </message>
+        <message>
+            <source>Mirror on both sides</source>
+            <translation>両側に対称に置く</translation>
+        </message>
+        <message>
+            <source>Moves each placed red line off the snap by this much.</source>
+            <translation>置いた赤線をスナップからこの分だけずらします。</translation>
+        </message>
+        <message>
+            <source>Off is fine when the shiny decorates a note already in the chart.</source>
+            <translation>譜面に既にあるノートを飾るシャイニーならオフでも構いません。</translation>
+        </message>
+        <message>
+            <source>Off leaves the bare object, which is what the Multiple tool wants.</source>
+            <translation>オフにするとオブジェクトだけが残ります。複数フェイクスライダーツールではこちらを使います。</translation>
+        </message>
+        <message>
+            <source>Off: one bar after the note, as most hand-made maps do.</source>
+            <translation>オフ: ノートの後ろに 1 本。手作りの譜面の多くがこの形です。</translation>
+        </message>
+        <message>
+            <source>Offset</source>
+            <translation>オフセット</translation>
+        </message>
+        <message>
+            <source>On: bars either side, centred on the note.</source>
+            <translation>オン: ノートを中心に両側に小節線を置きます。</translation>
+        </message>
+        <message>
+            <source>One pair of bars</source>
+            <translation>小節線 1 組</translation>
+        </message>
+        <message>
+            <source>Position offset</source>
+            <translation>位置オフセット</translation>
+        </message>
+        <message>
+            <source>Preview</source>
+            <translation>プレビュー</translation>
+        </message>
+        <message>
+            <source>Red Line tool</source>
+            <translation>赤線ツール</translation>
+        </message>
+        <message>
+            <source>Red line BPM after the structure</source>
+            <translation>構造の後の赤線 BPM</translation>
+        </message>
+        <message>
+            <source>Saved with this layer. Used by its Green Line and Function tools.</source>
+            <translation>このレイヤーに保存されます。緑線ツールと関数ツールが使います。</translation>
+        </message>
+        <message>
+            <source>Saved with this layer. Used by the Don, Kat, Red Line and Convert Notes tools.</source>
+            <translation>このレイヤーに保存されます。ドン、カッ、赤線、ノート変換ツールが使います。</translation>
+        </message>
+        <message>
+            <source>Saved with this layer. Used by the Fake Slider, Don, Kat, Shiny and Multiple tools.</source>
+            <translation>このレイヤーに保存されます。フェイクスライダー、ドン、カッ、シャイニー、複数ツールが使います。</translation>
+        </message>
+        <message>
+            <source>Spacing</source>
+            <translation>間隔</translation>
+        </message>
+        <message>
+            <source>Spacing 1</source>
+            <translation>間隔 1</translation>
+        </message>
+        <message>
+            <source>Spacing 2</source>
+            <translation>間隔 2</translation>
+        </message>
+        <message>
+            <source>Spacing 3</source>
+            <translation>間隔 3</translation>
+        </message>
+        <message>
+            <source>Stack size</source>
+            <translation>重ねる数</translation>
+        </message>
+        <message>
+            <source>The first fake slider of the stack sits this long after the note, the rest one ms apart.</source>
+            <translation>重ねる最初のフェイクスライダーをノートのこれだけ後ろに置き、残りは 1 ms ずつ離します。</translation>
+        </message>
+        <message>
+            <source>The green line that takes the already squashed note the rest of the way off screen.</source>
+            <translation>既に潰したノートを画面外まで運ぶ緑線です。</translation>
+        </message>
+        <message>
+            <source>The hidden note, and the chart after it</source>
+            <translation>隠したノートと、その後の譜面</translation>
+        </message>
+        <message>
+            <source>The red line on the note's own millisecond. At 60000 BPM the note scrolls 392 px per ms, so it is never on screen and the structure around it is the whole object.</source>
+            <translation>ノートと同じミリ秒に置く赤線です。60000 BPM ではノートが 1 ms に 392 px 流れるため画面に映らず、周りの構造だけがオブジェクトとして見えます。</translation>
+        </message>
+        <message>
+            <source>The shiny offset equals the fake slider offset. Both land on the same millisecond, and a stack of fake sliders on one millisecond is what a shiny is, so the two can no longer be told apart.</source>
+            <translation>シャイニーのオフセットがフェイクスライダーのオフセットと同じです。どちらも同じミリ秒に置かれ、同じミリ秒に重ねたフェイクスライダーこそがシャイニーなので、2 つを区別できなくなります。</translation>
+        </message>
+        <message>
+            <source>The shiny's own red line as a multiple of the chart's BPM.</source>
+            <translation>シャイニー自身の赤線を、譜面の BPM の倍率で指定します。</translation>
+        </message>
+        <message>
+            <source>The slider's 60000 BPM line would otherwise stamp a bar nobody asked for.</source>
+            <translation>オフにするとスライダーの 60000 BPM の線が不要な小節線を描きます。</translation>
+        </message>
+        <message>
+            <source>The slider's own red line as a multiple of the chart's BPM. 1× restates the BPM in force.</source>
+            <translation>スライダー自身の赤線を、譜面の BPM の倍率で指定します。1× は有効な BPM をそのまま書きます。</translation>
+        </message>
+        <message>
+            <source>The three Kat spacings must all be different: two bars on one millisecond are one red line.</source>
+            <translation>カッの 3 つの間隔はすべて違う値にしてください。同じミリ秒の 2 本は 1 本の赤線になります。</translation>
+        </message>
+        <message>
+            <source>This panel says what it does and its default. The picture above follows your numbers.</source>
+            <translation>ここに設定の働きと初期値が表示されます。上の図は入力した数値に合わせて変わります。</translation>
+        </message>
+        <message>
+            <source>Three pairs, so a Kat reads wider than a Don</source>
+            <translation>3 組なので、カッはドンより太く見えます</translation>
+        </message>
+        <message>
+            <source>Wall lines left out for a Don. The slit width is what tells Don from Kat, since the notes themselves are invisible.</source>
+            <translation>ドンのために抜く壁の線の数です。ノート自体は見えないため、隙間の幅でドンとカッを見分けます。</translation>
+        </message>
+        <message>
+            <source>Wall lines left out for a Kat. Wider than Don's, or the two cannot be told apart.</source>
+            <translation>カッのために抜く壁の線の数です。ドンより広くしないと見分けられません。</translation>
+        </message>
+        <message>
+            <source>Without it the slider's line governs the rest of the map.</source>
+            <translation>これがないと、スライダーの線が譜面の残りすべてに効きます。</translation>
+        </message>
+        <message>
+            <source>off</source>
+            <translation>オフ</translation>
+        </message>
+        <message>
+            <source>on</source>
+            <translation>オン</translation>
+        </message>
+        <message>
+            <source>{count} lines per beat</source>
+            <translation>1 拍あたり {count} 本</translation>
+        </message>
+        <message>
             <source>Restore defaults</source>
             <translation>初期値に戻す</translation>
         </message>

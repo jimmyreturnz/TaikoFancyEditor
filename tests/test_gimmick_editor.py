@@ -985,6 +985,36 @@ class GimmickToolTests(_GimmickFixture, unittest.TestCase):
         dialog.deleteLater()
 
 
+    def test_a_clash_marks_both_fields_and_restore_defaults_clears_it(self):
+        """The config sheet puts the caution on the fields, not just under the
+        form: both offsets turn amber when they meet, and Restore defaults
+        brings back GimmickConfig's own values."""
+        dialog = gui.GimmickConfigDialog(
+            gui.GimmickConfig(), "fake_slider", gui.GimmickConfig(), self.window,
+        )
+        dialog.shiny_offset_spin.setValue(dialog.fake_offset_spin.value())
+        self.assertTrue(dialog.shiny_offset_spin.property("warn"))
+        self.assertTrue(dialog.fake_offset_spin.property("warn"))
+        self.assertFalse(dialog.shiny_caution.isHidden())
+        dialog.restore_button.click()
+        self.assertEqual(dialog.shiny_offset_spin.value(), gui.GimmickConfig().shiny_offset_ms)
+        self.assertFalse(dialog.shiny_offset_spin.property("warn"))
+        self.assertTrue(dialog.shiny_caution.isHidden())
+        dialog.deleteLater()
+
+    def test_custom_bpm_is_a_pill_over_the_same_checkbox(self):
+        dialog = gui.GimmickConfigDialog(
+            gui.GimmickConfig(), "barline", gui.GimmickConfig(), self.window,
+        )
+        self.assertFalse(dialog.red_bpm_spin.isEnabled())
+        custom = [b for b in dialog.red_bpm_widget.findChildren(gui.QPushButton) if b.isCheckable()][1]
+        custom.click()
+        self.assertTrue(dialog.red_bpm_check.isChecked())
+        self.assertTrue(dialog.red_bpm_spin.isEnabled())
+        self.assertIsNotNone(dialog.config().red_line_bpm)
+        dialog.deleteLater()
+
+
 class GimmickPageChromeTests(_GimmickFixture, unittest.TestCase):
     """The page's own timeline strip, layer sizing, playhead and keybinds."""
 

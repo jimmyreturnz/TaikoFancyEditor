@@ -35,7 +35,9 @@ from PySide6.QtWidgets import (
 
 import osu_db
 from smooth_scroll import SMOOTH_SCROLL_MS, SmoothScroller, reduced_motion, smooth
-from config_sheet import SEGMENT_STYLE, control_stylesheet, segmented
+from config_sheet import (
+    SEGMENT_STYLE, WARN_COLOR, Diagram, SheetDialog, control_stylesheet, own_or_custom, segmented, set_warning,
+)
 from audio_engine import DEFAULT_HITSOUND_OFFSET_MS, WHEEL_SEEK_HOLD_MS, TrackPlayer
 from skin import UI_SOUNDS, TaikoSkin, skins_root
 from parameters import PARAMETERS
@@ -6495,40 +6497,160 @@ class GimmickEntryDialog(QDialog):
         return Path(data) if data else None
 
 
-class GimmickConfigDialog(QDialog):
-    """One layer's toolbox settings.
+# -- config sheet diagrams ---------------------------------------------------
+#
+# The explain panel's pictures. Each is drawn from a GimmickConfig with the
+# same offsets gimmick_session writes, so the picture is the structure and not
+# an illustration of it.
+
+_DIAGRAM_INK = QColor("#e8edf3")
+_DIAGRAM_MUTED = QColor("#7d8794")
+_DIAGRAM_RULE = QColor(255, 255, 255, 20)
+
+
+def _diagram_text(painter: QPainter, x: float, y: float, text: str, color: QColor = _DIAGRAM_MUTED,
+                  align=Qt.AlignLeft, bold: bool = False) -> None:
+    font = painter.font()
+    font.setPixelSize(10)
+    font.setBold(bold)
+    painter.setFont(font)
+    painter.setPen(color)
+    width = painter.fontMetrics().horizontalAdvance(text)
+    left = x - width / 2 if align == Qt.AlignHCenter else x - width if align == Qt.AlignRight else x
+    painter.drawText(QPointF(left, y), text)
+
+
+def paint_barline_notes(painter: QPainter, rect: QRect, config: GimmickConfig) -> None:
+    """A Don and a Kat drawn out of bars: the squash on the note, the
+    restores at each spacing (mirrored or trailing), on a ms axis."""
+    mid = rect.center().x()
+    kats = (config.kat_spacing1_ms, config.kat_spacing2_ms, config.kat_spacing3_ms)
+    reach = max(10, config.spacing_ms + 1, max(kats) + 1)
+    px_per_ms = (rect.width() / 2 - 18) / reach
+    rows = (
+        ("DON", 0.30, (config.spacing_ms,), config.mirror_don_lines, QColor(*DON_COLOR)),
+        ("KAT", 0.66, kats, config.mirror_kat_lines, QColor(*KAT_COLOR)),
+    )
+    for name, fraction, spacings, mirrored, color in rows:
+        y = rect.top() + rect.height() * fraction
+        _diagram_text(painter, rect.left() + 8, y - 20, name, bold=True)
+        painter.setPen(QPen(_DIAGRAM_RULE, 1))
+        painter.drawLine(QPointF(rect.left() + 8, y), QPointF(rect.right() - 8, y))
+        offsets = [-value for value in spacings] + list(spacings) if mirrored else list(spacings)
+        painter.setPen(QPen(_DIAGRAM_INK, 2.5))
+        for offset in offsets:
+            x = mid + offset * px_per_ms
+            painter.drawLine(QPointF(x, y - 15), QPointF(x, y + 15))
+        painter.setPen(QPen(color, 2, Qt.DashLine))
+        painter.drawLine(QPointF(mid, y - 15), QPointF(mid, y + 15))
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(color)
+        painter.drawEllipse(QPointF(mid, y), 4, 4)
+    step = 5 if reach <= 20 else 10 if reach <= 50 else 50
+    tick = -(reach // step) * step
+    while tick <= reach:
+        label = f"+{tick}" if tick > 0 else str(tick)
+        _diagram_text(painter, mid + tick * px_per_ms, rect.bottom() - 6, label, align=Qt.AlignHCenter)
+        tick += step
+    _diagram_text(painter, rect.right() - 8, rect.top() + 14, "ms", align=Qt.AlignRight)
+
+
+def paint_anti_barline(painter: QPainter, rect: QRect, config: GimmickConfig) -> None:
+    """The wall with a Don slit and a Kat slit, widths in wall ticks."""
+    gap = max(1.6, 115.0 / max(1, config.anti_lines_per_beat))
+    top, bottom = rect.top() + 18, rect.bottom() - 40
+    don = (rect.left() + rect.width() * 0.30, config.anti_don_ticks)
+    kat = (rect.left() + rect.width() * 0.66, config.anti_kat_ticks)
+    painter.setPen(QPen(_DIAGRAM_INK, 1.2))
+    x = rect.left() + 8.0
+    while x < rect.right() - 8:
+        in_slit = any(start < x < start + ticks * gap + 0.01 for start, ticks in (don, kat))
+        if not in_slit:
+            painter.drawLine(QPointF(x, top), QPointF(x, bottom))
+        x += gap
+    for (start, ticks), name, color in ((don, "Don", QColor(*DON_COLOR)), (kat, "Kat", QColor(*KAT_COLOR))):
+        _diagram_text(painter, start + ticks * gap / 2, bottom + 16, f"{name} {ticks}",
+                      color, Qt.AlignHCenter, bold=True)
+    _diagram_text(painter, rect.left() + 8, rect.bottom() - 6,
+                  tr("MainWindow", "{count} lines per beat").format(count=config.anti_lines_per_beat))
+
+
+def paint_shiny_stack(painter: QPainter, rect: QRect, config: GimmickConfig) -> None:
+    """Two notes at T: one with its shiny stack from the shiny offset, one
+    with a plain fake slider at the fake slider offset. On the same axis, so
+    the two offsets meeting -- amber -- is visible as the same column."""
+    left = rect.left() + 34
+    px_per_ms = (rect.width() - 60) / 6
+    clash = config.shiny_offset_ms == config.fake_slider_offset_ms
+    rows = ((tr("MainWindow", "Shiny"), rect.top() + rect.height() * 0.28),
+            (tr("MainWindow", "Fake slider"), rect.top() + rect.height() * 0.62))
+    for name, y in rows:
+        _diagram_text(painter, rect.left() + 8, y - 17, name.upper(), bold=True)
+        painter.setPen(QPen(_DIAGRAM_RULE, 1))
+        painter.drawLine(QPointF(rect.left() + 8, y), QPointF(rect.right() - 8, y))
+    shiny_y, fake_y = rows[0][1], rows[1][1]
+    for index in reversed(range(config.shiny_count)):
+        x = left + (config.shiny_offset_ms + index) * px_per_ms
+        if x > rect.right():
+            continue
+        colour = QColor(*DRUMROLL_COLOR)
+        painter.setPen(QPen(QColor(255, 255, 255, 200), 1.5))
+        painter.setBrush(colour)
+        painter.drawEllipse(QPointF(x, shiny_y), 10, 10)
+    fake_x = left + config.fake_slider_offset_ms * px_per_ms
+    painter.setPen(QPen(QColor(255, 255, 255, 200), 1.5))
+    painter.setBrush(QColor(*DRUMROLL_COLOR))
+    painter.drawEllipse(QPointF(fake_x, fake_y), 10, 10)
+    for y in (shiny_y, fake_y):
+        painter.setPen(QPen(Qt.white, 2))
+        painter.setBrush(QColor(*DON_COLOR))
+        painter.drawEllipse(QPointF(left, y), 11, 11)
+    if clash:
+        painter.setPen(QPen(QColor(WARN_COLOR), 1.5, Qt.DashLine))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRect(QRectF(fake_x - 14, shiny_y - 15, 28, fake_y - shiny_y + 30))
+    for ms in range(7):
+        x = left + ms * px_per_ms
+        _diagram_text(painter, x, rect.bottom() - 8, f"+{ms}" if ms else "T", align=Qt.AlignHCenter)
+
+
+class GimmickConfigDialog(SheetDialog):
+    """One layer's toolbox settings, as a config sheet.
 
     Two layers, two configs: the barline layer's red line spacing and the fake
     slider layer's offset are separate numbers that must not agree, so each
     layer opens its own dialog and both show the caution naming the other's
     value. `other` is that other config -- read only, for the caution.
+
+    The barline layer's Config is three tools' settings (barline notes, the
+    Red Line tool, anti-barline), so each gets its own section; one unbroken
+    list of 13 numbers put "Redline BPM" and "Anti-barline barline BPM" ten
+    rows apart with nothing saying which tool either belonged to.
     """
 
     def __init__(self, config: GimmickConfig, layer_id: str, other: GimmickConfig, parent=None) -> None:
-        super().__init__(parent)
-        self.layer_id = layer_id
-        self._other = other
         sv = layer_id.startswith("sv_")
+        barline = layer_id == "barline"
         if sv:
             title = tr("MainWindow", "SV layer settings")
-        elif layer_id == "barline":
+            subtitle = tr("MainWindow", "Saved with this layer. Used by its Green Line and Function tools.")
+        elif barline:
             title = tr("MainWindow", "Barline settings")
+            subtitle = tr("MainWindow", "Saved with this layer. Used by the Don, Kat, Red Line and Convert Notes tools.")
         else:
             title = tr("MainWindow", "Fake slider settings")
-        self.setWindowTitle(title)
+            subtitle = tr("MainWindow", "Saved with this layer. Used by the Fake Slider, Don, Kat, Shiny and Multiple tools.")
+        super().__init__(title, subtitle, action=tr("MainWindow", "Save"), rail=not sv, explain=not sv, parent=parent)
+        self.layer_id = layer_id
+        self._other = other
         icon = application_icon()
         if not icon.isNull():
             self.setWindowIcon(icon)
-
-        layout = QFormLayout(self)
-        barline = layer_id == "barline"
 
         self.bpm_spin = QDoubleSpinBox()
         self.bpm_spin.setRange(1.0, 1000000.0)
         self.bpm_spin.setDecimals(0)
         self.bpm_spin.setValue(config.gimmick_bpm)
-        if not sv:
-            layout.addRow(tr("MainWindow", "Invisible note BPM"), self.bpm_spin)
 
         # The other half of the pair the owner asked to separate: the BPM
         # above is how invisible the note is, this one is how fast the chart
@@ -6547,15 +6669,6 @@ class GimmickConfigDialog(QDialog):
         )
         self.restore_bpm_spin.setEnabled(self.restore_bpm_check.isChecked())
         self.restore_bpm_check.toggled.connect(self.restore_bpm_spin.setEnabled)
-        restore_bpm_row = QHBoxLayout()
-        restore_bpm_row.setContentsMargins(0, 0, 0, 0)
-        restore_bpm_row.addWidget(self.restore_bpm_check)
-        restore_bpm_row.addWidget(self.restore_bpm_spin, 1)
-        self.restore_bpm_widget = QWidget()
-        self.restore_bpm_widget.setLayout(restore_bpm_row)
-        if not sv:
-            layout.addRow(
-                tr("MainWindow", "Structure red line BPM"), self.restore_bpm_widget)
 
         self.sv_offset_spin = QSpinBox()
         self.sv_offset_spin.setRange(-5000, 5000)
@@ -6654,12 +6767,6 @@ class GimmickConfigDialog(QDialog):
         )
         self.red_bpm_spin.setEnabled(self.red_bpm_check.isChecked())
         self.red_bpm_check.toggled.connect(self.red_bpm_spin.setEnabled)
-        red_bpm_row = QHBoxLayout()
-        red_bpm_row.setContentsMargins(0, 0, 0, 0)
-        red_bpm_row.addWidget(self.red_bpm_check)
-        red_bpm_row.addWidget(self.red_bpm_spin, 1)
-        self.red_bpm_widget = QWidget()
-        self.red_bpm_widget.setLayout(red_bpm_row)
 
         # Beats per bar for that same line. osu! reads meter from the
         # uninherited point in force, so a standalone red line re-bars
@@ -6735,12 +6842,6 @@ class GimmickConfigDialog(QDialog):
         )
         self.anti_bpm_spin.setEnabled(self.anti_bpm_check.isChecked())
         self.anti_bpm_check.toggled.connect(self.anti_bpm_spin.setEnabled)
-        anti_bpm_row = QHBoxLayout()
-        anti_bpm_row.setContentsMargins(0, 0, 0, 0)
-        anti_bpm_row.addWidget(self.anti_bpm_check)
-        anti_bpm_row.addWidget(self.anti_bpm_spin, 1)
-        self.anti_bpm_widget = QWidget()
-        self.anti_bpm_widget.setLayout(anti_bpm_row)
         self.anti_don_spin = QSpinBox()
         self.anti_don_spin.setRange(1, 1000)
         self.anti_don_spin.setValue(config.anti_don_ticks)
@@ -6748,11 +6849,37 @@ class GimmickConfigDialog(QDialog):
         self.anti_kat_spin.setRange(1, 1000)
         self.anti_kat_spin.setValue(config.anti_kat_ticks)
 
+        # Units live in the box, so the labels lose their "(ms)".
+        for spin in (self.bpm_spin, self.restore_bpm_spin, self.red_bpm_spin, self.anti_bpm_spin):
+            spin.setSuffix(" BPM")
+        for spin in (self.spacing_spin, self.kat_spacing1_spin, self.kat_spacing2_spin,
+                     self.kat_spacing3_spin, self.fake_offset_spin, self.offset_spin,
+                     self.shiny_offset_spin, self.sv_offset_spin):
+            spin.setSuffix(" ms")
+        for spin in (self.fake_sv_spin, self.fake_slider_bpm_spin, self.shiny_bpm_spin):
+            spin.setSuffix("\u00d7")
+        self.anti_don_spin.setSuffix(" " + tr("MainWindow", "ticks"))
+        self.anti_kat_spin.setSuffix(" " + tr("MainWindow", "ticks"))
+        self.shiny_count_spin.setSuffix(" " + tr("MainWindow", "sliders"))
+        own, custom = tr("MainWindow", "Chart's own"), tr("MainWindow", "Custom")
+        self.restore_bpm_widget = own_or_custom(self.restore_bpm_check, self.restore_bpm_spin, own, custom)
+        self.red_bpm_widget = own_or_custom(self.red_bpm_check, self.red_bpm_spin, own, custom)
+        self.anti_bpm_widget = own_or_custom(self.anti_bpm_check, self.anti_bpm_spin, own, custom)
+        self.omit_barline_check.setText(tr("MainWindow", "Omit barline"))
+        self.mirror_don_check.setText(tr("MainWindow", "Mirror on both sides"))
+        self.mirror_kat_check.setText(tr("MainWindow", "Mirror on both sides"))
+        self.place_notes_check.setText(tr("MainWindow", "Also place the note"))
+
         # Each layer is shown the numbers it actually uses. The rest are still
         # carried through `config()` untouched, so opening one layer's dialog
         # cannot silently reset the other's structure.
+        sheet = self.sheet
+        self.caution = QLabel()
+        self.shiny_caution = QLabel()
+        self.kat_caution = QLabel()
         if sv:
-            layout.addRow(tr("MainWindow", "Position offset (ms)"), self.sv_offset_spin)
+            section = sheet.add_section("sv", tr("MainWindow", "Green lines"))
+            section.field(tr("MainWindow", "Position offset"), self.sv_offset_spin, span=2)
             hint = QLabel(tr(
                 "MainWindow",
                 "How far ahead of its object this layer's green lines sit. An SV point "
@@ -6760,70 +6887,160 @@ class GimmickConfigDialog(QDialog):
                 "timing line needs it on the same millisecond, which is why the two "
                 "gimmick SV layers default to 0.",
             ))
+            hint.setObjectName("fieldNote")
             hint.setWordWrap(True)
-            layout.addRow(hint)
-        elif barline:
-            layout.addRow(tr("MainWindow", "Don Spacing (ms)"), self.spacing_spin)
-            layout.addRow("", self.mirror_don_check)
-            layout.addRow(tr("MainWindow", "Kat Spacing 1 (ms)"), self.kat_spacing1_spin)
-            layout.addRow(tr("MainWindow", "Kat Spacing 2 (ms)"), self.kat_spacing2_spin)
-            layout.addRow(tr("MainWindow", "Kat Spacing 3 (ms)"), self.kat_spacing3_spin)
-            layout.addRow("", self.mirror_kat_check)
-            layout.addRow(tr("MainWindow", "Red line offset (ms)"), self.offset_spin)
-            layout.addRow(tr("MainWindow", "Redline BPM"), self.red_bpm_widget)
-            layout.addRow(tr("MainWindow", "Redline meter"), self.red_meter_spin)
-            layout.addRow("", self.place_notes_check)
-            layout.addRow(tr("MainWindow", "Anti-barline lines per beat"), self.anti_density_spin)
-            layout.addRow(tr("MainWindow", "Anti-barline barline BPM"), self.anti_bpm_widget)
-            layout.addRow(tr("MainWindow", "Anti-barline Don slit (ticks)"), self.anti_don_spin)
-            layout.addRow(tr("MainWindow", "Anti-barline Kat slit (ticks)"), self.anti_kat_spin)
-            anti_hint = QLabel(tr(
-                "MainWindow",
-                "Anti-barline packs the lane with bars and takes bars away where each "
-                "note is, so the notes read as slits in a solid white sheet. Lines per "
-                "beat is how tight the wall is. A barline BPM below the chart's own "
-                "packs it tighter still -- a red line's BPM is also its scroll speed, so "
-                "a third of the BPM draws the same lines a third as far apart. The two "
-                "slit widths are what tells a Don from a Kat, since the notes themselves "
-                "are invisible.",
-            ))
-            anti_hint.setWordWrap(True)
-            layout.addRow(anti_hint)
+            section.add(hint, 2)
+            self.resize(460, 300)
         else:
-            layout.addRow(tr("MainWindow", "Fake slider offset (ms)"), self.fake_offset_spin)
-            layout.addRow(tr("MainWindow", "Fake slider length"), self.length_spin)
-            layout.addRow(tr("MainWindow", "Don/Kat gimmick SV"), self.fake_sv_spin)
-            layout.addRow(tr("MainWindow", "Omit barline"), self.omit_barline_check)
-            layout.addRow(tr("MainWindow", "Fake slider redline BPM"), self.fake_slider_bpm_spin)
-            layout.addRow("", self.fake_red_line_check)
-            layout.addRow("", self.fake_restore_after_check)
-            layout.addRow(tr("MainWindow", "Shiny offset (ms)"), self.shiny_offset_spin)
-            layout.addRow(tr("MainWindow", "Shiny note count"), self.shiny_count_spin)
-            layout.addRow(tr("MainWindow", "Shiny redline BPM"), self.shiny_bpm_spin)
-            layout.addRow("", self.shiny_red_line_check)
-
-        self.caution = QLabel()
-        self.caution.setWordWrap(True)
-        self.caution.setStyleSheet("color:#ffb347;border:0;")
-        layout.addRow(self.caution)
-
-        self.shiny_caution = QLabel(tr(
-            "MainWindow",
-            "Caution: the shiny offset is the same as the fake slider offset. "
-            "Both are drawn on the snap plus their offset, so they would land "
-            "on the same millisecond -- and a stack of fake sliders on one "
-            "millisecond is what a shiny note is, so the two become "
-            "indistinguishable.",
-        ))
-        self.shiny_caution.setWordWrap(True)
-        self.shiny_caution.setStyleSheet("color:#ffb347;border:0;")
-        layout.addRow(self.shiny_caution)
+            every = sheet.add_section(
+                "every", tr("MainWindow", "Every structure"),
+                tr("MainWindow", "The hidden note, and the chart after it"))
+            every.field(tr("MainWindow", "Invisible note BPM"), self.bpm_spin, tr(
+                "MainWindow",
+                "The red line on the note's own millisecond. At 60000 BPM the note "
+                "scrolls 392 px per ms, so it is never on screen and the structure "
+                "around it is the whole object."), default="60000 BPM")
+            every.field(tr("MainWindow", "Red line BPM after the structure"), self.restore_bpm_widget, tr(
+                "MainWindow",
+                "How fast the chart runs once the structure hands it back. Chart's own "
+                "reads the BPM in force at that millisecond, which is what every "
+                "structure written before this setting used."),
+                span=2, default=own, scrub=self.restore_bpm_spin)
+        if barline:
+            don = sheet.add_section("don", tr("MainWindow", "Barline Don"),
+                                    tr("MainWindow", "One pair of bars"), QColor(*DON_COLOR).name())
+            don.field(tr("MainWindow", "Spacing"), self.spacing_spin, tr(
+                "MainWindow",
+                "How far from the note each bar sits. 1 ms is the tightest the file "
+                "format allows, and reads as one thin object."), default="1 ms")
+            don.break_row()
+            don.switch(self.mirror_don_check, tr(
+                "MainWindow", "Off: one bar after the note, as most hand-made maps do."),
+                default=tr("MainWindow", "off"))
+            kat = sheet.add_section("kat", tr("MainWindow", "Barline Kat"),
+                                    tr("MainWindow", "Three pairs, so a Kat reads wider than a Don"), QColor(*KAT_COLOR).name())
+            kat_help = tr(
+                "MainWindow",
+                "Kat's three bars, each set on its own so several structures can be "
+                "layered on one region. The three must all differ.")
+            spacings = QWidget()
+            spacing_row = QHBoxLayout(spacings)
+            spacing_row.setContentsMargins(0, 0, 0, 0)
+            spacing_row.setSpacing(12)
+            for label, spin in ((tr("MainWindow", "Spacing 1"), self.kat_spacing1_spin),
+                                (tr("MainWindow", "Spacing 2"), self.kat_spacing2_spin),
+                                (tr("MainWindow", "Spacing 3"), self.kat_spacing3_spin)):
+                spacing_row.addWidget(sheet.field(label, spin, kat_help), 1)
+            kat.add(spacings, 2)
+            kat.switch(self.mirror_kat_check, tr(
+                "MainWindow", "On: bars either side, centred on the note."), default=tr("MainWindow", "on"))
+            self.kat_caution = kat.caution(tr(
+                "MainWindow",
+                "The three Kat spacings must all be different: two bars on one "
+                "millisecond are one red line."))
+            red = sheet.add_section("red", tr("MainWindow", "Red Line tool"),
+                                    tr("MainWindow", "A plain red line where you click"), "#ff5a5a")
+            red.field(tr("MainWindow", "Offset"), self.offset_spin, tr(
+                "MainWindow", "Moves each placed red line off the snap by this much."), default="0 ms")
+            red.field(tr("MainWindow", "Meter"), self.red_meter_spin, tr(
+                "MainWindow",
+                "Beats per bar for the line. osu! reads meter from the red line in "
+                "force, so this re-bars everything after it."), default="4")
+            red.field(tr("MainWindow", "BPM"), self.red_bpm_widget, tr(
+                "MainWindow",
+                "A red line's BPM is also its scroll speed. Chart's own changes nothing "
+                "but where the bars fall; a number is a speed change with no green line."),
+                span=2, default=own, scrub=self.red_bpm_spin)
+            red.switch(self.place_notes_check, tr(
+                "MainWindow", "A hittable note on the snap, so the bars are something the player plays."),
+                default=tr("MainWindow", "on"))
+            anti = sheet.add_section("anti", tr("MainWindow", "Anti-barline"),
+                                     tr("MainWindow", "A wall of bars with a slit where each note is"), "#e8edf3")
+            anti.field(tr("MainWindow", "Lines per beat"), self.anti_density_spin, tr(
+                "MainWindow", "How tight the wall is. The reference section (mekurume) uses 72."), default="36")
+            anti.field(tr("MainWindow", "Don slit"), self.anti_don_spin, tr(
+                "MainWindow",
+                "Wall lines left out for a Don. The slit width is what tells Don from "
+                "Kat, since the notes themselves are invisible."), default="1")
+            anti.field(tr("MainWindow", "Wall BPM"), self.anti_bpm_widget, tr(
+                "MainWindow",
+                "Below the chart's own BPM the wall packs tighter: a red line's BPM is "
+                "also its scroll speed, so a third of the BPM draws the same lines a "
+                "third as far apart."), span=2, default=own, scrub=self.anti_bpm_spin)
+            anti.field(tr("MainWindow", "Kat slit"), self.anti_kat_spin, tr(
+                "MainWindow", "Wall lines left out for a Kat. Wider than Don's, or the two cannot be told apart."),
+                default="2")
+            self.caution = anti.caution()
+            self.resize(980, 660)
+        elif not sv:
+            fake = sheet.add_section("slider", tr("MainWindow", "Fake slider"),
+                                     tr("MainWindow", "A drumroll too short to hit: only its head is drawn"),
+                                     QColor(*DRUMROLL_COLOR).name())
+            fake.field(tr("MainWindow", "Offset"), self.fake_offset_spin, tr(
+                "MainWindow",
+                "How far after the snap the fake slider sits. Must differ from the "
+                "shiny offset and from every barline spacing."), default="2 ms")
+            fake.field(tr("MainWindow", "Length"), self.length_spin, tr(
+                "MainWindow",
+                "Anything longer than 0.001 is a real, hittable drumroll. -0.0001 is "
+                "the canonical fake slider; long negative lengths draw a track to the "
+                "right of the head."), default="-0.001")
+            fake.field(tr("MainWindow", "Red line BPM"), self.fake_slider_bpm_spin, tr(
+                "MainWindow", "The slider's own red line as a multiple of the chart's BPM. 1\u00d7 restates the BPM in force."),
+                default="1\u00d7")
+            fake.break_row()
+            fake.switch(self.fake_red_line_check, tr(
+                "MainWindow", "Off leaves the bare object, which is what the Multiple tool wants."),
+                default=tr("MainWindow", "on"))
+            fake.switch(self.fake_restore_after_check, tr(
+                "MainWindow", "Without it the slider's line governs the rest of the map."),
+                default=tr("MainWindow", "off"))
+            fake.switch(self.omit_barline_check, tr(
+                "MainWindow", "The slider's 60000 BPM line would otherwise stamp a bar nobody asked for."),
+                default=tr("MainWindow", "on"))
+            self.caution = fake.caution()
+            donkat = sheet.add_section("donkat", tr("MainWindow", "Don / Kat"),
+                                       tr("MainWindow", "A note that becomes a fake slider in flight"))
+            donkat.field(tr("MainWindow", "Gimmick SV"), self.fake_sv_spin, tr(
+                "MainWindow",
+                "The green line that takes the already squashed note the rest of the "
+                "way off screen."), default="10\u00d7")
+            shiny = sheet.add_section("shiny", tr("MainWindow", "Shiny"),
+                                      tr("MainWindow", "A stack of fake sliders under one note"), "#ffffff")
+            shiny.field(tr("MainWindow", "Offset"), self.shiny_offset_spin, tr(
+                "MainWindow",
+                "The first fake slider of the stack sits this long after the note, the "
+                "rest one ms apart."), default="1 ms")
+            shiny.field(tr("MainWindow", "Stack size"), self.shiny_count_spin, tr(
+                "MainWindow",
+                "How many fake sliders sit under the note. In a kiai section each one "
+                "adds its own flash, so a deeper stack shines brighter."), default="3")
+            shiny.field(tr("MainWindow", "Red line BPM"), self.shiny_bpm_spin, tr(
+                "MainWindow", "The shiny's own red line as a multiple of the chart's BPM."), default="1\u00d7")
+            shiny.break_row()
+            shiny.switch(self.shiny_red_line_check, tr(
+                "MainWindow", "Off is fine when the shiny decorates a note already in the chart."),
+                default=tr("MainWindow", "on"))
+            self.shiny_caution = shiny.caution(tr(
+                "MainWindow",
+                "The shiny offset equals the fake slider offset. Both land on the same "
+                "millisecond, and a stack of fake sliders on one millisecond is what a "
+                "shiny is, so the two can no longer be told apart."))
+            self.resize(980, 640)
+        if not sv:
+            sheet.set_help_default(
+                tr("MainWindow", "Hover or focus a setting"),
+                tr("MainWindow", "This panel says what it does and its default. The picture above follows your numbers."))
+            self.diagram = Diagram(self._paint_diagram)
+            sheet.set_diagram(self.diagram, tr("MainWindow", "Preview"))
+            sheet.section_changed.connect(lambda _key: self.diagram.refresh())
+            for spin in self.findChildren(QAbstractSpinBox):
+                spin.valueChanged.connect(self.diagram.refresh)
+            for check in self.findChildren(QCheckBox):
+                check.toggled.connect(self.diagram.refresh)
+        self.restore_button.clicked.connect(self._restore_defaults)
+        self._last_good = config
         self._update_caution()
-
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addRow(buttons)
 
     def _update_caution(self) -> None:
         """Warn, don't refuse: the two values only actually clash where a
@@ -6837,12 +7054,22 @@ class GimmickConfigDialog(QDialog):
         settles on something constructible again. `accept()` is the actual
         gate against leaving the dialog with a broken combination.
         """
+        kats = (self.kat_spacing1_spin, self.kat_spacing2_spin, self.kat_spacing3_spin)
+        kat_clash = len({spin.value() for spin in kats}) < 3
+        if self.layer_id == "barline":
+            self.kat_caution.setVisible(kat_clash)
+            for spin in kats:
+                set_warning(spin, kat_clash)
+            self.sheet.set_rail_warning("kat", kat_clash)
         try:
             edited = self.config()
         except GimmickConfigError:
             return
-        self.shiny_caution.setVisible(shiny_collides(edited))
-        self.caution.setVisible(spacing_collides(*self._configs_for(edited)))
+        self._last_good = edited
+        shiny = shiny_collides(edited)
+        self.shiny_caution.setVisible(shiny)
+        spacing = spacing_collides(*self._configs_for(edited))
+        self.caution.setVisible(spacing)
         self.caution.setText(tr(
             "MainWindow",
             "Caution: one of the barline spacings (Don or Kat) is the same "
@@ -6851,10 +7078,69 @@ class GimmickConfigDialog(QDialog):
             "barline note placed on the same snap will fight it for that "
             "line.",
         ))
+        # The fields that clash turn amber, not just the paragraph.
+        _barline_config, fake_config = self._configs_for(edited)
+        offset = fake_config.fake_slider_offset_ms
+        if self.layer_id == "barline":
+            for spin in (self.spacing_spin, *kats):
+                set_warning(spin, (spacing and spin.value() == offset) or (spin in kats and kat_clash))
+            self.sheet.set_rail_warning("anti", spacing)
+        elif self.layer_id == "fake_slider":
+            set_warning(self.fake_offset_spin, shiny or spacing)
+            set_warning(self.shiny_offset_spin, shiny)
+            self.sheet.set_rail_warning("slider", shiny or spacing)
+            self.sheet.set_rail_warning("shiny", shiny)
 
     def _configs_for(self, edited: GimmickConfig) -> tuple[GimmickConfig, GimmickConfig]:
         """(barline config, fake slider config), whichever this dialog edits."""
         return (edited, self._other) if self.layer_id == "barline" else (self._other, edited)
+
+    def _restore_defaults(self) -> None:
+        """Every field this layer shows back to `GimmickConfig()`'s value.
+
+        Only the fields on screen: the rest belong to the other layer's
+        structures, and `config()` carries them through untouched.
+        """
+        default = GimmickConfig()
+        values = {
+            self.bpm_spin: default.gimmick_bpm, self.spacing_spin: default.spacing_ms,
+            self.kat_spacing1_spin: default.kat_spacing1_ms, self.kat_spacing2_spin: default.kat_spacing2_ms,
+            self.kat_spacing3_spin: default.kat_spacing3_ms, self.offset_spin: default.red_line_offset_ms,
+            self.red_meter_spin: default.red_line_meter, self.anti_density_spin: default.anti_lines_per_beat,
+            self.anti_don_spin: default.anti_don_ticks, self.anti_kat_spin: default.anti_kat_ticks,
+            self.fake_offset_spin: default.fake_slider_offset_ms, self.length_spin: default.fake_slider_length,
+            self.fake_sv_spin: default.fake_slider_sv, self.fake_slider_bpm_spin: default.fake_slider_bpm_multiplier,
+            self.shiny_offset_spin: default.shiny_offset_ms, self.shiny_count_spin: default.shiny_count,
+            self.shiny_bpm_spin: default.shiny_bpm_multiplier, self.sv_offset_spin: default.sv_offset_ms,
+        }
+        checks = {
+            self.mirror_don_check: default.mirror_don_lines, self.mirror_kat_check: default.mirror_kat_lines,
+            self.place_notes_check: default.place_notes, self.omit_barline_check: default.omit_barline,
+            self.fake_red_line_check: default.fake_slider_red_line,
+            self.fake_restore_after_check: default.fake_slider_restore_after,
+            self.shiny_red_line_check: default.shiny_red_line,
+            self.restore_bpm_check: default.restore_bpm is not None,
+            self.red_bpm_check: default.red_line_bpm is not None,
+            self.anti_bpm_check: default.anti_wall_bpm is not None,
+        }
+        # A widget this layer never placed has no window of its own.
+        for widget, value in values.items():
+            if widget.window() is self:
+                widget.setValue(value)
+        for widget, value in checks.items():
+            if widget.window() is self:
+                widget.setChecked(value)
+
+    def _paint_diagram(self, painter: QPainter, rect: QRect) -> None:
+        """The structure the numbers draw, from the last valid `config()`."""
+        config = self._last_good
+        if self.layer_id == "barline":
+            if self.sheet.active_section == "anti":
+                paint_anti_barline(painter, rect, config)
+            else:
+                paint_barline_notes(painter, rect, config)
+        else:
+            paint_shiny_stack(painter, rect, config)
 
     def accept(self) -> None:
         # The three Kat spin boxes have no shared range to enforce
