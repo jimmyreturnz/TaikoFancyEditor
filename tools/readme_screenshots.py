@@ -94,6 +94,11 @@ def shoot(widget, name: str) -> None:
     print(f"{path.name}: {path.stat().st_size // 1024} KB", flush=True)
 
 
+# The built-in note art, not whatever skin the user plays with: the README
+# shows the app, and a personal skin is theirs. Private copy, so theirs stays.
+import settings as _settings  # noqa: E402
+_settings.SettingsManager().set_value("appearance/skin", "")
+
 window = gui.MainWindow()
 window.resize(1920, 1080)
 window.showMaximized()
