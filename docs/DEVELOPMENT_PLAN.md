@@ -888,7 +888,11 @@ rounded; green-line click placement and its ghost did not. Both do now.
     normal pitch whatever speed, rate mod or pitch it was at. -- DONE
     2026-09-26: the song list's preview player takes it over from the
     playhead (`continue_song`), then loops to the PreviewTime as usual.
-15. Config UI rework.
+15. Config UI rework. -- DONE 2026-09-26 (1e40256..a295c46), from the approved
+    "Config Sheets" mockup (claude.ai/artifact/6ooQaFaXZ7MSb99eoKe6GA):
+    config_sheet.py (sections, rail, explain panel with a live diagram, pills
+    and tiles bound to the existing combos), in-box spin arrows, switches and
+    one scroll bar app-wide, and all eleven editor dialogs plus Settings.
 16. Rework of every transformation's configurable settings.
 
 ### Gameplay preview: mods, and a range that matches osu! -- DONE 2026-09-25

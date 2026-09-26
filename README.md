@@ -41,7 +41,6 @@ Full notes: [`docs/releases/v3.3.3.md`](docs/releases/v3.3.3.md).
 - Will also try to come up with a way that you can make barline kat or fake slider kat to have different approaching behavior (like adding an increasing SV speed to barline kat to make them look harder to read). 
 - Further optimization when applicable.
 - Finishing the Fancy Arranger redesign.
-- Reworking the config UI.
 - Reworking the settings of every transformation.
 
 Full development log detail lives in [`docs/DEVELOPMENT_PLAN.md`](docs/DEVELOPMENT_PLAN.md).
