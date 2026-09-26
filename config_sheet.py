@@ -38,6 +38,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -191,6 +192,56 @@ def bind_segments(combo: QComboBox, labels: list[str] | None = None) -> QFrame:
     follow(combo.currentIndex())
     frame.buttons = buttons
     return frame
+
+
+TILE_STYLE = """
+QToolButton#tile {
+    background: #222a36; color: #aeb8c5; border: 1px solid #303947; border-radius: 8px;
+    padding: 10px; font-size: 12.5px; font-weight: 600; text-align: left;
+}
+QToolButton#tile:hover { background: #2a3341; color: #e8edf3; }
+QToolButton#tile:checked { background: #2a2230; color: #ffffff; border: 1px solid #ff66aa; }
+"""
+
+
+def bind_tiles(combo: QComboBox, tiles: list[tuple[str, QPixmap]]) -> QWidget:
+    """A row of picture tiles over `combo`'s items, `combo` kept as the model.
+
+    For a choice between structures, where recognising the picture is faster
+    than reading a list: Convert Notes' barline notes / anti-barline / hidden.
+    `tiles` is (text, picture) per item, in the combo's order.
+    """
+    row = QWidget()
+    row.setStyleSheet(TILE_STYLE)
+    layout = QHBoxLayout(row)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(8)
+    group = QButtonGroup(combo)
+    group.setExclusive(True)
+    for index, (text, picture) in enumerate(tiles):
+        tile = QToolButton()
+        tile.setObjectName("tile")
+        tile.setCheckable(True)
+        tile.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
+        tile.setText(text)
+        tile.setIcon(QIcon(picture))
+        tile.setIconSize(picture.size())
+        tile.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        tile.setMinimumWidth(0)
+        group.addButton(tile, index)
+        layout.addWidget(tile, 1)
+    combo.setParent(row)
+    combo.hide()
+    group.idClicked.connect(combo.setCurrentIndex)
+
+    def follow(index: int) -> None:
+        button = group.button(index)
+        if button is not None:
+            button.setChecked(True)
+
+    combo.currentIndexChanged.connect(follow)
+    follow(combo.currentIndex())
+    return row
 
 
 def own_or_custom(check: QCheckBox, spin: QAbstractSpinBox, own_text: str, custom_text: str) -> QWidget:
@@ -488,6 +539,11 @@ class ConfigSheet(QWidget):
             if len(self._rail_buttons) == 1:
                 button.setChecked(True)
         return section
+
+    def show_only(self, keys) -> None:
+        """Hide every section not in `keys` (a picker's pages)."""
+        for key, section in self.sections.items():
+            section.setVisible(key in keys)
 
     def add_widget(self, widget: QWidget) -> None:
         """Something that is not a section (a picker, a plot) in the column."""

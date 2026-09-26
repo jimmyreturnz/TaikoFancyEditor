@@ -141,6 +141,138 @@
     <context>
         <name>MainWindow</name>
         <message>
+            <source>Anything longer than 0.001 is a real, hittable drumroll.</source>
+            <translation>0.001 より長いと叩ける本物の連打になります。</translation>
+        </message>
+        <message>
+            <source>Convert</source>
+            <translation>変換</translation>
+        </message>
+        <message>
+            <source>Don spacing</source>
+            <translation>ドンの間隔</translation>
+        </message>
+        <message>
+            <source>Each note becomes a fake slider in flight</source>
+            <translation>各ノートが流れる途中でフェイクスライダーになります</translation>
+        </message>
+        <message>
+            <source>Each note drawn out of bars</source>
+            <translation>各ノートを小節線で描きます</translation>
+        </message>
+        <message>
+            <source>Each note drawn out of bars.</source>
+            <translation>各ノートを小節線で描きます。</translation>
+        </message>
+        <message>
+            <source>Each note is a slit.</source>
+            <translation>各ノートが隙間になります。</translation>
+        </message>
+        <message>
+            <source>Every plain note in the range becomes this structure, on its own millisecond. Finishers, drumrolls and fake sliders are left as they are.</source>
+            <translation>範囲内の普通のノートがすべて、それぞれのミリ秒でこの構造になります。大音符、連打、フェイクスライダーはそのまま残ります。</translation>
+        </message>
+        <message>
+            <source>Fake slider offset</source>
+            <translation>フェイクスライダーのオフセット</translation>
+        </message>
+        <message>
+            <source>How far after the note the fake slider sits.</source>
+            <translation>フェイクスライダーをノートからどれだけ後ろに置くかです。</translation>
+        </message>
+        <message>
+            <source>How far from the note each Don bar sits.</source>
+            <translation>ドンの各小節線をノートからどれだけ離すかです。</translation>
+        </message>
+        <message>
+            <source>Kat spacing 1</source>
+            <translation>カッの間隔 1</translation>
+        </message>
+        <message>
+            <source>Kat spacing 2</source>
+            <translation>カッの間隔 2</translation>
+        </message>
+        <message>
+            <source>Kat spacing 3</source>
+            <translation>カッの間隔 3</translation>
+        </message>
+        <message>
+            <source>Kat's three bars. The three must all differ.</source>
+            <translation>カッの 3 本の小節線です。3 つとも違う値にしてください。</translation>
+        </message>
+        <message>
+            <source>Mirror Don bars</source>
+            <translation>ドンの小節線を対称に</translation>
+        </message>
+        <message>
+            <source>Mirror Kat bars</source>
+            <translation>カッの小節線を対称に</translation>
+        </message>
+        <message>
+            <source>Off keeps the note visible beside its slider.</source>
+            <translation>オフにするとノートがスライダーの横に見えたままになります。</translation>
+        </message>
+        <message>
+            <source>Off keeps the note visible inside its bars.</source>
+            <translation>オフにするとノートが小節線の間に見えたままになります。</translation>
+        </message>
+        <message>
+            <source>Off shows the note inside its slit.</source>
+            <translation>オフにするとノートが隙間の中に見えます。</translation>
+        </message>
+        <message>
+            <source>Omit barline at each note</source>
+            <translation>各ノートの小節線を省略</translation>
+        </message>
+        <message>
+            <source>On both sides of the note.</source>
+            <translation>ノートの両側に置きます。</translation>
+        </message>
+        <message>
+            <source>Only plain circles convert; finishers, drumrolls and spinners are left as they are</source>
+            <translation>普通のノートだけを変換し、大音符・連打・スピナーはそのまま残します</translation>
+        </message>
+        <message>
+            <source>SV opens the slits.</source>
+            <translation>SV で隙間を開けます。</translation>
+        </message>
+        <message>
+            <source>Slit length</source>
+            <translation>隙間の長さ</translation>
+        </message>
+        <message>
+            <source>The meter-1 red line that makes osu! draw the whole sheet.</source>
+            <translation>osu! に壁全体を描かせる拍子 1 の赤線です。</translation>
+        </message>
+        <message>
+            <source>The note's own line draws no bar.</source>
+            <translation>ノート自身の線は小節線を描きません。</translation>
+        </message>
+        <message>
+            <source>The red line on each note's own millisecond, which carries the note off screen.</source>
+            <translation>各ノートと同じミリ秒に置く赤線で、ノートを画面外へ運びます。</translation>
+        </message>
+        <message>
+            <source>The red line that carries each note off screen.</source>
+            <translation>各ノートを画面外へ運ぶ赤線です。</translation>
+        </message>
+        <message>
+            <source>The slit is a percentage of speed: wide far away, closed at the hit position</source>
+            <translation>隙間は速度の割合で決まり、遠いほど広く、判定位置で閉じます</translation>
+        </message>
+        <message>
+            <source>These numbers are for this conversion only; the layer's Config is not changed.</source>
+            <translation>この数値は今回の変換にだけ使われ、レイヤーの設定は変わりません。</translation>
+        </message>
+        <message>
+            <source>What it writes, per note</source>
+            <translation>ノートごとに書き込む内容</translation>
+        </message>
+        <message>
+            <source>hit position</source>
+            <translation>判定位置</translation>
+        </message>
+        <message>
             <source>Length</source>
             <translation>長さ</translation>
         </message>

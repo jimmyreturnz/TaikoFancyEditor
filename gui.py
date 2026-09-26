@@ -36,7 +36,8 @@ from PySide6.QtWidgets import (
 import osu_db
 from smooth_scroll import SMOOTH_SCROLL_MS, SmoothScroller, reduced_motion, smooth
 from config_sheet import (
-    SEGMENT_STYLE, WARN_COLOR, Diagram, SheetDialog, control_stylesheet, own_or_custom, segmented, set_warning,
+    SEGMENT_STYLE, WARN_COLOR, Diagram, SheetDialog, bind_tiles, control_stylesheet, own_or_custom, segmented,
+    set_warning,
 )
 from audio_engine import DEFAULT_HITSOUND_OFFSET_MS, WHEEL_SEEK_HOLD_MS, TrackPlayer
 from skin import UI_SOUNDS, TaikoSkin, skins_root
@@ -6508,8 +6509,15 @@ _DIAGRAM_MUTED = QColor("#7d8794")
 _DIAGRAM_RULE = QColor(255, 255, 255, 20)
 
 
+# Off while a diagram is drawn as a Convert Notes tile: at that size its
+# labels are a smudge, and the tile's own caption names the structure.
+_diagram_labels = True
+
+
 def _diagram_text(painter: QPainter, x: float, y: float, text: str, color: QColor = _DIAGRAM_MUTED,
                   align=Qt.AlignLeft, bold: bool = False) -> None:
+    if not _diagram_labels:
+        return
     font = painter.font()
     font.setPixelSize(10)
     font.setBold(bold)
@@ -6612,6 +6620,66 @@ def paint_shiny_stack(painter: QPainter, rect: QRect, config: GimmickConfig) -> 
     for ms in range(7):
         x = left + ms * px_per_ms
         _diagram_text(painter, x, rect.bottom() - 8, f"+{ms}" if ms else "T", align=Qt.AlignHCenter)
+
+
+def paint_hidden_anti_barline(painter: QPainter, rect: QRect, config: GimmickConfig) -> None:
+    """One sheet of bars, and a slit that narrows as it nears the hit
+    position: the raised SV pushes bars ahead in proportion to how far away
+    they still are, so the gap is a wedge that closes at the target."""
+    top, bottom = rect.top() + 14, rect.bottom() - 26
+    target = rect.left() + 24
+    slit_right = rect.right() - rect.width() * 0.18
+    excess = max(0.0, config.hidden_don_sv / max(config.hidden_base_sv, 1e-9) - 1.0)
+    painter.setPen(QPen(_DIAGRAM_INK, 1))
+    x = rect.left() + 8.0
+    gap = 3.2
+    while x < rect.right() - 8:
+        distance = max(0.0, x - target) / max(1.0, slit_right - target)
+        half = min(28.0, 4 + 900 * excess * distance) if x < slit_right else 0
+        centre = target + (slit_right - target) * 0.75
+        if not (half and abs(x - centre) < half):
+            painter.drawLine(QPointF(x, top), QPointF(x, bottom))
+        x += gap
+    painter.setPen(QPen(QColor("#ff66aa"), 2))
+    painter.drawLine(QPointF(target, top - 4), QPointF(target, bottom + 4))
+    _diagram_text(painter, target + 4, rect.bottom() - 8, tr("MainWindow", "hit position"), QColor("#f3a6bd"))
+
+
+def paint_fake_slider_structure(painter: QPainter, rect: QRect, config: GimmickConfig) -> None:
+    """A note at T -- faint when hidden -- and its fake slider at the offset."""
+    left = rect.left() + 40
+    px_per_ms = (rect.width() - 70) / max(4, config.fake_slider_offset_ms + 1)
+    y = rect.center().y() - 6
+    painter.setPen(QPen(_DIAGRAM_RULE, 1))
+    painter.drawLine(QPointF(rect.left() + 8, y), QPointF(rect.right() - 8, y))
+    note = QColor(*DON_COLOR)
+    note.setAlphaF(0.3 if config.hide_note else 1.0)
+    painter.setPen(QPen(QColor(255, 255, 255, 90 if config.hide_note else 230), 2))
+    painter.setBrush(note)
+    painter.drawEllipse(QPointF(left, y), 14, 14)
+    fake_x = left + config.fake_slider_offset_ms * px_per_ms
+    painter.setPen(QPen(QColor(255, 255, 255, 220), 2))
+    painter.setBrush(QColor(*DRUMROLL_COLOR))
+    painter.drawEllipse(QPointF(fake_x, y), 14, 14)
+    _diagram_text(painter, left, rect.bottom() - 10, "T", align=Qt.AlignHCenter)
+    _diagram_text(painter, fake_x, rect.bottom() - 10, f"+{config.fake_slider_offset_ms} ms", align=Qt.AlignHCenter)
+
+
+def _tile_picture(painter_fn, config: GimmickConfig) -> QPixmap:
+    """A structure's diagram, small and unlabelled, for a Convert Notes tile."""
+    global _diagram_labels
+    pixmap = QPixmap(140, 56)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+    painter.setOpacity(0.85)
+    _diagram_labels = False
+    try:
+        painter_fn(painter, QRect(0, 0, 140, 56), config)
+    finally:
+        _diagram_labels = True
+        painter.end()
+    return pixmap
 
 
 class GimmickConfigDialog(SheetDialog):
@@ -7196,7 +7264,7 @@ class GimmickConfigDialog(SheetDialog):
         )
 
 
-class ConvertNotesDialog(QDialog):
+class ConvertNotesDialog(SheetDialog):
     """Which structure Convert Notes draws over a dragged range, and its numbers.
 
     Both gimmick layers ask. The fake slider layer has one structure to draw and
@@ -7215,58 +7283,84 @@ class ConvertNotesDialog(QDialog):
     ANTI = "anti"
     HIDDEN = "hidden"
 
-    def __init__(self, config: GimmickConfig, layer_id: str = "barline", parent=None) -> None:
-        super().__init__(parent)
+    def __init__(self, config: GimmickConfig, layer_id: str = "barline", parent=None,
+                 start_ms: float | None = None, end_ms: float | None = None) -> None:
+        subtitle = tr("MainWindow", "These numbers are for this conversion only; the layer's Config is not changed.")
+        if start_ms is not None and end_ms is not None:
+            subtitle = tr("MainWindow", "Range: {0} to {1}").format(
+                format_time(round(start_ms)), format_time(round(end_ms))) + ". " + subtitle
+        super().__init__(tr("MainWindow", "Convert notes"), subtitle, action=tr("MainWindow", "Convert"),
+                         rail=False, parent=parent)
         self._base = config
         self.layer_id = layer_id
-        self.setWindowTitle(tr("MainWindow", "Convert notes"))
         icon = application_icon()
         if not icon.isNull():
             self.setWindowIcon(icon)
+        self.restore_button.hide()
 
-        layout = QVBoxLayout(self)
         barline = layer_id == "barline"
+        sheet = self.sheet
         self.mode_combo = QComboBox()
         if barline:
             # Literal tr() calls, one per option -- see AddViewDialog on the gate.
             self.mode_combo.addItem(tr("MainWindow", "Barline notes"), self.STRUCTURE)
             self.mode_combo.addItem(tr("MainWindow", "Anti-barline"), self.ANTI)
             self.mode_combo.addItem(tr("MainWindow", "Hidden anti-barline"), self.HIDDEN)
-            top = QFormLayout()
-            top.addRow(tr("MainWindow", "Convert to"), self.mode_combo)
-            layout.addLayout(top)
+            tiles = [
+                (tr("MainWindow", "Barline notes") + "\n" + tr("MainWindow", "Each note drawn out of bars."),
+                 _tile_picture(paint_barline_notes, config)),
+                (tr("MainWindow", "Anti-barline") + "\n" + tr("MainWindow", "Each note is a slit."),
+                 _tile_picture(paint_anti_barline, config)),
+                (tr("MainWindow", "Hidden anti-barline") + "\n" + tr("MainWindow", "SV opens the slits."),
+                 _tile_picture(paint_hidden_anti_barline, config)),
+            ]
+            picker = sheet.field(tr("MainWindow", "Convert to"), bind_tiles(self.mode_combo, tiles))
+            sheet.add_widget(picker)
+            self._barline_page(config)
+            self._anti_page(config)
+            self._hidden_page(config)
         else:
             self.mode_combo.addItem(tr("MainWindow", "Fake sliders"), self.STRUCTURE)
+            self._fake_slider_page(config)
+        self.mode_combo.currentIndexChanged.connect(self._show_mode)
 
-        self.pages = QStackedWidget()
-        layout.addWidget(self.pages)
-        self.pages.addWidget(
-            self._barline_page(config) if barline else self._fake_slider_page(config)
-        )
-        if barline:
-            self.pages.addWidget(self._anti_page(config))
-            self.pages.addWidget(self._hidden_page(config))
-        self.mode_combo.currentIndexChanged.connect(self.pages.setCurrentIndex)
-
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+        sheet.set_help_default(
+            tr("MainWindow", "What it writes, per note"),
+            tr("MainWindow", "Every plain note in the range becomes this structure, on its own millisecond. "
+                             "Finishers, drumrolls and fake sliders are left as they are."))
+        self._last_good = config
+        self.diagram = Diagram(self._paint_diagram)
+        sheet.set_diagram(self.diagram, tr("MainWindow", "Preview"))
+        for spin in self.findChildren(QAbstractSpinBox):
+            spin.valueChanged.connect(self._changed)
+        for check in self.findChildren(QCheckBox):
+            check.toggled.connect(self._changed)
+        self._show_mode()
+        self.resize(1000 if barline else 860, 640 if barline else 560)
 
     # -- pages ---------------------------------------------------------------
 
-    @staticmethod
-    def _page():
-        page = QWidget()
-        form = QFormLayout(page)
-        form.setContentsMargins(0, 0, 0, 0)
-        return page, form
+    def _show_mode(self, _index: int = 0) -> None:
+        self.sheet.show_only({self.mode()})
+        self._changed()
 
-    @staticmethod
-    def _hint(text: str) -> QLabel:
-        label = QLabel(text)
-        label.setWordWrap(True)
-        return label
+    def _changed(self, *_args) -> None:
+        try:
+            self._last_good = self.config()
+        except GimmickConfigError:
+            pass
+        self.diagram.refresh()
+
+    def _paint_diagram(self, painter: QPainter, rect: QRect) -> None:
+        mode = self.mode()
+        if mode == self.ANTI:
+            paint_anti_barline(painter, rect, self._last_good)
+        elif mode == self.HIDDEN:
+            paint_hidden_anti_barline(painter, rect, self._last_good)
+        elif self.layer_id == "barline":
+            paint_barline_notes(painter, rect, self._last_good)
+        else:
+            paint_fake_slider_structure(painter, rect, self._last_good)
 
     def _hide_note_check(self, config: GimmickConfig) -> QCheckBox:
         """The one option both structures share.
@@ -7281,15 +7375,17 @@ class ConvertNotesDialog(QDialog):
         """
         check = QCheckBox(tr("MainWindow", "Hide the note itself"))
         check.setChecked(config.hide_note)
-        check.setToolTip(tr(
+        return check
+
+    def _hide_note_help(self) -> str:
+        return tr(
             "MainWindow",
             "On, the note is squashed to invisibility by a gimmick-BPM line and only "
             "the structure is seen. Off, that line carries the chart's own BPM with "
             "its barline detached, so the note stays visible inside the structure.",
-        ))
-        return check
+        )
 
-    def _slit_note_hint(self) -> QLabel:
+    def _slit_note_hint(self) -> str:
         """The extra half of the story on a converter whose structure is a hole.
 
         Everywhere else the option is "structure with or without a visible note
@@ -7297,75 +7393,88 @@ class ConvertNotesDialog(QDialog):
         at all, so showing it changes what the section says rather than only how
         it looks -- worth one line, not worth refusing the option over.
         """
-        return self._hint(tr(
+        return tr(
             "MainWindow",
             "Showing the note changes what this gimmick reads as: the slit is a hole "
             "in a sheet of bars, and an invisible note is what makes that hole the "
             "object. Shown, the note travels through its own slit at the chart's "
             "normal speed while the sheet crawls at the wall speed.",
-        ))
+        )
 
-    def _barline_page(self, config: GimmickConfig) -> QWidget:
-        page, form = self._page()
+    def _barline_page(self, config: GimmickConfig) -> None:
+        section = self.sheet.add_section(self.STRUCTURE, tr("MainWindow", "Barline notes"),
+                                         tr("MainWindow", "Each note drawn out of bars"))
         self.bpm_spin = QDoubleSpinBox()
         self.bpm_spin.setRange(1.0, 1000000.0)
         self.bpm_spin.setDecimals(0)
+        self.bpm_spin.setSuffix(" BPM")
         self.bpm_spin.setValue(config.gimmick_bpm)
-        form.addRow(tr("MainWindow", "Gimmick BPM"), self.bpm_spin)
+        section.field(tr("MainWindow", "Invisible note BPM"), self.bpm_spin, tr(
+            "MainWindow", "The red line on each note's own millisecond, which carries the note off screen."))
 
         self.spacing_spin = QSpinBox()
         self.spacing_spin.setRange(1, 1000)
+        self.spacing_spin.setSuffix(" ms")
         self.spacing_spin.setValue(config.spacing_ms)
-        form.addRow(tr("MainWindow", "Don Spacing (ms)"), self.spacing_spin)
-        self.mirror_don_check = QCheckBox(tr("MainWindow", "Mirror Don bars on both sides"))
-        self.mirror_don_check.setChecked(config.mirror_don_lines)
-        form.addRow("", self.mirror_don_check)
+        section.field(tr("MainWindow", "Don spacing"), self.spacing_spin, tr(
+            "MainWindow", "How far from the note each Don bar sits."))
 
         # Three boxes, three labels, one loop -- but the labels are separate
         # tr() literals for the same reason every other option list here is:
         # the catalog is scanned for literals, not built at runtime.
         self.kat_spins = []
-        labels = (
-            tr("MainWindow", "Kat Spacing 1 (ms)"),
-            tr("MainWindow", "Kat Spacing 2 (ms)"),
-            tr("MainWindow", "Kat Spacing 3 (ms)"),
-        )
+        labels = (tr("MainWindow", "Kat spacing 1"), tr("MainWindow", "Kat spacing 2"),
+                  tr("MainWindow", "Kat spacing 3"))
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(12)
         for label, value in zip(labels, (
             config.kat_spacing1_ms, config.kat_spacing2_ms, config.kat_spacing3_ms,
         )):
             spin = QSpinBox()
             spin.setRange(1, 1000)
+            spin.setSuffix(" ms")
             spin.setValue(value)
             self.kat_spins.append(spin)
-            form.addRow(label, spin)
-        self.mirror_kat_check = QCheckBox(tr("MainWindow", "Mirror Kat bars on both sides"))
+            row_layout.addWidget(self.sheet.field(label, spin, tr(
+                "MainWindow", "Kat's three bars. The three must all differ.")), 1)
+        section.add(row, 2)
+        self.mirror_don_check = QCheckBox(tr("MainWindow", "Mirror Don bars"))
+        self.mirror_don_check.setChecked(config.mirror_don_lines)
+        section.switch(self.mirror_don_check, tr("MainWindow", "On both sides of the note."), span=1)
+        self.mirror_kat_check = QCheckBox(tr("MainWindow", "Mirror Kat bars"))
         self.mirror_kat_check.setChecked(config.mirror_kat_lines)
-        form.addRow("", self.mirror_kat_check)
+        section.switch(self.mirror_kat_check, tr("MainWindow", "On both sides of the note."), span=1)
 
         self.hide_note_check = self._hide_note_check(config)
-        form.addRow("", self.hide_note_check)
-        self.omit_note_barline_check = QCheckBox(
-            tr("MainWindow", "Omit barline at each note's position"))
+        section.switch(self.hide_note_check, tr("MainWindow", "Off keeps the note visible inside its bars."),
+                       self._hide_note_help(), span=1)
+        self.omit_note_barline_check = QCheckBox(tr("MainWindow", "Omit barline at each note"))
         self.omit_note_barline_check.setChecked(config.omit_note_barline)
         # A shown note's line already omits its barline, so the box only
         # means something while the note is hidden.
         self.omit_note_barline_check.setEnabled(self.hide_note_check.isChecked())
         self.hide_note_check.toggled.connect(self.omit_note_barline_check.setEnabled)
-        form.addRow("", self.omit_note_barline_check)
-        return page
+        section.switch(self.omit_note_barline_check, tr("MainWindow", "The note's own line draws no bar."), span=1)
 
-    def _fake_slider_page(self, config: GimmickConfig) -> QWidget:
-        page, form = self._page()
+    def _fake_slider_page(self, config: GimmickConfig) -> None:
+        section = self.sheet.add_section(self.STRUCTURE, tr("MainWindow", "Fake sliders"),
+                                         tr("MainWindow", "Each note becomes a fake slider in flight"))
         self.bpm_spin = QDoubleSpinBox()
         self.bpm_spin.setRange(1.0, 1000000.0)
         self.bpm_spin.setDecimals(0)
+        self.bpm_spin.setSuffix(" BPM")
         self.bpm_spin.setValue(config.gimmick_bpm)
-        form.addRow(tr("MainWindow", "Gimmick BPM"), self.bpm_spin)
+        section.field(tr("MainWindow", "Invisible note BPM"), self.bpm_spin, tr(
+            "MainWindow", "The red line on each note's own millisecond, which carries the note off screen."))
 
         self.fake_offset_spin = QSpinBox()
         self.fake_offset_spin.setRange(1, 1000)
+        self.fake_offset_spin.setSuffix(" ms")
         self.fake_offset_spin.setValue(config.fake_slider_offset_ms)
-        form.addRow(tr("MainWindow", "Fake slider offset (ms)"), self.fake_offset_spin)
+        section.field(tr("MainWindow", "Fake slider offset"), self.fake_offset_spin, tr(
+            "MainWindow", "How far after the note the fake slider sits."))
 
         self.length_spin = QDoubleSpinBox()
         # The config's own bound, so the box cannot ask for a length
@@ -7373,132 +7482,134 @@ class ConvertNotesDialog(QDialog):
         self.length_spin.setRange(-100000.0, FAKE_SLIDER_MAX_LENGTH)
         self.length_spin.setDecimals(4)
         self.length_spin.setValue(config.fake_slider_length)
-        form.addRow(tr("MainWindow", "Fake slider length"), self.length_spin)
+        section.field(tr("MainWindow", "Fake slider length"), self.length_spin, tr(
+            "MainWindow", "Anything longer than 0.001 is a real, hittable drumroll."))
 
         self.fake_sv_spin = QDoubleSpinBox()
         self.fake_sv_spin.setRange(0.01, 100.0)
         self.fake_sv_spin.setDecimals(SV_DECIMALS)
+        self.fake_sv_spin.setSuffix("\u00d7")
         self.fake_sv_spin.setValue(config.fake_slider_sv)
-        form.addRow(tr("MainWindow", "Don/Kat gimmick SV"), self.fake_sv_spin)
-
-        self.fake_slider_bpm_spin = QDoubleSpinBox()
-        self.fake_slider_bpm_spin.setRange(0.001, 1000.0)
-        self.fake_slider_bpm_spin.setDecimals(3)
-        self.fake_slider_bpm_spin.setValue(config.fake_slider_bpm_multiplier)
-        form.addRow(tr("MainWindow", "Fake slider redline BPM"), self.fake_slider_bpm_spin)
-
-        self.omit_barline_check = QCheckBox(tr("MainWindow", "Omit barline"))
-        self.omit_barline_check.setChecked(config.omit_barline)
-        form.addRow("", self.omit_barline_check)
-
-        self.hide_note_check = self._hide_note_check(config)
-        form.addRow("", self.hide_note_check)
-        form.addRow(self._hint(tr(
+        section.field(tr("MainWindow", "Gimmick SV"), self.fake_sv_spin, tr(
             "MainWindow",
             "With the note hidden the gimmick SV above is what takes the already "
             "squashed note the rest of the way off screen. Showing the note drops it "
             "and restates the chart's own speed instead, or the note would be flung "
             "off the screen the line was just told to keep it on.",
-        )))
-        return page
+        ))
 
-    def _anti_page(self, config: GimmickConfig) -> QWidget:
-        page, form = self._page()
+        self.fake_slider_bpm_spin = QDoubleSpinBox()
+        self.fake_slider_bpm_spin.setRange(0.001, 1000.0)
+        self.fake_slider_bpm_spin.setDecimals(3)
+        self.fake_slider_bpm_spin.setSuffix("\u00d7")
+        self.fake_slider_bpm_spin.setValue(config.fake_slider_bpm_multiplier)
+        section.field(tr("MainWindow", "Red line BPM"), self.fake_slider_bpm_spin, tr(
+            "MainWindow", "The slider's own red line as a multiple of the chart's BPM. 1\u00d7 restates the BPM in force."))
+
+        self.omit_barline_check = QCheckBox(tr("MainWindow", "Omit barline"))
+        self.omit_barline_check.setChecked(config.omit_barline)
+        section.switch(self.omit_barline_check, tr(
+            "MainWindow", "The slider's 60000 BPM line would otherwise stamp a bar nobody asked for."), span=1)
+        self.hide_note_check = self._hide_note_check(config)
+        section.switch(self.hide_note_check, tr("MainWindow", "Off keeps the note visible beside its slider."),
+                       self._hide_note_help(), span=1)
+
+    def _anti_page(self, config: GimmickConfig) -> None:
+        section = self.sheet.add_section(self.ANTI, tr("MainWindow", "Anti-barline"), tr(
+            "MainWindow", "Only plain circles convert; finishers, drumrolls and spinners are left as they are"))
         self.anti_density_spin = QSpinBox()
         self.anti_density_spin.setRange(1, 10000)
         self.anti_density_spin.setValue(config.anti_lines_per_beat)
-        form.addRow(tr("MainWindow", "Lines per beat"), self.anti_density_spin)
+        section.field(tr("MainWindow", "Lines per beat"), self.anti_density_spin, tr(
+            "MainWindow", "How tight the wall is. The reference section (mekurume) uses 72."))
 
-        # Same shape as the Config dialog's: unchecked writes the chart's own
-        # BPM at each wall line, which only moves where the bars fall.
+        self.anti_don_spin = QSpinBox()
+        self.anti_don_spin.setRange(1, 1000)
+        self.anti_don_spin.setSuffix(" " + tr("MainWindow", "ticks"))
+        self.anti_don_spin.setValue(config.anti_don_ticks)
+        section.field(tr("MainWindow", "Don slit"), self.anti_don_spin, tr(
+            "MainWindow",
+            "Wall lines left out for a Don. The slit width is what tells Don from "
+            "Kat, since the notes themselves are invisible."))
+
+        # Same shape as the Config dialog's: the chart's own BPM at each wall
+        # line only moves where the bars fall.
         self.anti_bpm_check = QCheckBox(tr("MainWindow", "Custom"))
         self.anti_bpm_check.setChecked(config.anti_wall_bpm is not None)
         self.anti_bpm_spin = QDoubleSpinBox()
         self.anti_bpm_spin.setRange(0.001, 1000000.0)
         self.anti_bpm_spin.setDecimals(3)
+        self.anti_bpm_spin.setSuffix(" BPM")
         self.anti_bpm_spin.setValue(
             config.anti_wall_bpm if config.anti_wall_bpm is not None else DEFAULT_RED_LINE_BPM
         )
-        self.anti_bpm_spin.setEnabled(self.anti_bpm_check.isChecked())
-        self.anti_bpm_check.toggled.connect(self.anti_bpm_spin.setEnabled)
-        row = QHBoxLayout()
-        row.setContentsMargins(0, 0, 0, 0)
-        row.addWidget(self.anti_bpm_check)
-        row.addWidget(self.anti_bpm_spin, 1)
-        holder = QWidget()
-        holder.setLayout(row)
-        form.addRow(tr("MainWindow", "Barline BPM"), holder)
+        section.field(tr("MainWindow", "Wall BPM"), own_or_custom(
+            self.anti_bpm_check, self.anti_bpm_spin, tr("MainWindow", "Chart's own"), tr("MainWindow", "Custom")),
+            tr("MainWindow",
+               "Below the chart's own BPM the wall packs tighter: a red line's BPM is "
+               "also its scroll speed, so a third of the BPM draws the same lines a "
+               "third as far apart."), span=2, scrub=self.anti_bpm_spin)
 
-        self.anti_don_spin = QSpinBox()
-        self.anti_don_spin.setRange(1, 1000)
-        self.anti_don_spin.setValue(config.anti_don_ticks)
-        form.addRow(tr("MainWindow", "Don slit (ticks)"), self.anti_don_spin)
         self.anti_kat_spin = QSpinBox()
         self.anti_kat_spin.setRange(1, 1000)
+        self.anti_kat_spin.setSuffix(" " + tr("MainWindow", "ticks"))
         self.anti_kat_spin.setValue(config.anti_kat_ticks)
-        form.addRow(tr("MainWindow", "Kat slit (ticks)"), self.anti_kat_spin)
+        section.field(tr("MainWindow", "Kat slit"), self.anti_kat_spin, tr(
+            "MainWindow", "Wall lines left out for a Kat. Wider than Don's, or the two cannot be told apart."))
         self.anti_hide_note_check = self._hide_note_check(config)
-        form.addRow("", self.anti_hide_note_check)
-        form.addRow(self._slit_note_hint())
-        form.addRow(self._hint(tr(
-            "MainWindow",
-            "Packs the lane with bars and takes bars away where each note is, so "
-            "the notes read as slits in a solid sheet. A barline BPM below the "
-            "chart's own packs it tighter still. The two slit widths are what "
-            "tells a Don from a Kat, since the notes themselves are invisible.",
-        )))
-        return page
+        section.switch(self.anti_hide_note_check, tr("MainWindow", "Off shows the note inside its slit."),
+                       self._slit_note_hint(), span=1)
 
-    def _hidden_page(self, config: GimmickConfig) -> QWidget:
-        page, form = self._page()
+    def _hidden_page(self, config: GimmickConfig) -> None:
+        section = self.sheet.add_section(self.HIDDEN, tr("MainWindow", "Hidden anti-barline"), tr(
+            "MainWindow", "The slit is a percentage of speed: wide far away, closed at the hit position"))
         self.hidden_hide_bpm_spin = QDoubleSpinBox()
         self.hidden_hide_bpm_spin.setRange(1.0, 1000000.0)
         self.hidden_hide_bpm_spin.setDecimals(3)
+        self.hidden_hide_bpm_spin.setSuffix(" BPM")
         self.hidden_hide_bpm_spin.setValue(config.hidden_hide_bpm)
-        form.addRow(tr("MainWindow", "Hide BPM"), self.hidden_hide_bpm_spin)
+        section.field(tr("MainWindow", "Hide BPM"), self.hidden_hide_bpm_spin, tr(
+            "MainWindow", "The red line that carries each note off screen."))
 
         self.hidden_wall_bpm_spin = QDoubleSpinBox()
         self.hidden_wall_bpm_spin.setRange(1.0, 1000000.0)
         self.hidden_wall_bpm_spin.setDecimals(3)
+        self.hidden_wall_bpm_spin.setSuffix(" BPM")
         self.hidden_wall_bpm_spin.setValue(config.hidden_wall_bpm)
-        form.addRow(tr("MainWindow", "Wall BPM"), self.hidden_wall_bpm_spin)
+        section.field(tr("MainWindow", "Wall BPM"), self.hidden_wall_bpm_spin, tr(
+            "MainWindow", "The meter-1 red line that makes osu! draw the whole sheet."))
 
         # The floor is not the SV editor's 0.01: this whole gimmick lives at
         # about that value and the differences carrying the colour are several
         # decimals below it. SV_DECIMALS is what makes them typeable at all.
+        sv_help = tr(
+            "MainWindow",
+            "Caution: the three SV values are the gimmick, and they are meant to sit "
+            "within about a percent of each other. Wall SV decides how tight the sheet "
+            "is; Don and Kat only read as a colour while both are above it and Kat is "
+            "the larger. Ordinary-looking values will not read as this gimmick at all.",
+        )
         self.hidden_base_sv_spin = self._sv_spin(config.hidden_base_sv)
-        form.addRow(tr("MainWindow", "Wall SV"), self.hidden_base_sv_spin)
-        self.hidden_don_sv_spin = self._sv_spin(config.hidden_don_sv)
-        form.addRow(tr("MainWindow", "Don SV"), self.hidden_don_sv_spin)
-        self.hidden_kat_sv_spin = self._sv_spin(config.hidden_kat_sv)
-        form.addRow(tr("MainWindow", "Kat SV"), self.hidden_kat_sv_spin)
-
+        section.field(tr("MainWindow", "Wall SV"), self.hidden_base_sv_spin, sv_help)
         self.hidden_window_spin = QSpinBox()
         self.hidden_window_spin.setRange(1, 64)
+        self.hidden_window_spin.setPrefix("1/")
         self.hidden_window_spin.setValue(config.hidden_window_divisor)
-        form.addRow(tr("MainWindow", "Slit length (1/n beat)"), self.hidden_window_spin)
-        self.hidden_hide_note_check = self._hide_note_check(config)
-        form.addRow("", self.hidden_hide_note_check)
-        form.addRow(self._slit_note_hint())
-
-        form.addRow(self._hint(tr(
+        section.field(tr("MainWindow", "Slit length"), self.hidden_window_spin, tr(
             "MainWindow",
             "One wall line makes osu! draw the whole sheet, and each note's slit is "
             "opened by raising SV for a fraction of a beat after it. Taiko places an "
             "object at its distance times the speed at its own time, so the raised "
             "bars sit ahead of the rest by that excess times how far away they still "
             "are -- the slit opens with distance and closes at the hit position.",
-        )))
-        caution = self._hint(tr(
-            "MainWindow",
-            "Caution: the three SV values are the gimmick, and they are meant to sit "
-            "within about a percent of each other. Wall SV decides how tight the sheet "
-            "is; Don and Kat only read as a colour while both are above it and Kat is "
-            "the larger. Ordinary-looking values will not read as this gimmick at all.",
         ))
-        caution.setStyleSheet("color:#ffb347;border:0;")
-        form.addRow(caution)
-        return page
+        self.hidden_don_sv_spin = self._sv_spin(config.hidden_don_sv)
+        section.field(tr("MainWindow", "Don SV"), self.hidden_don_sv_spin, sv_help)
+        self.hidden_kat_sv_spin = self._sv_spin(config.hidden_kat_sv)
+        section.field(tr("MainWindow", "Kat SV"), self.hidden_kat_sv_spin, sv_help)
+        self.hidden_hide_note_check = self._hide_note_check(config)
+        section.switch(self.hidden_hide_note_check, tr("MainWindow", "Off shows the note inside its slit."),
+                       self._slit_note_hint(), span=1)
 
     @staticmethod
     def _sv_spin(value: float) -> QDoubleSpinBox:
@@ -7506,6 +7617,7 @@ class ConvertNotesDialog(QDialog):
         spin.setRange(10.0 ** -SV_DECIMALS, 100.0)
         spin.setDecimals(SV_DECIMALS)
         spin.setSingleStep(0.0001)
+        spin.setSuffix("\u00d7")
         spin.setValue(value)
         return spin
 
@@ -14663,7 +14775,7 @@ class MainWindow(QMainWindow):
         state = self._states.get(difficulty_path)
         if state is None or pairing is None:
             return
-        dialog = ConvertNotesDialog(self._gimmick_config(layer_id), layer_id, self)
+        dialog = ConvertNotesDialog(self._gimmick_config(layer_id), layer_id, self, start_ms, end_ms)
         accepted = dialog.exec() == QDialog.DialogCode.Accepted
         mode, config = dialog.mode(), dialog.config()
         dialog.deleteLater()

@@ -268,6 +268,20 @@ class ConvertNotesDialogTests(_Session, unittest.TestCase):
     def _dialog(self, layer_id="barline"):
         return gui.ConvertNotesDialog(self.window._gimmick_config(layer_id), layer_id)
 
+    def test_a_tile_picks_the_structure_and_shows_only_its_numbers(self):
+        dialog = self._dialog()
+        tiles = [b for b in dialog.findChildren(gui.QToolButton) if b.objectName() == "tile"]
+        self.assertEqual(len(tiles), 3)
+        tiles[2].click()
+        self.assertEqual(dialog.mode(), gui.ConvertNotesDialog.HIDDEN)
+        sections = dialog.sheet.sections
+        self.assertFalse(sections[gui.ConvertNotesDialog.HIDDEN].isHidden())
+        self.assertTrue(sections[gui.ConvertNotesDialog.STRUCTURE].isHidden())
+        # The combo stays the model: setting it moves the tiles too.
+        dialog.mode_combo.setCurrentIndex(dialog.mode_combo.findData(gui.ConvertNotesDialog.ANTI))
+        self.assertTrue(tiles[1].isChecked())
+        dialog.deleteLater()
+
     def _range_of_notes(self, count: int):
         notes = sorted(
             (n for n in self.document.hit_objects if n.is_circle and not n.is_finisher),
