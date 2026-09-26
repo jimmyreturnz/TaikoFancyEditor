@@ -2889,6 +2889,46 @@ Taiko Fancy Arranger を閉じて、そのフォルダーの TaikoFancyArranger.
     <context>
         <name>SettingsDialog</name>
         <message>
+            <source>Asks once per save when the file on disk is the one you opened.</source>
+            <translation>開いたファイルに上書き保存するとき、保存のたびに確認します。</translation>
+        </message>
+        <message>
+            <source>Editor timeline</source>
+            <translation>エディターのタイムライン</translation>
+        </message>
+        <message>
+            <source>Find an action or a key</source>
+            <translation>操作名やキーで検索</translation>
+        </message>
+        <message>
+            <source>For the whole app. Saved on this computer.</source>
+            <translation>アプリ全体の設定です。このコンピューターに保存されます。</translation>
+        </message>
+        <message>
+            <source>Gameplay preview</source>
+            <translation>ゲームプレイプレビュー</translation>
+        </message>
+        <message>
+            <source>Music</source>
+            <translation>音楽</translation>
+        </message>
+        <message>
+            <source>One request to GitHub when the app opens.</source>
+            <translation>アプリ起動時に GitHub へ 1 回問い合わせます。</translation>
+        </message>
+        <message>
+            <source>Saving</source>
+            <translation>保存</translation>
+        </message>
+        <message>
+            <source>The skin's own samples when a skin is chosen.</source>
+            <translation>スキンを選んでいる場合はスキンの音を使います。</translation>
+        </message>
+        <message>
+            <source>Updates</source>
+            <translation>アップデート</translation>
+        </message>
+        <message>
             <source>Skin</source>
             <translation>スキン</translation>
         </message>

@@ -3,8 +3,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QProcess, Qt
-from PySide6.QtGui import QKeySequence
+from PySide6.QtCore import QProcess, QSize, Qt
+from PySide6.QtGui import QColor, QIcon, QKeySequence, QPainter, QPen
 
 from skin import available_skins, skins_root
 from PySide6.QtWidgets import (
@@ -31,7 +31,10 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
     QKeySequenceEdit,
+    QLineEdit,
 )
+
+from config_sheet import DIALOG_STYLE, ConfigSheet, bind_segments, ui_asset
 
 import updater
 from smooth_scroll import smooth
@@ -54,7 +57,7 @@ class SettingsDialog(QDialog):
         self.settings = settings
         self.shortcuts = shortcuts
         self.setWindowTitle(self.tr("Settings"))
-        self.resize(760, 500)
+        self.resize(880, 620)
         # Small enough to fit a short laptop screen once the pages scroll.
         self.setMinimumSize(560, 360)
         self._shortcut_editors: dict[str, QKeySequenceEdit] = {}
@@ -83,13 +86,56 @@ class SettingsDialog(QDialog):
         )
 
     def _build_ui(self) -> None:
+        """Header, a page list with icons, the page, and a footer.
+
+        Each page is a small config sheet of section cards, so the pages look
+        like every other settings surface in the app; the page list stays a
+        list (not one long scroll) because the Shortcuts table scrolls on its
+        own and a table inside a scrolling column is two scroll bars fighting.
+        """
+        self.setStyleSheet(DIALOG_STYLE + """
+            QListWidget#settingsNav { background: transparent; border: 0; border-right: 1px solid #303947;
+                outline: 0; padding: 10px 8px 10px 0; font-size: 13px; font-weight: 600; }
+            QListWidget#settingsNav::item { color: #aeb8c5; padding: 7px 10px; border-left: 3px solid transparent; }
+            QListWidget#settingsNav::item:hover { background: #2a3341; color: #e8edf3; }
+            QListWidget#settingsNav::item:selected { background: #2a2230; color: #ffffff; border-left: 3px solid #ff66aa; }
+            QTableWidget { background: #1b212b; border: 1px solid #303947; border-radius: 6px; gridline-color: #262e3a; }
+            QHeaderView::section { background: #1e2530; color: #7d8794; border: 0; border-bottom: 1px solid #303947;
+                padding: 6px 8px; font-size: 11px; font-weight: 700; }
+            QLineEdit#shortcutSearch { background: #252d39; border: 1px solid #3a4554; border-radius: 6px; padding: 6px 10px; }
+            QLineEdit#shortcutSearch:focus { border-color: #ff66aa; }
+            QKeySequenceEdit QLineEdit { background: transparent; border: 1px dashed transparent; border-radius: 5px; }
+            QKeySequenceEdit QLineEdit:hover { border-color: #3a4554; }
+            QKeySequenceEdit QLineEdit:focus { border-color: #ff66aa; }
+        """)
         root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        head = QFrame()
+        head.setObjectName("sheetHead")
+        head_layout = QVBoxLayout(head)
+        head_layout.setContentsMargins(16, 12, 16, 12)
+        head_layout.setSpacing(1)
+        title = QLabel(self.tr("Settings"))
+        title.setObjectName("sheetTitle")
+        subtitle = QLabel(self.tr("For the whole app. Saved on this computer."))
+        subtitle.setObjectName("sheetSub")
+        head_layout.addWidget(title)
+        head_layout.addWidget(subtitle)
+        root.addWidget(head)
+
         body = QHBoxLayout()
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(0)
         self.nav = QListWidget()
-        self.nav.setFixedWidth(160)
+        self.nav.setObjectName("settingsNav")
+        self.nav.setFixedWidth(196)
+        self.nav.setIconSize(QSize(16, 16))
+        self.nav.setFocusPolicy(Qt.NoFocus)
         self.pages = QStackedWidget()
         self._page_ids: list[str] = []
-        for page_id, title, page in (
+        for page_id, title_text, page in (
             ("general", self.tr("General"), self._general_page()),
             ("audio", self.tr("Audio"), self._audio_page()),
             ("skin", self.tr("Skin"), self._skin_page()),
@@ -97,65 +143,97 @@ class SettingsDialog(QDialog):
             ("shortcuts", self.tr("Shortcuts"), self._shortcuts_page()),
             ("advanced", self.tr("Advanced"), self._advanced_page()),
         ):
-            self.nav.addItem(QListWidgetItem(title))
+            item = QListWidgetItem(QIcon(ui_asset(f"settings-{page_id}.svg")), title_text)
+            self.nav.addItem(item)
             self.pages.addWidget(page)
             self._page_ids.append(page_id)
         self.nav.currentRowChanged.connect(self.pages.setCurrentIndex)
         self.nav.setCurrentRow(0)
         body.addWidget(self.nav)
-        # The pages scroll rather than forcing the dialog to be as tall as the
-        # tallest of them. Without this the Audio page alone -- offset,
-        # calibration, skin, and the paragraphs explaining each -- decides the
-        # window height for every page, and on a short screen the buttons at
-        # the bottom go off the edge where they cannot be reached.
-        scroller = QScrollArea()
-        scroller.setWidgetResizable(True)
-        scroller.setFrameShape(QFrame.NoFrame)
-        scroller.setWidget(self.pages)
-        smooth(scroller, self.nav)
-        body.addWidget(scroller, 1)
+        # Each page scrolls itself (a ConfigSheet's column), so a short
+        # screen never pushes the buttons at the bottom off the edge.
+        body.addWidget(self.pages, 1)
         root.addLayout(body, 1)
 
-        footer = QHBoxLayout()
+        foot = QFrame()
+        foot.setObjectName("sheetFoot")
+        footer = QHBoxLayout(foot)
+        footer.setContentsMargins(16, 10, 16, 10)
+        footer.setSpacing(8)
         self.restore_button = QPushButton(self.tr("Restore Defaults"))
+        self.restore_button.setProperty("role", "ghost")
         self.restore_button.clicked.connect(self._restore_current_page_defaults)
         footer.addWidget(self.restore_button)
         footer.addStretch(1)
         self.buttons = QDialogButtonBox(QDialogButtonBox.Cancel | QDialogButtonBox.Apply | QDialogButtonBox.Ok)
+        for kind in (QDialogButtonBox.Cancel, QDialogButtonBox.Apply):
+            button = self.buttons.button(kind)
+            button.setProperty("role", "ghost")
+            button.setStyleSheet("QPushButton { border: 1px solid #3a4554; }")
         self.buttons.button(QDialogButtonBox.Apply).clicked.connect(self.apply)
         self.buttons.accepted.connect(self._ok)
         self.buttons.rejected.connect(self.reject)
         footer.addWidget(self.buttons)
-        root.addLayout(footer)
+        root.addWidget(foot)
+
+    @staticmethod
+    def _sheet() -> ConfigSheet:
+        return ConfigSheet(rail=False, explain=False)
+
+    def _volume_row(self, spin: QSpinBox) -> QWidget:
+        """A slider for a volume, with its box beside it.
+
+        The box stays the value (apply() and Restore read it); the slider is
+        how "a bit quieter" is asked for, which is what a volume is.
+        """
+        slider = QSlider(Qt.Horizontal)
+        slider.setRange(spin.minimum(), spin.maximum())
+        slider.setValue(spin.value())
+        slider.valueChanged.connect(spin.setValue)
+        spin.valueChanged.connect(slider.setValue)
+        spin.setFixedWidth(96)
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+        layout.addWidget(slider, 1)
+        layout.addWidget(spin)
+        return row
 
     def _general_page(self) -> QWidget:
-        page = QWidget()
-        layout = QVBoxLayout(page)
+        sheet = self._sheet()
+        saving = sheet.add_section("saving", self.tr("Saving"))
         self.confirm_overwrite = QCheckBox(self.tr("Confirm before overwriting original beatmap"))
-        layout.addWidget(self.confirm_overwrite)
+        saving.switch(self.confirm_overwrite, self.tr("Asks once per save when the file on disk is the one you opened."))
+        updates = sheet.add_section("updates", self.tr("Updates"))
         self.check_updates_on_startup = QCheckBox(self.tr("Check for updates on startup"))
-        layout.addWidget(self.check_updates_on_startup)
+        updates.switch(self.check_updates_on_startup, self.tr("One request to GitHub when the app opens."))
         self.check_updates_button = QPushButton(self.tr("Check for updates now"))
+        self.check_updates_button.setProperty("role", "ghost")
+        self.check_updates_button.setStyleSheet("QPushButton { border: 1px solid #3a4554; }")
         self.check_updates_button.clicked.connect(self._check_for_updates)
-        layout.addWidget(self.check_updates_button, 0, Qt.AlignLeft)
-        layout.addStretch(1)
-        return page
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.addWidget(self.check_updates_button)
+        row_layout.addStretch(1)
+        updates.add(row, 2)
+        return sheet
 
     def _check_for_updates(self) -> None:
         # Held so the worker is not garbage collected while it is running.
         self._update_check = updater.check_now(self, self.settings)
 
     def _audio_page(self) -> QWidget:
-        # Pink +/- spin buttons are applied to every QSpinBox from gui.py
-        # after construction (see ImageTraceDialog) -- nothing to do here.
-        page = QWidget()
-        form = QFormLayout(page)
+        sheet = self._sheet()
+        hits = sheet.add_section("hitsounds", self.tr("Hitsounds"))
         self.hitsounds_enabled = QCheckBox(self.tr("Hitsounds"))
-        form.addRow(self.hitsounds_enabled)
+        hits.switch(self.hitsounds_enabled, self.tr("The skin's own samples when a skin is chosen."))
         self.hitsound_volume = QSpinBox()
         self.hitsound_volume.setRange(0, 100)
         self.hitsound_volume.setSuffix("%")
-        form.addRow(self.tr("Hitsound volume"), self.hitsound_volume)
+        hits.field(self.tr("Hitsound volume"), self._volume_row(self.hitsound_volume), span=2,
+                   scrub=self.hitsound_volume)
         self.hitsound_offset_ms = QSpinBox()
         # A trim against the music, not a latency any more. The notes are mixed
         # into the music stream (`audio_engine.HitsoundMixer`), so they already
@@ -163,18 +241,23 @@ class SettingsDialog(QDialog):
         # below covers both. Kept, and kept negative-capable, because this is
         # the physical world and somebody will want to nudge it.
         self.hitsound_offset_ms.setRange(-500, 500)
-        form.addRow(self.tr("Hitsound offset (ms)"), self.hitsound_offset_ms)
+        self.hitsound_offset_ms.setSuffix(" ms")
+        hits.field(self.tr("Hitsound offset (ms)"), self.hitsound_offset_ms)
         offset_note = QLabel(self.tr(
             "Nudge hitsounds earlier or later against the music. Your device's "
             "latency is already covered by Music offset below, because the "
             "notes leave through the same output as the song."
         ))
+        offset_note.setObjectName("fieldNote")
         offset_note.setWordWrap(True)
-        form.addRow("", offset_note)
+        hits.add(offset_note, 2)
+
+        music = sheet.add_section("music", self.tr("Music"))
         self.music_volume = QSpinBox()
         self.music_volume.setRange(0, 100)
         self.music_volume.setSuffix("%")
-        form.addRow(self.tr("Music volume"), self.music_volume)
+        music.field(self.tr("Music volume"), self._volume_row(self.music_volume), span=2,
+                    scrub=self.music_volume)
         # **This** is the device latency, and now the only setting that is.
         # Both the music and the notes leave through one sink, so one number
         # covers both -- the hitsound offset above is a trim between them
@@ -183,28 +266,33 @@ class SettingsDialog(QDialog):
         # the Calibrate button is for.
         self.output_offset_ms = QSpinBox()
         self.output_offset_ms.setRange(-500, 500)
-        offset_row = QHBoxLayout()
-        offset_row.addWidget(self.output_offset_ms)
+        self.output_offset_ms.setSuffix(" ms")
+        offset_row = QWidget()
+        offset_layout = QHBoxLayout(offset_row)
+        offset_layout.setContentsMargins(0, 0, 0, 0)
+        offset_layout.addWidget(self.output_offset_ms, 1)
         self.calibrate_button = QPushButton(self.tr("Calibrate…"))
+        self.calibrate_button.setProperty("role", "ghost")
+        self.calibrate_button.setStyleSheet("QPushButton { border: 1px solid #3a4554; }")
         self.calibrate_button.clicked.connect(self._calibrate_offset)
-        offset_row.addWidget(self.calibrate_button)
-        offset_row.addStretch(1)
-        form.addRow(self.tr("Music offset (ms)"), offset_row)
+        offset_layout.addWidget(self.calibrate_button)
+        music.field(self.tr("Music offset (ms)"), offset_row, scrub=self.output_offset_ms)
         output_note = QLabel(self.tr(
             "Shift the playhead to match when the music actually reaches your "
             "ears. Raise it if the notes look early against what you hear. "
             "Measured in real time, so one value stays correct at every "
             "playback speed."
         ))
+        output_note.setObjectName("fieldNote")
         output_note.setWordWrap(True)
-        form.addRow("", output_note)
-        return page
+        music.add(output_note, 2)
+        return sheet
 
     def _skin_page(self) -> QWidget:
         """Skin selection. Its own page rather than a row on the Audio one:
         nothing here is about sound."""
-        page = QWidget()
-        form = QFormLayout(page)
+        sheet = self._sheet()
+        skin = sheet.add_section("skin", self.tr("Gameplay preview"))
         # Skins live beside the songs folder the user already chose, so this
         # asks for nothing new. Only folders carrying taiko note art are
         # offered -- an osu! install collects dozens of skins for other modes,
@@ -214,41 +302,47 @@ class SettingsDialog(QDialog):
         root = skins_root(self.settings.string_value("library/songs_folder", ""))
         for name in available_skins(root):
             self.skin_combo.addItem(name, name)
-        form.addRow(self.tr("Gameplay skin"), self.skin_combo)
+        skin.field(self.tr("Gameplay skin"), self.skin_combo, span=2)
         skin_note = QLabel(self.tr(
             "Uses the note, drumroll and hit-explosion art from one of your "
             "osu! skins in the gameplay preview. Anything a skin does not "
             "provide falls back to the built-in drawing."
         ))
+        skin_note.setObjectName("fieldNote")
         skin_note.setWordWrap(True)
-        form.addRow("", skin_note)
+        skin.add(skin_note, 2)
 
         # A slider, because this is a look rather than a number: nobody knows
         # they want 62%, they want it a bit fainter than it is. The readout
-        # beside it is what makes the position mean something.
+        # beside it is what makes the position mean something, and the notes
+        # under it show what the number looks like.
+        opacity = sheet.add_section("opacity", self.tr("Editor timeline"))
         self.note_opacity = QSlider(Qt.Horizontal)
         self.note_opacity.setRange(NOTE_OPACITY_MIN_PERCENT, 100)
         self.note_opacity.setSingleStep(1)
         self.note_opacity.setPageStep(10)
-        self.note_opacity.setTickInterval(10)
-        self.note_opacity.setTickPosition(QSlider.TicksBelow)
         self.note_opacity_value = QLabel()
         self.note_opacity_value.setMinimumWidth(44)
         self.note_opacity.valueChanged.connect(
             lambda percent: self.note_opacity_value.setText(f"{percent} %"))
-        opacity_row = QHBoxLayout()
-        opacity_row.addWidget(self.note_opacity, 1)
-        opacity_row.addWidget(self.note_opacity_value)
-        form.addRow(self.tr("Note opacity"), opacity_row)
+        opacity_row = QWidget()
+        row_layout = QHBoxLayout(opacity_row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.addWidget(self.note_opacity, 1)
+        row_layout.addWidget(self.note_opacity_value)
+        opacity.field(self.tr("Note opacity"), opacity_row, span=2)
+        self.note_opacity_preview = _NoteOpacityPreview(self.note_opacity)
+        opacity.add(self.note_opacity_preview, 2)
         opacity_note = QLabel(self.tr(
             "How solid notes are drawn in the editor timeline layers. Lower "
             "leaves the snap grid and the lines behind them easier to read "
             "through a dense section; 100% draws them opaque. The gameplay "
             "preview is unaffected."
         ))
+        opacity_note.setObjectName("fieldNote")
         opacity_note.setWordWrap(True)
-        form.addRow("", opacity_note)
-        return page
+        opacity.add(opacity_note, 2)
+        return sheet
 
     def _calibrate_offset(self) -> None:
         """Tap along to a click track and take the number it settles on.
@@ -264,22 +358,35 @@ class SettingsDialog(QDialog):
             self.output_offset_ms.setValue(dialog.result_offset)
 
     def _language_page(self) -> QWidget:
-        page = QWidget()
-        form = QFormLayout(page)
+        sheet = self._sheet()
+        section = sheet.add_section("language", self.tr("Language"))
         self.language_combo = QComboBox()
         self.language_combo.addItem("English", "en")
         self.language_combo.addItem("日本語", "ja")
-        form.addRow(self.tr("Language"), self.language_combo)
+        section.field(self.tr("Language"), bind_segments(self.language_combo), span=2)
         note = QLabel(self.tr("Restart Taiko Fancy Arranger to apply the interface language."))
+        note.setObjectName("fieldNote")
         note.setWordWrap(True)
-        form.addRow("", note)
-        return page
+        section.add(note, 2)
+        return sheet
 
     def _shortcuts_page(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(10)
+        # Forty-odd actions across the tool rows of every layer: finding one
+        # by name (or finding what Ctrl+R does) beats scrolling for it.
+        self.shortcut_search = QLineEdit()
+        self.shortcut_search.setObjectName("shortcutSearch")
+        self.shortcut_search.setPlaceholderText(self.tr("Find an action or a key"))
+        self.shortcut_search.addAction(QIcon(ui_asset("settings-search.svg")), QLineEdit.LeadingPosition)
+        self.shortcut_search.setClearButtonEnabled(True)
+        self.shortcut_search.textChanged.connect(self._filter_shortcuts)
+        layout.addWidget(self.shortcut_search)
         self.shortcuts_table = QTableWidget(0, 2)
         self.shortcuts_table.setHorizontalHeaderLabels([self.tr("Action"), self.tr("Shortcut")])
+        self.shortcuts_table.setShowGrid(False)
         smooth(self.shortcuts_table)
         header = self.shortcuts_table.horizontalHeader()
         # Action sizes to its longest label -- which is a translation, so no
@@ -293,20 +400,26 @@ class SettingsDialog(QDialog):
         # heading above them does. The table scrolls, so the page stays the
         # same height however many layers exist.
         self.shortcuts_table.verticalHeader().setVisible(False)
+        self._shortcut_rows: list[tuple[int, int | None, str]] = []
         current_category = None
+        heading_row = None
         for definition in self.shortcuts.definitions.values():
             if definition.category != current_category:
                 current_category = definition.category
                 row = self.shortcuts_table.rowCount()
                 self.shortcuts_table.insertRow(row)
-                heading = QTableWidgetItem(self.tr(definition.category))
+                heading = QTableWidgetItem(self.tr(definition.category).upper())
                 font = heading.font()
                 font.setBold(True)
+                font.setPointSizeF(font.pointSizeF() * 0.85)
                 heading.setFont(font)
+                heading.setForeground(QColor("#7d8794"))
                 # A heading is not a row anyone edits or picks.
                 heading.setFlags(Qt.NoItemFlags)
                 self.shortcuts_table.setItem(row, 0, heading)
                 self.shortcuts_table.setSpan(row, 0, 1, 2)
+                heading_row = row
+                self._shortcut_rows.append((row, None, self.tr(definition.category)))
             row = self.shortcuts_table.rowCount()
             self.shortcuts_table.insertRow(row)
             self.shortcuts_table.setItem(row, 0, QTableWidgetItem(self.tr(definition.label)))
@@ -314,27 +427,53 @@ class SettingsDialog(QDialog):
             editor.setProperty("action_id", definition.action_id)
             self.shortcuts_table.setCellWidget(row, 1, editor)
             self._shortcut_editors[definition.action_id] = editor
+            self._shortcut_rows.append((row, heading_row, self.tr(definition.label)))
         self.validation_label = QLabel("")
         self.validation_label.setStyleSheet("color: #ffb347;")
         self.validation_label.setWordWrap(True)
-        layout.addWidget(self.shortcuts_table)
+        layout.addWidget(self.shortcuts_table, 1)
         layout.addWidget(self.validation_label)
         return page
 
+    def _filter_shortcuts(self, text: str) -> None:
+        """Hide actions whose name and keys do not contain `text`; a heading
+        stays while any action under it does."""
+        wanted = text.strip().lower()
+        shown_headings = set()
+        for row, heading, label in self._shortcut_rows:
+            if heading is None:
+                continue
+            editor = self.shortcuts_table.cellWidget(row, 1)
+            keys = editor.keySequence().toString().lower() if editor is not None else ""
+            visible = not wanted or wanted in label.lower() or wanted in keys
+            self.shortcuts_table.setRowHidden(row, not visible)
+            if visible:
+                shown_headings.add(heading)
+        for row, heading, label in self._shortcut_rows:
+            if heading is None:
+                self.shortcuts_table.setRowHidden(row, bool(wanted) and row not in shown_headings)
+
     def _advanced_page(self) -> QWidget:
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        storage_label = QLabel(self.tr("Settings storage location:"))
+        sheet = self._sheet()
+        section = sheet.add_section("storage", self.tr("Settings storage location:").rstrip(":"))
         self.storage_value = QLabel(self.settings.storage_name())
+        self.storage_value.setObjectName("fieldNote")
+        self.storage_value.setWordWrap(True)
         self.storage_value.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        section.add(self.storage_value, 2)
         self.reset_all_button = QPushButton(self.tr("Reset All Settings"))
+        self.reset_all_button.setProperty("role", "ghost")
+        self.reset_all_button.setStyleSheet(
+            "QPushButton { border: 1px solid #6b3a3a; color: #ff8a8a; }"
+            "QPushButton:hover { background: #2a1f24; color: #ffb0b0; }")
         self.reset_all_button.clicked.connect(self._reset_all_settings)
-        layout.addWidget(storage_label)
-        layout.addWidget(self.storage_value)
-        layout.addSpacing(12)
-        layout.addWidget(self.reset_all_button, 0, Qt.AlignLeft)
-        layout.addStretch(1)
-        return page
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.addWidget(self.reset_all_button)
+        row_layout.addStretch(1)
+        section.add(row, 2)
+        return sheet
 
     def _load_current_values(self) -> None:
         self.confirm_overwrite.setChecked(self.settings.bool_value("general/confirm_overwrite", True))
@@ -481,3 +620,30 @@ class SettingsDialog(QDialog):
     def _ok(self) -> None:
         if self.apply():
             self.accept()
+
+
+class _NoteOpacityPreview(QWidget):
+    """Three notes at the chosen opacity, over a snap grid, so the percent
+    means something before Apply."""
+
+    def __init__(self, slider: QSlider) -> None:
+        super().__init__()
+        self.slider = slider
+        self.setFixedHeight(64)
+        slider.valueChanged.connect(self.update)
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.fillRect(self.rect(), QColor("#151b24"))
+        painter.setPen(QPen(QColor("#e8edf3"), 1))
+        for x in range(12, self.width(), 18):
+            painter.setOpacity(0.35 if (x // 18) % 4 else 0.8)
+            painter.drawLine(x, 6, x, self.height() - 6)
+        painter.setOpacity(self.slider.value() / 100.0)
+        y = self.height() / 2
+        for index, (colour, radius) in enumerate(((QColor(229, 76, 46), 17), (QColor(67, 141, 171), 17),
+                                                  (QColor(229, 76, 46), 25), (QColor(251, 183, 6), 17))):
+            painter.setPen(QPen(QColor("#ffffff"), 2.5))
+            painter.setBrush(colour)
+            painter.drawEllipse(40 + index * 62, y - radius, radius * 2, radius * 2)
