@@ -100,6 +100,12 @@ SKIN_SOUNDS = {
     "whistle": "taiko-normal-hitwhistle",
 }
 SOUND_EXTENSIONS = (".wav", ".ogg", ".mp3")
+# The song select's own sounds, by the names osu!'s skins give them. The app
+# ships both in assets/se for a skin that has neither.
+UI_SOUNDS = {
+    "select_expand": "select-expand",
+    "select_difficulty": "select-difficulty",
+}
 
 # osu! keeps skins beside the songs, and the app already knows where those are,
 # so nothing new has to be asked of the user.
@@ -136,8 +142,9 @@ def available_skins(root: Path | None) -> list[str]:
     return sorted(names, key=str.lower)
 
 
-def sound_paths(folder: Path) -> dict[str, Path]:
-    """The skin's taiko hitsounds, by the key `HitsoundPlayer` uses.
+def sound_paths(folder: Path, names: dict[str, str] = SKIN_SOUNDS) -> dict[str, Path]:
+    """The skin's taiko hitsounds, by the key `HitsoundPlayer` uses -- or,
+    given `names`, any other sounds it ships (UI_SOUNDS).
 
     A skin that ships only samples and no art is still worth offering: plenty
     of people pick a skin for how it *sounds*.
@@ -148,7 +155,7 @@ def sound_paths(folder: Path) -> dict[str, Path]:
     except OSError:
         return {}
     found = {}
-    for key, stem in SKIN_SOUNDS.items():
+    for key, stem in names.items():
         for extension in SOUND_EXTENSIONS:
             entry = existing.get((stem + extension).lower())
             if entry is not None:
@@ -306,6 +313,7 @@ class TaikoSkin:
     def __init__(self, folder: Path | None = None) -> None:
         self.name = folder.name if folder is not None else ""
         self.sounds: dict[str, Path] = {}
+        self.ui_sounds: dict[str, Path] = {}
         self._sources: dict[str, QPixmap] = {}
         self._tinted: dict[tuple, QPixmap] = {}
         self._scaled: dict[tuple, QPixmap] = {}
@@ -326,6 +334,7 @@ class TaikoSkin:
                 pixmap.setDevicePixelRatio(1.0)
                 self._sources[element] = pixmap
         self.sounds = sound_paths(folder)
+        self.ui_sounds = sound_paths(folder, UI_SOUNDS)
 
     def __bool__(self) -> bool:
         return bool(self._sources) or bool(self.sounds)

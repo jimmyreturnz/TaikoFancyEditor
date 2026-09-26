@@ -36,7 +36,7 @@ from PySide6.QtWidgets import (
 import osu_db
 from smooth_scroll import SMOOTH_SCROLL_MS, SmoothScroller, reduced_motion, smooth
 from audio_engine import DEFAULT_HITSOUND_OFFSET_MS, WHEEL_SEEK_HOLD_MS, TrackPlayer
-from skin import TaikoSkin, skins_root
+from skin import UI_SOUNDS, TaikoSkin, skins_root
 from parameters import PARAMETERS
 from i18n import install_translator, tr
 from image_trace_dialog import ImageTraceDialog
@@ -9423,6 +9423,11 @@ class LibraryPageController:
         # Rows elide rather than scroll sideways; the delegate paints to width.
         self.song_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.song_scroller = SmoothScroller(self.song_list)
+        # The select sounds, and what they last sounded for.
+        self._ui_players: dict[Path, QMediaPlayer] = {}
+        self._sounded_song: Path | None = None
+        self._sounded_difficulty: Path | None = None
+        self._quiet_difficulty = False
         # The banner's beat: red lines per difficulty file, read once each.
         self._tempo_cache: dict[Path, list[tuple[float, float]]] = {}
         self._beat_audio: Path | None = None
@@ -9876,12 +9881,25 @@ class LibraryPageController:
         return {"title": first.display_title(original), "subtitle": subtitle, "stars": stars}
 
     def song_selected(self, row: int) -> None:
+        # The difficulty list is refilled below and lands on its first row by
+        # itself: that is part of picking a song, not a second pick.
+        self._quiet_difficulty = True
+        try:
+            self._song_selected(row)
+        finally:
+            self._quiet_difficulty = False
+
+    def _song_selected(self, row: int) -> None:
         self.difficulty_list.clear()
         item = self.song_list.item(row)
         if item is None or item.data(Qt.UserRole) is None:
             self.update_open_button()
             return  # a group header
         folder = Path(item.data(Qt.UserRole))
+        # A different song, not the same one re-listed by a search keystroke.
+        if folder != self._sounded_song:
+            self._sounded_song = folder
+            self.play_ui_sound("select_expand")
         difficulties = self.library_songs.get(folder, [])
         if not difficulties:
             return
@@ -10009,10 +10027,41 @@ class LibraryPageController:
         self.update_open_button()
         item = self.difficulty_list.currentItem()
         difficulty = item and getattr(self, "_shown_difficulties", {}).get(item.data(Qt.UserRole))
+        if difficulty is not None and difficulty.path != self._sounded_difficulty:
+            self._sounded_difficulty = difficulty.path
+            if not self._quiet_difficulty:
+                self.play_ui_sound("select_difficulty")
         if difficulty is not None:
             self.schedule_preview(difficulty)
             self._show_banner_art(difficulty)
             self._keep_time_with(difficulty)
+
+    def play_ui_sound(self, key: str) -> None:
+        """select-expand / select-difficulty: the skin's own, or the app's.
+
+        Per sound, like the hitsounds: a skin with only one of the two keeps
+        the app's other. At the effects (hitsound) volume, not the music's --
+        these are the interface's sounds, not the song's.
+        """
+        path = getattr(self.window, "skin", None) and self.window.skin.ui_sounds.get(key)
+        if path is None:
+            path = next((candidate for candidate in
+                         (root / "assets" / "se" / f"{UI_SOUNDS[key]}.wav" for root in resource_roots())
+                         if candidate.is_file()), None)
+        if path is None:
+            return
+        player = self._ui_players.get(path)
+        if player is None:
+            # QMediaPlayer rather than QSoundEffect: a skin's may be .ogg or
+            # .mp3, which QSoundEffect cannot open. A click this long can take
+            # the extra latency.
+            player = QMediaPlayer(self.window)
+            player.setAudioOutput(QAudioOutput(player))
+            player.setSource(QUrl.fromLocalFile(str(path)))
+            self._ui_players[path] = player
+        player.audioOutput().setVolume(self.window.settings.int_value("audio/hitsound_volume", 70) / 100.0)
+        player.stop()
+        player.play()
 
     # -- song preview -----------------------------------------------------
 

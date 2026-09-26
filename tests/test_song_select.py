@@ -291,6 +291,33 @@ class PageTests(unittest.TestCase):
         banner.set_tempo([(0.0, 100.0)], lambda: 0.0)
         self.assertAlmostEqual(banner.beat_phase_at(100.0), 0.5)
 
+    def _record_ui_sounds(self):
+        played = []
+        self.window._library.play_ui_sound = played.append
+        return played
+
+    def test_a_new_song_expands_and_a_new_difficulty_clicks(self):
+        played = self._record_ui_sounds()
+        self.window.song_list.setCurrentRow(0)
+        self.key(self.window.song_list, Qt.Key_Down)
+        # The first difficulty coming up with the song is not a second pick.
+        self.assertEqual(played, ["select_expand", "select_expand"])
+        folder = Path(self.window.song_list.currentItem().data(Qt.UserRole))
+        first = next(folder.glob("*.osu"))
+        (folder / "other.osu").write_bytes(first.read_bytes().replace(b"Version:Oni", b"Version:Zzz"))
+        self.window._start_scan()
+        while self.window._scan_iterator is not None:
+            self.window._scan_step()
+        played.clear()
+        self.window.difficulty_list.setCurrentRow(1)
+        self.assertEqual(played, ["select_difficulty"])
+
+    def test_a_search_that_keeps_the_song_is_silent(self):
+        self.window.song_list.setCurrentRow(0)
+        played = self._record_ui_sounds()
+        self.window._library.rebuild_song_list()
+        self.assertEqual(played, [])
+
     def _write_db(self, db: Path, song: Path, md5: str) -> Path:
         db.write_bytes(_osu_db(osu_db.FLOAT_STARS_VERSION, [(song.parent.name, song.name, md5, 4.5)]))
         return db

@@ -276,5 +276,20 @@ class PlayfieldMenuTests(unittest.TestCase):
         self.assertEqual(skin.available_skins(self.root), ["bar only"])
 
 
+class UiSoundTests(unittest.TestCase):
+    def test_the_select_sounds_are_found_in_any_osu_format_and_case(self):
+        import shutil
+        import tempfile
+        from skin import UI_SOUNDS, sound_paths
+        folder = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, folder, True)
+        (folder / "Select-Expand.ogg").write_bytes(b"")
+        found = sound_paths(folder, UI_SOUNDS)
+        self.assertEqual(set(found), {"select_expand"})
+        self.assertEqual(found["select_expand"].name, "Select-Expand.ogg")
+        # And it is not mistaken for a hitsound.
+        self.assertEqual(sound_paths(folder), {})
+
+
 if __name__ == "__main__":
     unittest.main()
