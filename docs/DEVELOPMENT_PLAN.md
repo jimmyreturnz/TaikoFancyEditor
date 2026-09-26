@@ -877,6 +877,12 @@ rounded; green-line click placement and its ghost did not. Both do now.
     guess. Harness: `tools/measure_wheel_seek.py --gimmick --from MS`.
 11. ~~Larger items~~ -- **cleared by the owner 2026-09-26** (UI and assets
     rework, song library rework, updater rework, Thai localization).
+12. Fancy Arranger redesign is not finished (added by the owner 2026-09-26).
+13. The window still overextends the screen border.
+14. Leaving the editor keeps the current song playing, reset to 1.00x and
+    normal pitch whatever speed, rate mod or pitch it was at.
+15. Config UI rework.
+16. Rework of every transformation's configurable settings.
 
 ### Gameplay preview: mods, and a range that matches osu! -- DONE 2026-09-25
 
