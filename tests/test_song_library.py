@@ -323,6 +323,9 @@ class LibraryPageTests(unittest.TestCase):
             b"Title:Test Song\r\n",
             b"Title:Test Song\r\nTitleUnicode:\xe3\x83\x86\xe3\x82\xb9\xe3\x83\x88\r\n",
         ))
+        # Test settings are seeded from the real ones, where the owner has
+        # original-language titles on; the first half needs them off.
+        self.window.original_metadata_check.setChecked(False)
         self.run_scan()
         self.assertIn("Test Song", self.window.song_list.item(0).text())
         self.window.original_metadata_check.setChecked(True)

@@ -15,7 +15,7 @@ Taiko Fancy Arranger started as a tool for turning osu!taiko notes into visual p
 
 The editor does not support editing storyboards, breaks, colours, editor bookmarks yet.
 
-> **Current release:** v3.3.3  
+> **Current release:** v3.4.0  
 > **Platform:** Windows x64  
 > **Author:** [jimmyreturnz](https://osu.ppy.sh/users/11306153)
 
@@ -27,14 +27,19 @@ The main inspirations include Alchyr's ranked maps *13 Stairs* and *Helios*, whi
 
 ---
 
-## What is new in 3.3.3
+## What is new in 3.4.0
 
-- Fixed a bug in Fancy Arranger where the position of notes reset after clicking 'Apply Transformation to ..." and then readjust some value and click again.
-- **Pasted fake sliders keep their offset from the snap** instead of landing on the playhead, this will be very useful when copypasting them.
-- **Placing objects on a heavy gimmick map is about 20% faster**
-- **Meter** is editable in a red line's double-click dialog.
-- **Anti-barline slits default to 1 tick for Don and 2 for Kat**, and the gimmick editor's chart default SV offset starts exactly on the note (offset 0).
-Full notes: [`docs/releases/v3.3.3.md`](docs/releases/v3.3.3.md).
+A redesign release: song select, the editor, the Fancy Arranger and every settings dialog were rebuilt, and the gameplay preview now shows what osu! shows.
+
+- **Mods** on the Editor and Gimmick pages: HD, NC / DT / DC / HT, HR / EZ and FL. NC and DC change the song's pitch and leave the hitsounds alone.
+- **New song select** with star ratings from your osu!.db, each difficulty's own background and preview, and a Continue row. Going back from the editor keeps the song playing at 1.00x.
+- **Every settings dialog redone**: settings grouped by tool, a side panel that explains each field and draws what it writes, and a warning on the fields that clash.
+- **Fancy Arranger** as its mockup: shape tiles, parameters as sliders, movable docks, osu!'s playfield proportions, and notes that glide to a new shape.
+- **The gameplay preview** matches osu!'s range, draws objects in osu!'s order (a shiny's note sits over its fake sliders), and flashes plain notes white in kiai.
+- **Resnap** (Ctrl+R) puts objects that sit a millisecond off their snap back on it.
+- Faster heavy gimmick sections, eased scrolling everywhere, and a sharper font.
+
+Full notes: [`docs/releases/v3.4.0.md`](docs/releases/v3.4.0.md).
 
 ## To be added / fixed:
 - improving the smoothness when scrolling too fast, been actively trying to find solutions and improve it for a while now. It is much better than before, and there is still a room for an improvement.
@@ -48,7 +53,7 @@ Full development log detail lives in [`docs/DEVELOPMENT_PLAN.md`](docs/DEVELOPME
 
 ## Windows SmartScreen notice
 
-Taiko Fancy Arranger v3.3.3 is a currently unsigned Windows application. The release includes source-level security hardening, input validation, safer file handling, automated tests, and published SHA-256 checksums.
+Taiko Fancy Arranger v3.4.0 is a currently unsigned Windows application. The release includes source-level security hardening, input validation, safer file handling, automated tests, and published SHA-256 checksums.
 
 Windows Defender SmartScreen may still display an "unrecognized app" warning because the executable has not yet established download reputation.
 
@@ -456,7 +461,7 @@ Do not upload copyrighted audio or private beatmap assets unless permission has 
 
 ## Project status
 
-Version 3.3.3 is the current public release. The project focuses on creative single player editing, arrangement and previewing. Multiplayer and automatic difficulty calculation are outside the current scope.
+Version 3.4.0 is the current public release. The project focuses on creative single player editing, arrangement and previewing. Multiplayer and automatic difficulty calculation are outside the current scope.
 
 Not yet implemented, and next in line:
 
