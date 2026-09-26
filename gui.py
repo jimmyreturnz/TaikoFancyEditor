@@ -36,7 +36,7 @@ from PySide6.QtWidgets import (
 import osu_db
 from smooth_scroll import SMOOTH_SCROLL_MS, SmoothScroller, reduced_motion, smooth
 from config_sheet import (
-    SEGMENT_STYLE, WARN_COLOR, Diagram, SheetDialog, TrimmedDoubleSpinBox, bind_segments, bind_tiles, control_stylesheet,
+    SEGMENT_STYLE, WARN_COLOR, Diagram, SheetDialog, TrimmedDoubleSpinBox, bind_segments, set_field_visible, bind_tiles, control_stylesheet,
     own_or_custom, segmented, set_warning,
 )
 from audio_engine import DEFAULT_HITSOUND_OFFSET_MS, WHEEL_SEEK_HOLD_MS, TrackPlayer
@@ -513,7 +513,7 @@ def set_row_visible(layout: QFormLayout | None, widget: QWidget, visible: bool) 
     its QFormLayout row in a dialog not yet on a sheet."""
     field = widget.property("sheetField")
     if field is not None:
-        field.setVisible(visible)
+        set_field_visible(field, visible)
     elif layout is not None:
         layout.setRowVisible(widget, visible)
 
@@ -7701,7 +7701,7 @@ class ConvertNotesDialog(SheetDialog):
         super().accept()
 
 
-class BarlineFunctionDialog(QDialog):
+class BarlineFunctionDialog(SheetDialog):
     """Fill a dragged range with red lines, every `n` ms or every `n` snaps.
 
     The barline layer's answer to the SV editor's function tool. Two rhythms,
@@ -7724,8 +7724,10 @@ class BarlineFunctionDialog(QDialog):
         base_timing: list[TimingPoint] | None = None, snap_divisor: int = 4,
         note_times: set[int] | None = None, current_sv: float = 1.0, meter: int = 4,
     ) -> None:
-        super().__init__(parent)
-        self.setWindowTitle(tr("MainWindow", "Generate red lines"))
+        super().__init__(
+            self._title(),
+            tr("MainWindow", "Range: {0} to {1}").format(format_time(round(start_ms)), format_time(round(end_ms))),
+            action=tr("MainWindow", "Generate"), rail=False, restore=False, parent=parent)
         icon = application_icon()
         if not icon.isNull():
             self.setWindowIcon(icon)
@@ -7733,35 +7735,46 @@ class BarlineFunctionDialog(QDialog):
         self.end_ms = end_ms
         self.base_timing = base_timing or []
         self.note_times = note_times or set()
-
-        layout = QFormLayout(self)
-        layout.addRow(QLabel(
-            tr("MainWindow", "Range: {0} to {1}").format(format_time(round(start_ms)), format_time(round(end_ms)))
-        ))
+        sheet = self.sheet
+        # Rows are sheet fields; set_row_visible finds them by property.
+        self._form_layout = None
 
         self.mode_combo = QComboBox()
         # Literal tr() calls, one per option -- see AddViewDialog on why a dict
         # lookup here would escape the i18n coverage gate.
         self.mode_combo.addItem(tr("MainWindow", "Every n (ms)"), "ms")
         self.mode_combo.addItem(tr("MainWindow", "Every n snaps"), "snaps")
-        layout.addRow(tr("MainWindow", "Generate at"), self.mode_combo)
+        for text, data in self._extra_modes():
+            self.mode_combo.addItem(text, data)
+        where = sheet.add_section("where", tr("MainWindow", "Where"))
+        pills = bind_segments(self.mode_combo)
+        where.field(tr("MainWindow", "Generate at"), pills, tr(
+            "MainWindow",
+            "Every n ms is scenery: a barline gimmick's vocabulary is lines packed as tight as "
+            "the format allows. Every n snaps walks the chart's own beat grid, so the lines land "
+            "where the music does."), span=2)
 
         self.spacing_spin = QSpinBox()
         self.spacing_spin.setRange(1, 10000)
+        self.spacing_spin.setSuffix(" ms")
         self.spacing_spin.setValue(1)
-        layout.addRow(tr("MainWindow", "Every n (ms)"), self.spacing_spin)
+        where.field(tr("MainWindow", "Every"), self.spacing_spin, tr(
+            "MainWindow", "One line every n milliseconds across the range."))
 
         self.snap_count_spin = QSpinBox()
         self.snap_count_spin.setRange(1, 64)
+        self.snap_count_spin.setSuffix(" " + tr("MainWindow", "snaps"))
         self.snap_count_spin.setValue(1)
-        layout.addRow(tr("MainWindow", "Every n snaps"), self.snap_count_spin)
+        where.field(tr("MainWindow", "Every"), self.snap_count_spin, tr(
+            "MainWindow", "One line every n gridlines of the snap."))
 
         self.snap_combo = QComboBox()
         for divisor in SNAP_DIVISORS:
             self.snap_combo.addItem(f"1/{divisor}", divisor)
         found = self.snap_combo.findData(int(snap_divisor))
         self.snap_combo.setCurrentIndex(found if found >= 0 else self.snap_combo.findData(4))
-        layout.addRow(tr("MainWindow", "Snap"), self.snap_combo)
+        where.field(tr("MainWindow", "Snap"), self.snap_combo, tr(
+            "MainWindow", "The gridline spacing the snaps are counted in."))
 
         # Shifts where the walk itself begins -- the first "every n (ms)" line,
         # or (in snap mode) the anchor `_snap_times` snaps to before it starts
@@ -7770,8 +7783,12 @@ class BarlineFunctionDialog(QDialog):
         # shift of where the chosen ones land.
         self.start_offset_spin = QSpinBox()
         self.start_offset_spin.setRange(-10000, 10000)
+        self.start_offset_spin.setSuffix(" ms")
         self.start_offset_spin.setValue(0)
-        layout.addRow(tr("MainWindow", "Starting offset (ms)"), self.start_offset_spin)
+        where.field(tr("MainWindow", "Starting offset"), self.start_offset_spin, tr(
+            "MainWindow",
+            "Moves where the walk starts counting from. In snap mode this changes which "
+            "gridlines are picked, not where the picked ones land."))
 
         # Shifts every already-selected line by a fixed amount, after the walk
         # (or the note filter) has picked which milliseconds those are. A
@@ -7780,8 +7797,21 @@ class BarlineFunctionDialog(QDialog):
         # itself rather than of wherever the range happened to start.
         self.snap_offset_spin = QSpinBox()
         self.snap_offset_spin.setRange(-10000, 10000)
+        self.snap_offset_spin.setSuffix(" ms")
         self.snap_offset_spin.setValue(0)
-        layout.addRow(tr("MainWindow", "Snap offset (ms)"), self.snap_offset_spin)
+        where.field(tr("MainWindow", "Snap offset"), self.snap_offset_spin, tr(
+            "MainWindow",
+            "Moves every picked line by the same amount: consistently early or late of the beat."))
+
+        # Off by default: a red line landing on a note's own millisecond resets
+        # SV to 1.0x for that note and restarts measure counting under it, which
+        # is a gimmick in its own right rather than scenery. Available, because
+        # doing it deliberately is a real technique.
+        self.allow_on_notes_check = QCheckBox(tr("MainWindow", "Allow on existing notes"))
+        self.allow_on_notes_check.setChecked(False)
+        self.allow_on_notes_check.toggled.connect(self._update_count)
+        where.switch(self.allow_on_notes_check, tr(
+            "MainWindow", "Off skips any millisecond that already has a note."))
 
         # A run of red lines at the chart's own BPM is scenery standing still.
         # Ramping it across the range is what makes the bars accelerate, and the
@@ -7789,6 +7819,8 @@ class BarlineFunctionDialog(QDialog):
         # sweep and an SV sweep shaped "Exp 1.6" mean the same curve.
         # Literal tr() calls, one per option -- see AddViewDialog on why a dict
         # lookup here would escape the i18n coverage gate.
+        bpm = sheet.add_section("bpm", tr("MainWindow", "BPM"))
+        self._bpm_section = bpm
         self.bpm_curve_combo = QComboBox()
         self.bpm_curve_combo.addItem(tr("MainWindow", "Base timing BPM"), "none")
         self.bpm_curve_combo.addItem(tr("MainWindow", "Linear"), "linear")
@@ -7796,20 +7828,30 @@ class BarlineFunctionDialog(QDialog):
         self.bpm_curve_combo.addItem(tr("MainWindow", "Exp 1.6"), "exp1.6")
         self.bpm_curve_combo.addItem(tr("MainWindow", "True Exp"), "true_exp")
         self.bpm_curve_combo.currentIndexChanged.connect(self._update_mode)
-        layout.addRow(tr("MainWindow", "BPM growth"), self.bpm_curve_combo)
+        curve_pills = bind_segments(self.bpm_curve_combo)
+        bpm.field(tr("MainWindow", "BPM growth"), curve_pills, tr(
+            "MainWindow",
+            "Base timing BPM writes the chart's own BPM: the lines change where the bars fall "
+            "and nothing else. A curve ramps the BPM from Start to End across the range, which "
+            "is what makes the bars accelerate."), span=2)
+        self.bpm_curve_combo.setProperty("sheetField", curve_pills.property("sheetField"))
 
         start_bpm = base_bpm_at(self.base_timing, start_ms) if self.base_timing else 120.0
         self.start_bpm_spin = QDoubleSpinBox()
         self.start_bpm_spin.setRange(1.0, 1000000.0)
         self.start_bpm_spin.setDecimals(4)
+        self.start_bpm_spin.setSuffix(" BPM")
         self.start_bpm_spin.setValue(start_bpm)
-        layout.addRow(tr("MainWindow", "Start BPM"), self.start_bpm_spin)
+        bpm.field(tr("MainWindow", "Start BPM"), self.start_bpm_spin, tr(
+            "MainWindow", "The first line's BPM."))
 
         self.end_bpm_spin = QDoubleSpinBox()
         self.end_bpm_spin.setRange(1.0, 1000000.0)
         self.end_bpm_spin.setDecimals(4)
+        self.end_bpm_spin.setSuffix(" BPM")
         self.end_bpm_spin.setValue(start_bpm * 2)
-        layout.addRow(tr("MainWindow", "End BPM"), self.end_bpm_spin)
+        bpm.field(tr("MainWindow", "End BPM"), self.end_bpm_spin, tr(
+            "MainWindow", "The last line's BPM."))
 
         # Same reason as the Red Line tool's Config row: osu! takes meter from
         # the uninherited point in force, so every line in the run re-bars what
@@ -7817,7 +7859,10 @@ class BarlineFunctionDialog(QDialog):
         self.meter_spin = QSpinBox()
         self.meter_spin.setRange(1, 10000)
         self.meter_spin.setValue(int(meter))
-        layout.addRow(tr("MainWindow", "Redline meter"), self.meter_spin)
+        bpm.field(tr("MainWindow", "Meter"), self.meter_spin, tr(
+            "MainWindow",
+            "Beats per bar for each line. osu! reads meter from the red line in force, so every "
+            "line in the run re-bars what follows it."))
 
         # Every uninherited point resets SV to 1.0x, so a run of red lines
         # silently flattens the chart's scroll speed for its whole length
@@ -7827,32 +7872,32 @@ class BarlineFunctionDialog(QDialog):
         # almost always want and why it is the default. A typed value drives
         # the whole run at one speed instead.
         # Literal tr() calls, one per option -- see AddViewDialog on the gate.
+        speed = sheet.add_section("speed", tr("MainWindow", "Speed"))
         self.sv_mode_combo = QComboBox()
         self.sv_mode_combo.addItem(tr("MainWindow", "Current speed"), "current")
         self.sv_mode_combo.addItem(tr("MainWindow", "Custom"), "custom")
         self.sv_mode_combo.currentIndexChanged.connect(self._update_mode)
-        layout.addRow(tr("MainWindow", "SV"), self.sv_mode_combo)
+        speed.field(tr("MainWindow", "SV"), bind_segments(self.sv_mode_combo), tr(
+            "MainWindow",
+            "Every red line resets SV to 1\u00d7, so each gets a green line too. Current speed "
+            "writes the SV already in force there; Custom drives the whole run at one speed."))
 
-        self.sv_spin = QDoubleSpinBox()
+        self.sv_spin = TrimmedDoubleSpinBox()
         self.sv_spin.setRange(0.01, 100.0)
         self.sv_spin.setDecimals(SV_DECIMALS)
         self.sv_spin.setSingleStep(0.05)
+        self.sv_spin.setSuffix("\u00d7")
         self.sv_spin.setValue(float(current_sv))
-        layout.addRow(tr("MainWindow", "SV multiplier"), self.sv_spin)
+        speed.field(tr("MainWindow", "SV multiplier"), self.sv_spin, tr(
+            "MainWindow", "The speed every line in the run carries."))
 
-        # Off by default: a red line landing on a note's own millisecond resets
-        # SV to 1.0x for that note and restarts measure counting under it, which
-        # is a gimmick in its own right rather than scenery. Available, because
-        # doing it deliberately is a real technique.
-        self.allow_on_notes_check = QCheckBox()
-        self.allow_on_notes_check.setChecked(False)
-        self.allow_on_notes_check.toggled.connect(self._update_count)
-        layout.addRow(tr("MainWindow", "Allow on existing notes"), self.allow_on_notes_check)
-
-        self.count_label = QLabel()
-        self.count_label.setStyleSheet("color:#ffb347;border:0;")
-        layout.addRow(self.count_label)
-        self._form_layout = layout
+        # The count Generate will write, in the footer where the action is.
+        self.count_label = self.summary
+        sheet.set_help_default(
+            tr("MainWindow", "What Generate writes"),
+            tr("MainWindow", "Each tick above is one line in the range, drawn over the notes already there."))
+        self.run_diagram = Diagram(self._paint_run, 110)
+        sheet.set_diagram(self.run_diagram, tr("MainWindow", "Preview"))
         for widget in (
             self.spacing_spin, self.snap_count_spin,
             self.start_offset_spin, self.snap_offset_spin,
@@ -7860,15 +7905,42 @@ class BarlineFunctionDialog(QDialog):
             widget.valueChanged.connect(self._update_count)
         self.snap_combo.currentIndexChanged.connect(self._update_count)
         self.mode_combo.currentIndexChanged.connect(self._update_mode)
-        # Before the first _update_mode, not after: wrapping a spin box hands it
-        # a new home in the form layout and shows it, so a row hidden first
-        # comes back visible.
         self._update_mode()
+        self.resize(900, 600)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addRow(buttons)
+    # The preview's tick colour: what one line of the run is.
+    RUN_COLOR = "#ff5a5a"
+
+    def _title(self) -> str:
+        return tr("MainWindow", "Generate red lines")
+
+    def _extra_modes(self) -> list[tuple[str, str]]:
+        """Rhythms a subclass adds to Generate at, before its pills are drawn."""
+        return []
+
+    def _paint_run(self, painter: QPainter, rect: QRect) -> None:
+        """Where the run lands across the range, over the notes in it."""
+        span = max(1.0, self.end_ms - self.start_ms)
+        left, right = rect.left() + 10, rect.right() - 10
+
+        def x_of(at: float) -> float:
+            return left + (at - self.start_ms) / span * (right - left)
+
+        base = rect.top() + rect.height() * 0.62
+        painter.setPen(QPen(_DIAGRAM_RULE, 1))
+        painter.drawLine(QPointF(left, base), QPointF(right, base))
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(*DON_COLOR))
+        for at in self.note_times:
+            if self.start_ms <= at <= self.end_ms:
+                painter.drawEllipse(QPointF(x_of(at), base), 3.5, 3.5)
+        times = self.times()
+        painter.setPen(QPen(QColor(self.RUN_COLOR), 1))
+        for at in times[:4000]:
+            x = x_of(at)
+            painter.drawLine(QPointF(x, rect.top() + 12), QPointF(x, base - 8))
+        _diagram_text(painter, left, rect.bottom() - 6, format_time(round(self.start_ms)))
+        _diagram_text(painter, right, rect.bottom() - 6, format_time(round(self.end_ms)), align=Qt.AlignRight)
 
     def _update_mode(self) -> None:
         """Show only the rhythm the chosen mode actually uses.
@@ -7910,9 +7982,10 @@ class BarlineFunctionDialog(QDialog):
     def _update_count(self) -> None:
         """Say how many lines Ok will write. At n = 1 a careless drag is
         thousands of them, and the number is the only warning worth giving."""
-        self.count_label.setText(
-            tr("MainWindow", "{0} red lines").format(len(self.times()))
-        )
+        count = len(self.times())
+        self.set_summary(tr("MainWindow", "{0} red lines").format(count), bad=count == 0)
+        self.action_button.setEnabled(count > 0)
+        self.run_diagram.refresh()
 
     def times(self) -> list[int]:
         """Every millisecond a line lands on, in order.
@@ -8044,15 +8117,11 @@ class FakeSliderFunctionDialog(BarlineFunctionDialog):
         shiny_bpm_multiplier: float = 1.0, fake_slider_bpm_multiplier: float = 1.0,
         note_times: set[int] | None = None,
     ) -> None:
+        self._subclass_ready = False
         super().__init__(
             start_ms, end_ms, parent, base_timing=base_timing, snap_divisor=snap_divisor,
             note_times=note_times,
         )
-        self.setWindowTitle(tr("MainWindow", "Generate fake sliders"))
-        # A third rhythm the barline generator has no use for: the chart's own
-        # notes. Turning a run of notes into shiny ones is the same generation
-        # with the beat grid swapped for where the notes actually are.
-        self.mode_combo.addItem(tr("MainWindow", "At each note"), "notes")
 
         # Each object kind keeps its own remembered multiplier -- switching
         # the combo below is a change of *which* object this run builds, not
@@ -8095,27 +8164,35 @@ class FakeSliderFunctionDialog(BarlineFunctionDialog):
         self.bpm_multiplier_spin.setRange(0.001, 1000.0)
         self.bpm_multiplier_spin.setDecimals(3)
 
-        self.multiplier_hint = QLabel()
-        self.multiplier_hint.setWordWrap(True)
-        self.multiplier_hint.setStyleSheet("color:#aeb8c5;border:0;")
+        self.bpm_multiplier_spin.setSuffix("\u00d7")
 
-        row, _role = self._form_layout.getWidgetPosition(self.snap_offset_spin)
-        insert_at = row + 1 if row >= 0 else self._form_layout.rowCount()
-        for index, (label, widget) in enumerate((
-            (tr("MainWindow", "Object"), self.object_combo),
-            (tr("MainWindow", "Note count"), self.shiny_count_spin),
-            (tr("MainWindow", "Redline BPM"), self.bpm_multiplier_combo),
-            (tr("MainWindow", "Custom multiplier"), self.bpm_multiplier_spin),
-        )):
-            self._form_layout.insertRow(insert_at + index, label, widget)
-        self._form_layout.insertRow(insert_at + 4, self.multiplier_hint)
+        self.multiplier_hint = QLabel()
+        self.multiplier_hint.setObjectName("fieldNote")
+        self.multiplier_hint.setWordWrap(True)
+        self.multiplier_hint.setProperty("sheetField", self.multiplier_hint)
+
+        what = self.sheet.add_section("what", tr("MainWindow", "What"))
+        self.sheet.body_layout.removeWidget(what)
+        self.sheet.body_layout.insertWidget(1, what)
+        object_pills = bind_segments(self.object_combo)
+        what.field(tr("MainWindow", "Object"), object_pills, tr(
+            "MainWindow", "A shiny is a stack of fake sliders under a note."), span=2)
+        self.shiny_count_spin.setSuffix(" " + tr("MainWindow", "sliders"))
+        what.field(tr("MainWindow", "Stack size"), self.shiny_count_spin, tr(
+            "MainWindow", "How many fake sliders sit under each shiny note."))
+        what.break_row()
+        multiplier_pills = bind_segments(self.bpm_multiplier_combo)
+        what.field(tr("MainWindow", "Red line BPM"), multiplier_pills, tr(
+            "MainWindow",
+            "A red line's BPM is also its scroll speed, so retiming a structure's own line is "
+            "how it gets room to move. The named multiples are the ones this is used at."), span=2)
+        what.field(tr("MainWindow", "Custom multiplier"), self.bpm_multiplier_spin)
+        what.add(self.multiplier_hint, 2)
 
         # The BPM ramp writes a growing BPM onto each red line; here the red
         # lines are a structure's own and their BPM is not the mapper's to bend.
-        for widget in (
-            self.bpm_curve_combo, self.start_bpm_spin, self.end_bpm_spin, self.meter_spin,
-        ):
-            set_row_visible(self._form_layout, widget, False)
+        self._bpm_section.hide()
+        self._subclass_ready = True
         # Snaps, not milliseconds. A barline run wants every millisecond it can
         # get; a run of drawn objects at that density is thousands of sliders
         # nobody can see past.
@@ -8124,6 +8201,17 @@ class FakeSliderFunctionDialog(BarlineFunctionDialog):
             self.mode_combo.setCurrentIndex(snaps)
         self._load_kind_multiplier()
         self._update_object_mode()
+
+    RUN_COLOR = "#fbb706"
+
+    def _title(self) -> str:
+        return tr("MainWindow", "Generate fake sliders")
+
+    def _extra_modes(self) -> list[tuple[str, str]]:
+        # A third rhythm the barline generator has no use for: the chart's own
+        # notes. Turning a run of notes into shiny ones is the same generation
+        # with the beat grid swapped for where the notes actually are.
+        return [(tr("MainWindow", "At each note"), "notes")]
 
     def _object_kind_changed(self) -> None:
         self._load_kind_multiplier()
@@ -8146,6 +8234,7 @@ class FakeSliderFunctionDialog(BarlineFunctionDialog):
         # retime back, and a fake slider has no green line to do that with.
         custom = self.bpm_multiplier_combo.currentData() is None
         set_row_visible(self._form_layout, self.bpm_multiplier_spin, custom)
+        set_row_visible(self._form_layout, self.shiny_count_spin, shiny)
         multiplier = self.bpm_multiplier()
         show_hint = shiny and multiplier != 1.0
         self.multiplier_hint.setText(
@@ -8158,7 +8247,7 @@ class FakeSliderFunctionDialog(BarlineFunctionDialog):
                 "it there is a plain speed change with nothing to compensate.",
             ).format(f"{multiplier:g}") if show_hint else ""
         )
-        self._form_layout.setRowVisible(self.multiplier_hint, show_hint)
+        set_row_visible(self._form_layout, self.multiplier_hint, show_hint)
         self._update_count()
 
     def bpm_multiplier(self) -> float:
@@ -8169,11 +8258,12 @@ class FakeSliderFunctionDialog(BarlineFunctionDialog):
     def _update_count(self) -> None:
         # Overrides the barline generator's "N red lines", which is not what
         # this one writes.
-        if not hasattr(self, "object_combo"):
+        if not getattr(self, "_subclass_ready", False):
             return  # still inside the base __init__
-        self.count_label.setText(
-            tr("MainWindow", "{0} objects").format(len(self.times()))
-        )
+        count = len(self.times())
+        self.set_summary(tr("MainWindow", "{0} objects").format(count), bad=count == 0)
+        self.action_button.setEnabled(count > 0)
+        self.run_diagram.refresh()
 
     def object_kind(self) -> str:
         return str(self.object_combo.currentData())
@@ -8182,7 +8272,7 @@ class FakeSliderFunctionDialog(BarlineFunctionDialog):
         return int(self.shiny_count_spin.value())
 
 
-class MultiFakeSliderDialog(QDialog):
+class MultiFakeSliderDialog(SheetDialog):
     """The Multiple Fake Slider tool's config: a run's shape, chosen once.
 
     Opened by `_set_gimmick_tool` when the tool is *selected*, not on every
@@ -8195,35 +8285,37 @@ class MultiFakeSliderDialog(QDialog):
     """
 
     def __init__(self, parent=None) -> None:
-        super().__init__(parent)
-        self.setWindowTitle(tr("MainWindow", "Multiple fake slider"))
+        super().__init__(
+            tr("MainWindow", "Multiple fake slider"),
+            tr("MainWindow", "The run each click of the tool places, around the snap you click."),
+            action=tr("MainWindow", "OK"), rail=False, explain=False, restore=False, parent=parent)
+        self.action_button.clicked.disconnect()
+        self.action_button.clicked.connect(self._accept)
         icon = application_icon()
         if not icon.isNull():
             self.setWindowIcon(icon)
-
-        layout = QFormLayout(self)
+        section = self.sheet.add_section("run", tr("MainWindow", "Run"))
 
         self.start_spin = QSpinBox()
         # Negative allowed and asymmetric with End on purpose: a run is
         # routinely wanted leading into the click as well as following it.
         self.start_spin.setRange(-10000, 10000)
+        self.start_spin.setSuffix(" ms")
         self.start_spin.setValue(0)
-        layout.addRow(tr("MainWindow", "Start offset (ms)"), self.start_spin)
+        section.field(tr("MainWindow", "Start offset"), self.start_spin)
 
         self.end_spin = QSpinBox()
         self.end_spin.setRange(-10000, 10000)
+        self.end_spin.setSuffix(" ms")
         self.end_spin.setValue(16)
-        layout.addRow(tr("MainWindow", "End offset (ms)"), self.end_spin)
+        section.field(tr("MainWindow", "End offset"), self.end_spin)
 
         self.distance_spin = QSpinBox()
         self.distance_spin.setRange(1, 10000)
+        self.distance_spin.setSuffix(" ms")
         self.distance_spin.setValue(2)
-        layout.addRow(tr("MainWindow", "Distance (ms)"), self.distance_spin)
-
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self._accept)
-        buttons.rejected.connect(self.reject)
-        layout.addRow(buttons)
+        section.field(tr("MainWindow", "Distance"), self.distance_spin)
+        self.resize(460, 300)
 
     def _accept(self) -> None:
         # Clamped up rather than refused: End below Start is "I want just the
@@ -8237,7 +8329,7 @@ class MultiFakeSliderDialog(QDialog):
         return (self.start_spin.value(), self.end_spin.value(), self.distance_spin.value())
 
 
-class TimingLineDialog(QDialog):
+class TimingLineDialog(SheetDialog):
     """Retype one timing line: its value, and the millisecond it sits on.
 
     One dialog for both kinds, because the only difference is what the value
@@ -8247,33 +8339,35 @@ class TimingLineDialog(QDialog):
     """
 
     def __init__(self, point: TimingPoint, parent=None) -> None:
-        super().__init__(parent)
         self.uninherited = point.uninherited
-        self.setWindowTitle(
-            tr("MainWindow", "Red line") if self.uninherited else tr("MainWindow", "Green line")
-        )
+        super().__init__(
+            tr("MainWindow", "Red line") if self.uninherited else tr("MainWindow", "Green line"),
+            format_time(round(point.time)),
+            action=tr("MainWindow", "OK"), rail=False, explain=False, restore=False, parent=parent)
         icon = application_icon()
         if not icon.isNull():
             self.setWindowIcon(icon)
+        section = self.sheet.add_section("line", tr("MainWindow", "Line"))
 
-        layout = QFormLayout(self)
-
-        self.value_spin = QDoubleSpinBox()
+        self.value_spin = TrimmedDoubleSpinBox()
         if self.uninherited:
             self.value_spin.setRange(0.001, 1000000.0)
             self.value_spin.setDecimals(3)
+            self.value_spin.setSuffix(" BPM")
             self.value_spin.setValue(point.bpm or 120.0)
-            layout.addRow(tr("MainWindow", "BPM"), self.value_spin)
+            section.field(tr("MainWindow", "BPM"), self.value_spin)
         else:
             self.value_spin.setRange(0.01, 100.0)
             self.value_spin.setDecimals(SV_DECIMALS)
+            self.value_spin.setSuffix("\u00d7")
             self.value_spin.setValue(point.sv_multiplier)
-            layout.addRow(tr("MainWindow", "SV multiplier"), self.value_spin)
+            section.field(tr("MainWindow", "SV multiplier"), self.value_spin)
 
         self.time_spin = QSpinBox()
         self.time_spin.setRange(0, 100000000)
+        self.time_spin.setSuffix(" ms")
         self.time_spin.setValue(round(point.time))
-        layout.addRow(tr("MainWindow", "Time (ms)"), self.time_spin)
+        section.field(tr("MainWindow", "Time"), self.time_spin)
 
         # Beats per bar, which is where this line's barlines fall. Red lines
         # only: osu! reads meter from the uninherited point in force, so on a
@@ -8285,24 +8379,21 @@ class TimingLineDialog(QDialog):
             self.meter_spin = QSpinBox()
             self.meter_spin.setRange(1, 10000)
             self.meter_spin.setValue(max(1, point.meter))
-            layout.addRow(tr("MainWindow", "Meter"), self.meter_spin)
+            section.field(tr("MainWindow", "Meter"), self.meter_spin)
 
         # The two effects bits, editable where the line itself is. Both are
         # things a gimmick has to fix line by line -- a stray bar to hide, a
         # kiai section a generated line switched off -- and until now the only
         # way to reach either was a text editor.
-        self.kiai_check = QCheckBox()
+        section.break_row()
+        self.kiai_check = QCheckBox(tr("MainWindow", "Kiai"))
         self.kiai_check.setChecked(point.kiai)
-        layout.addRow(tr("MainWindow", "Kiai"), self.kiai_check)
+        section.switch(self.kiai_check, span=1)
 
-        self.omit_barline_check = QCheckBox()
+        self.omit_barline_check = QCheckBox(tr("MainWindow", "Omit barline"))
         self.omit_barline_check.setChecked(point.omit_first_barline)
-        layout.addRow(tr("MainWindow", "Omit barline"), self.omit_barline_check)
-
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addRow(buttons)
+        section.switch(self.omit_barline_check, span=1)
+        self.resize(460, 320)
 
     def effects(self, point: TimingPoint) -> int:
         """`point.effects` with only the two checkboxes' bits rewritten.

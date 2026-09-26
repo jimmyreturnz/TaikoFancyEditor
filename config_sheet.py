@@ -311,6 +311,18 @@ def dot_icon(color: str, size: int = 8) -> QIcon:
     return QIcon(pixmap)
 
 
+def set_field_visible(field: QWidget, visible: bool) -> None:
+    """Show or hide a sheet field and close the gap it leaves in its section."""
+    if field.isHidden() != visible:
+        return
+    field.setVisible(visible)
+    parent = field.parentWidget()
+    while parent is not None and not isinstance(parent, Section):
+        parent = parent.parentWidget()
+    if parent is not None:
+        parent.reflow()
+
+
 def set_warning(widget: QWidget, on: bool) -> None:
     """Amber rim on a field that clashes with another (QAbstractSpinBox[warn])."""
     if bool(widget.property("warn")) == on:
@@ -429,20 +441,45 @@ class Section(QFrame):
         outer.addLayout(self.grid)
         self._row = 0
         self._column = 0
+        # (widget, span) in order, or None for a row break: what `reflow`
+        # lays out again when a field is shown or hidden.
+        self._items: list[tuple[QWidget, int] | None] = []
 
     def add(self, widget: QWidget, span: int = 1) -> QWidget:
         """Next cell, left to right; `span=2` takes the whole row."""
+        self._items.append((widget, span))
+        self._place(widget, span)
+        return widget
+
+    def _place(self, widget: QWidget, span: int) -> None:
         if span == 2 and self._column:
             self._row, self._column = self._row + 1, 0
         self.grid.addWidget(widget, self._row, self._column, 1, span)
         self._column += span
         if self._column >= 2:
             self._row, self._column = self._row + 1, 0
-        return widget
 
     def break_row(self) -> None:
+        self._items.append(None)
         if self._column:
             self._row, self._column = self._row + 1, 0
+
+    def reflow(self) -> None:
+        """Lay the visible fields out again, so a hidden one leaves no hole.
+
+        The grid is positional: hiding a field emptied its cell and left the
+        next one stranded in the other column.
+        """
+        for item in self._items:
+            if item is not None:
+                self.grid.removeWidget(item[0])
+        self._row = self._column = 0
+        for item in self._items:
+            if item is None:
+                if self._column:
+                    self._row, self._column = self._row + 1, 0
+            elif not item[0].isHidden():
+                self._place(*item)
 
     def field(self, label: str, widget: QWidget, help_text: str = "", span: int = 1,
               default: str = "", scrub: QAbstractSpinBox | None = None) -> QWidget:

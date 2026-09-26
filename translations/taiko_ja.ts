@@ -141,6 +141,138 @@
     <context>
         <name>MainWindow</name>
         <message>
+            <source>A red line's BPM is also its scroll speed, so retiming a structure's own line is how it gets room to move. The named multiples are the ones this is used at.</source>
+            <translation>赤線の BPM はスクロール速度でもあるため、構造自身の線の BPM を変えると動く余地が生まれます。名前の付いた倍率はよく使われるものです。</translation>
+        </message>
+        <message>
+            <source>A shiny is a stack of fake sliders under a note.</source>
+            <translation>シャイニーはノートの下にフェイクスライダーを重ねたものです。</translation>
+        </message>
+        <message>
+            <source>Base timing BPM writes the chart's own BPM: the lines change where the bars fall and nothing else. A curve ramps the BPM from Start to End across the range, which is what makes the bars accelerate.</source>
+            <translation>「基準タイミングの BPM」は譜面の BPM をそのまま書き、小節線の位置だけが変わります。カーブを選ぶと範囲全体で BPM を開始から終了へ変化させ、小節線が加速して見えます。</translation>
+        </message>
+        <message>
+            <source>Beats per bar for each line. osu! reads meter from the red line in force, so every line in the run re-bars what follows it.</source>
+            <translation>各線の 1 小節あたりの拍数です。osu! は有効な赤線から拍子を読むため、生成した各線がその後の小節区切りを変えます。</translation>
+        </message>
+        <message>
+            <source>Distance</source>
+            <translation>間隔</translation>
+        </message>
+        <message>
+            <source>Each tick above is one line in the range, drawn over the notes already there.</source>
+            <translation>上の目盛り 1 本が範囲内の線 1 本で、既存のノートの上に描かれています。</translation>
+        </message>
+        <message>
+            <source>End offset</source>
+            <translation>終了オフセット</translation>
+        </message>
+        <message>
+            <source>Every</source>
+            <translation>間隔</translation>
+        </message>
+        <message>
+            <source>Every n ms is scenery: a barline gimmick's vocabulary is lines packed as tight as the format allows. Every n snaps walks the chart's own beat grid, so the lines land where the music does.</source>
+            <translation>「n ms ごと」は背景向けで、小節線ギミックは形式が許す限り密に線を並べます。「n スナップごと」は譜面のビートグリッドに沿うため、線が音楽に合った位置に置かれます。</translation>
+        </message>
+        <message>
+            <source>Every red line resets SV to 1×, so each gets a green line too. Current speed writes the SV already in force there; Custom drives the whole run at one speed.</source>
+            <translation>赤線はすべて SV を 1× に戻すため、各線に緑線も置きます。「現在の速度」はその位置で有効な SV を書き、「カスタム」は全体を 1 つの速度にします。</translation>
+        </message>
+        <message>
+            <source>How many fake sliders sit under each shiny note.</source>
+            <translation>各シャイニーノートの下に重ねるフェイクスライダーの数です。</translation>
+        </message>
+        <message>
+            <source>Line</source>
+            <translation>線</translation>
+        </message>
+        <message>
+            <source>Moves every picked line by the same amount: consistently early or late of the beat.</source>
+            <translation>選ばれた線をすべて同じ量だけずらし、拍より一定だけ早く、または遅くします。</translation>
+        </message>
+        <message>
+            <source>Moves where the walk starts counting from. In snap mode this changes which gridlines are picked, not where the picked ones land.</source>
+            <translation>数え始める位置をずらします。スナップモードでは、選ばれた線の位置ではなく、どのグリッド線が選ばれるかが変わります。</translation>
+        </message>
+        <message>
+            <source>OK</source>
+            <translation>OK</translation>
+        </message>
+        <message>
+            <source>Off skips any millisecond that already has a note.</source>
+            <translation>オフにすると、既にノートがあるミリ秒は飛ばします。</translation>
+        </message>
+        <message>
+            <source>One line every n gridlines of the snap.</source>
+            <translation>スナップのグリッド線 n 本ごとに 1 本置きます。</translation>
+        </message>
+        <message>
+            <source>One line every n milliseconds across the range.</source>
+            <translation>範囲全体に n ミリ秒ごとに 1 本置きます。</translation>
+        </message>
+        <message>
+            <source>Run</source>
+            <translation>連続配置</translation>
+        </message>
+        <message>
+            <source>Snap offset</source>
+            <translation>スナップオフセット</translation>
+        </message>
+        <message>
+            <source>Speed</source>
+            <translation>速度</translation>
+        </message>
+        <message>
+            <source>Start offset</source>
+            <translation>開始オフセット</translation>
+        </message>
+        <message>
+            <source>Starting offset</source>
+            <translation>開始オフセット</translation>
+        </message>
+        <message>
+            <source>The first line's BPM.</source>
+            <translation>最初の線の BPM です。</translation>
+        </message>
+        <message>
+            <source>The gridline spacing the snaps are counted in.</source>
+            <translation>スナップを数えるグリッドの間隔です。</translation>
+        </message>
+        <message>
+            <source>The last line's BPM.</source>
+            <translation>最後の線の BPM です。</translation>
+        </message>
+        <message>
+            <source>The run each click of the tool places, around the snap you click.</source>
+            <translation>ツールでクリックするたびに、クリックしたスナップの周りに置く一連の配置です。</translation>
+        </message>
+        <message>
+            <source>The speed every line in the run carries.</source>
+            <translation>生成するすべての線に付ける速度です。</translation>
+        </message>
+        <message>
+            <source>Time</source>
+            <translation>時間</translation>
+        </message>
+        <message>
+            <source>What</source>
+            <translation>内容</translation>
+        </message>
+        <message>
+            <source>What Generate writes</source>
+            <translation>生成される内容</translation>
+        </message>
+        <message>
+            <source>Where</source>
+            <translation>位置</translation>
+        </message>
+        <message>
+            <source>snaps</source>
+            <translation>スナップ</translation>
+        </message>
+        <message>
             <source>Curve</source>
             <translation>カーブ</translation>
         </message>
