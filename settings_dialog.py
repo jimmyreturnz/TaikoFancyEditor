@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
 )
 
 import updater
+from smooth_scroll import smooth
 from audio_engine import DEFAULT_HITSOUND_OFFSET_MS
 from settings import (
     NOTE_OPACITY_DEFAULT_PERCENT,
@@ -120,6 +121,7 @@ class SettingsDialog(QDialog):
         scroller.setWidgetResizable(True)
         scroller.setFrameShape(QFrame.NoFrame)
         scroller.setWidget(self.pages)
+        smooth(scroller, self.nav)
         body.addWidget(scroller, 1)
         root.addLayout(body, 1)
 
@@ -287,6 +289,7 @@ class SettingsDialog(QDialog):
         layout = QVBoxLayout(page)
         self.shortcuts_table = QTableWidget(0, 2)
         self.shortcuts_table.setHorizontalHeaderLabels([self.tr("Action"), self.tr("Shortcut")])
+        smooth(self.shortcuts_table)
         header = self.shortcuts_table.horizontalHeader()
         # Action sizes to its longest label -- which is a translation, so no
         # fixed width can be right in both languages -- and the editor column

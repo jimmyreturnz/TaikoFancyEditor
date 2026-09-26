@@ -248,6 +248,7 @@ def install_beside(release: ReleaseInfo, progress=None, opener=urllib.request.ur
 
 from PySide6.QtCore import QThread, QUrl, Qt, Signal  # noqa: E402
 from PySide6.QtGui import QDesktopServices  # noqa: E402
+from smooth_scroll import smooth  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QApplication,
     QDialog,
@@ -326,6 +327,7 @@ class UpdateDialog(QDialog):
 
         notes = QTextEdit()
         notes.setReadOnly(True)
+        smooth(notes)
         notes.setPlainText(release.notes or tr("MainWindow", "No release notes were published."))
         layout.addWidget(notes, 1)
 

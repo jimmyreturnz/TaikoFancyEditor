@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
 )
 
 import osu_db
+from smooth_scroll import SMOOTH_SCROLL_MS, SmoothScroller, reduced_motion, smooth
 from audio_engine import DEFAULT_HITSOUND_OFFSET_MS, WHEEL_SEEK_HOLD_MS, TrackPlayer
 from skin import TaikoSkin, skins_root
 from parameters import PARAMETERS
@@ -6198,8 +6199,11 @@ class EditorViewFrame(QWidget):
         self.kind_label = QLabel("" if compact else view_type_caption(view_type).upper())
         self.kind_label.setStyleSheet(
             "color: #7d8794; font-size: 10px; font-weight: 700; border: 0; background: transparent;")
-        self.kind_label.setVisible(bool(self.kind_label.text()))
         header.addWidget(self.kind_label)
+        # Hidden once parented, never shown here: setVisible(True) on a label
+        # with no parent yet makes it a top-level window of its own, which
+        # flashed on screen and hung test_gimmick_editor's setUp.
+        self.kind_label.setHidden(not self.kind_label.text())
 
         # Wrapped, not elided: two lines fit in the shortest view, and
         # "The Pharaoh's C..." cut off the part that told two apart.
@@ -6393,6 +6397,7 @@ class AddViewDialog(QDialog):
         self._check_default(str(current) if current is not None else None)
         self._size_difficulty_list()
         self.difficulty_list.itemChanged.connect(self._difficulty_checked)
+        smooth(self.difficulty_list)
 
         self.all_difficulties_check = QCheckBox(
             tr("MainWindow", "All taiko difficulties"))
@@ -8812,12 +8817,6 @@ def star_text_colour(stars: float | None) -> QColor:
     return _sample_spectrum(STAR_TEXT_SPECTRUM, stars)
 
 
-def reduced_motion() -> bool:
-    """Windows' "Animation effects" switch, as Qt reports it. Off under the
-    offscreen platform, which keeps the tests free of running animations."""
-    return not QApplication.isEffectEnabled(Qt.UI_General)
-
-
 def format_length(ms: int) -> str:
     seconds = max(0, int(ms)) // 1000
     return f"{seconds // 60}:{seconds % 60:02d}"
@@ -8888,67 +8887,6 @@ ROW_HOVER, ROW_PINK_ON = "#2a3341", "#ff66aa"
 # takes the rest of the height.
 DIFFICULTY_SLOTS, DIFFICULTY_ROW_HEIGHT = 8, 48
 # The song list's wheel and arrow scrolling glide over this long.
-SMOOTH_SCROLL_MS = 200
-
-
-class SmoothScroller(QObject):
-    """Eases `view`'s vertical scroll to where the wheel or the selection
-    asks for, instead of jumping there. Scrolls per pixel, so a glide has
-    positions between rows to pass through. Instant under reduced motion.
-
-    The view's own autoScroll is switched off -- it is what jumps to the
-    current item -- and `follow_current` does that job here, eased.
-    """
-
-    WHEEL_ROWS = 3  # Windows' default lines per notch
-
-    def __init__(self, view: QAbstractItemView) -> None:
-        super().__init__(view)
-        self.view = view
-        view.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
-        view.setAutoScroll(False)
-        self.bar = view.verticalScrollBar()
-        self.animation = QPropertyAnimation(self.bar, b"value", self)
-        self.animation.setEasingCurve(QEasingCurve.OutCubic)
-        self.target = self.bar.value()
-        view.viewport().installEventFilter(self)
-        view.selectionModel().currentChanged.connect(lambda current, _previous: self.follow_current(current))
-
-    def glide_to(self, value: int) -> None:
-        value = max(self.bar.minimum(), min(self.bar.maximum(), int(value)))
-        self.target = value
-        self.animation.stop()
-        if reduced_motion():
-            self.bar.setValue(value)
-            return
-        self.animation.setDuration(SMOOTH_SCROLL_MS)
-        self.animation.setStartValue(self.bar.value())
-        self.animation.setEndValue(value)
-        self.animation.start()
-
-    def follow_current(self, index) -> None:
-        if not index.isValid():
-            return
-        rect = self.view.visualRect(index)
-        height = self.view.viewport().height()
-        # From where the glide is heading, so rows passed mid-glide count.
-        base = self.target if self.animation.state() == QPropertyAnimation.Running else self.bar.value()
-        top = rect.top() + self.bar.value() - base
-        if top < 0:
-            self.glide_to(base + top)
-        elif top + rect.height() > height:
-            self.glide_to(base + top + rect.height() - height)
-
-    def eventFilter(self, watched, event) -> bool:
-        if event.type() != QEvent.Wheel or event.modifiers() != Qt.NoModifier:
-            return False
-        notches = event.angleDelta().y() / 120
-        if not notches:
-            return False
-        row = self.view.sizeHintForRow(0) if self.view.model().rowCount() else 40
-        base = self.target if self.animation.state() == QPropertyAnimation.Running else self.bar.value()
-        self.glide_to(base - notches * self.WHEEL_ROWS * max(20, row))
-        return True
 
 
 # The song preview: how long the selection has to rest before it starts (so
@@ -9474,6 +9412,8 @@ class LibraryPageController:
         self.difficulty_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.difficulty_list.itemActivated.connect(lambda _item: self.open_selected_difficulty())
         self.difficulty_list.currentItemChanged.connect(lambda *_: self.difficulty_changed())
+        # Eased like the song list: every vertical scroll in the program is.
+        self.difficulty_scroller = SmoothScroller(self.difficulty_list)
         # Room for DIFFICULTY_SLOTS rows and no more: a set is 5-7
         # difficulties at most, and every pixel past that is the banner's.
         # A bigger set scrolls.
@@ -9939,9 +9879,38 @@ class LibraryPageController:
             entry_item.setToolTip(tip)
             self.difficulty_list.addItem(entry_item)
         first = difficulties[0]
+        artist = first.display_artist(original)
+        # The song's words and beat; the art is the selected difficulty's
+        # (see _show_banner_art), set once difficulty_changed below runs.
+        self._banner_song = (
+            first.display_title(original),
+            " · ".join(part for part in (artist, tr("MainWindow", "mapped by {name}").format(name=first.creator)
+                                         if first.creator else "") if part),
+            first.bpm_max if first.bpm_min == first.bpm_max else first.bpm_min,
+        )
+        self._banner_art_key = None
+        self._shown_difficulties = {str(d.path): d for d in difficulties}
+        if self.difficulty_list.count():
+            self.difficulty_list.setCurrentRow(0)
+        self.difficulty_changed()
+        if self._banner_art_key is None:
+            self._show_banner_art(first)
+
+    def _show_banner_art(self, difficulty) -> None:
+        """The banner shows the selected difficulty's own background.
+
+        Like its audio: a folder can hold several songs, or one song with a
+        background per difficulty, and the first difficulty's art headed all
+        of them. Reloaded -- and crossfaded -- only when the file changes, so
+        moving between difficulties that share one does nothing visible.
+        """
+        key = (difficulty.folder, difficulty.background)
+        if key == self._banner_art_key:
+            return
+        self._banner_art_key = key
         art = None
-        if first.background:
-            reader = QImageReader(str(folder / first.background))
+        if difficulty.background:
+            reader = QImageReader(str(difficulty.folder / difficulty.background))
             reader.setAutoTransform(True)
             # Decoded no larger than the pane needs: a 4K background at full
             # size costs a visible pause on every selection.
@@ -9950,17 +9919,8 @@ class LibraryPageController:
                 reader.setScaledSize(size.scaled(1280, 1280, Qt.KeepAspectRatio))
             image = reader.read()
             art = QPixmap.fromImage(image) if not image.isNull() else None
-        artist = first.display_artist(original)
-        self.song_banner.set_song(
-            first.display_title(original),
-            " · ".join(part for part in (artist, tr("MainWindow", "mapped by {name}").format(name=first.creator)
-                                         if first.creator else "") if part),
-            art, first.bpm_max if first.bpm_min == first.bpm_max else first.bpm_min,
-        )
-        self._shown_difficulties = {str(d.path): d for d in difficulties}
-        if self.difficulty_list.count():
-            self.difficulty_list.setCurrentRow(0)
-        self.difficulty_changed()
+        title, subtitle, bpm = self._banner_song
+        self.song_banner.set_song(title, subtitle, art, bpm)
 
     def difficulty_changed(self) -> None:
         """The preview follows the *difficulty*: one folder can hold several
@@ -9971,6 +9931,7 @@ class LibraryPageController:
         difficulty = item and getattr(self, "_shown_difficulties", {}).get(item.data(Qt.UserRole))
         if difficulty is not None:
             self.schedule_preview(difficulty)
+            self._show_banner_art(difficulty)
 
     # -- song preview -----------------------------------------------------
 
@@ -11527,6 +11488,7 @@ class MainWindow(QMainWindow):
         transform_scroll.setWidgetResizable(True)
         transform_scroll.setFrameShape(QFrame.NoFrame)
         transform_scroll.setWidget(right)
+        smooth(transform_scroll)
         self.fancy_transform_dock = QDockWidget(tr("MainWindow", "Transform"), docks)
         self.fancy_transform_dock.setObjectName("fancy_transform_dock")
         self.fancy_transform_dock.setWidget(transform_scroll)
@@ -12082,6 +12044,7 @@ class MainWindow(QMainWindow):
         self.editor_views_layout.setSpacing(10)
         self.editor_views_layout.addStretch(1)
         scroll.setWidget(views_container)
+        smooth(scroll)
         layout.addWidget(scroll, 1)
         layout.addWidget(add_view_row(self._open_add_view_dialog))
 
@@ -12179,6 +12142,7 @@ class MainWindow(QMainWindow):
         self.gimmick_views_layout.setSpacing(10)
         self.gimmick_views_layout.addStretch(1)
         scroll.setWidget(views_container)
+        smooth(scroll)
         layout.addWidget(scroll, 1)
         # Adds to the layer stack rather than to a difficulty group: the
         # gimmick page edits one difficulty, so there is one place it can go.
@@ -16913,6 +16877,7 @@ class MainWindow(QMainWindow):
         form_widget = QWidget()
         form = QFormLayout(form_widget)
         scroll.setWidget(form_widget)
+        smooth(scroll)
 
         layout.addWidget(combo)
         layout.addWidget(scroll, 1)

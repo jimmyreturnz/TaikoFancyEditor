@@ -237,6 +237,27 @@ class PageTests(unittest.TestCase):
             queued[self.window.difficulty_list.item(index).text()] = self.window._library._preview_pending[0].name
         self.assertEqual(queued, {"Oni": "audio.mp3", "Zzz": "other.mp3"})
 
+    def test_the_banner_follows_the_difficultys_own_background(self):
+        """Same folder, a background per difficulty: the art is the selected
+        one's, and moving between two that share one reloads nothing."""
+        folder = Path(self.window.song_list.item(0).data(Qt.UserRole))
+        first = next(folder.glob("*.osu"))
+        (folder / "other.osu").write_bytes(first.read_bytes()
+                                            .replace(b'0,0,"bg.jpg"', b'0,0,"other.jpg"')
+                                            .replace(b"Version:Oni", b"Version:Zzz"))
+        self.window._start_scan()
+        while self.window._scan_iterator is not None:
+            self.window._scan_step()
+        row = next(i for i in range(self.window.song_list.count())
+                   if self.window.song_list.item(i).data(Qt.UserRole) == str(folder))
+        library = self.window._library
+        library.song_selected(row)
+        shown = {}
+        for index in range(self.window.difficulty_list.count()):
+            self.window.difficulty_list.setCurrentRow(index)
+            shown[self.window.difficulty_list.item(index).text()] = library._banner_art_key[1]
+        self.assertEqual(shown, {"Oni": "bg.jpg", "Zzz": "other.jpg"})
+
     def _write_db(self, db: Path, song: Path, md5: str) -> Path:
         db.write_bytes(_osu_db(osu_db.FLOAT_STARS_VERSION, [(song.parent.name, song.name, md5, 4.5)]))
         return db
