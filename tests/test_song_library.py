@@ -265,6 +265,28 @@ class LibraryPageTests(unittest.TestCase):
         while self.window._scan_iterator is not None:
             self.window._scan_step()
 
+    def test_a_volume_change_reaches_a_preview_already_playing(self):
+        """The preview read the music volume only as it started, so the
+        Settings slider was not heard until the song was selected again."""
+        from PySide6.QtCore import QVariantAnimation
+        from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
+
+        library = self.window._library
+        library.preview_player = QMediaPlayer(self.window)
+        library.preview_player.setAudioOutput(QAudioOutput(library.preview_player))
+        library.preview_fade = QVariantAnimation(library.preview_player)
+        library._preview_loading = False
+        self.window._set_volumes(40, 70)
+        self.assertAlmostEqual(library.preview_player.audioOutput().volume(), 0.4, places=3)
+        # Mid-fade, the fade is retargeted rather than overwritten next step.
+        library.preview_fade.setDuration(10_000)
+        library.preview_fade.setStartValue(0.0)
+        library.preview_fade.setEndValue(0.4)
+        library.preview_fade.start()
+        self.window._set_volumes(90, 70)
+        self.assertAlmostEqual(library.preview_fade.endValue(), 0.9)
+        library.preview_fade.stop()
+
     def test_scan_fills_the_song_list_and_the_difficulty_list(self):
         self.run_scan()
         self.assertEqual(self.window.song_list.count(), 1)
@@ -492,6 +514,8 @@ class LibraryPageTests(unittest.TestCase):
             def setPosition(self, ms): positions.append(ms)
             def play(self): pass
             def duration(self): return 10000
+            def setPitchCompensation(self, on): pass
+            def setPlaybackRate(self, rate): pass
 
         class Fade:
             def __getattr__(self, name): return lambda *args: None

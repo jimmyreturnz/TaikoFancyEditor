@@ -10658,8 +10658,10 @@ class LibraryPageController:
         flash would step with it. Re-anchored when the two drift apart by more
         than a frame or two -- a seek, the loop back to the preview point.
         """
-        now = self._beat_anchor_ms + self._beat_elapsed.elapsed()
         player = self.preview_player
+        # Wall time runs at 1x; the song runs at the rate mod's rate.
+        rate = player.playbackRate() if player is not None else 1.0
+        now = self._beat_anchor_ms + self._beat_elapsed.elapsed() * rate
         if (player is not None and self._preview_audio == self._beat_audio
                 and player.playbackState() == QMediaPlayer.PlayingState):
             position = float(player.position())
@@ -10772,12 +10774,36 @@ class LibraryPageController:
         if self._resume_ms is not None:
             start, self._resume_ms = self._resume_ms, None
         player.setPosition(max(0, start))
+        self.apply_preview_rate()
         player.play()
         volume = self.window.settings.int_value("audio/music_volume", 65) / 100.0
         self.preview_fade.stop()
         self.preview_fade.setStartValue(0.0)
         self.preview_fade.setEndValue(volume)
         self.preview_fade.start()
+
+    def apply_preview_rate(self) -> None:
+        """The rate mod reaches song select's preview too, as it does in
+        osu!. The speed buttons do not: they are an editing aid, not a mod."""
+        if self.preview_player is None:
+            return
+        mod = self.window._rate_mod()
+        rate, pitch = RATE_MODS[mod] if mod else (1.0, False)
+        # NC/DC resample (pitch follows); DT/HT keep the pitch.
+        self.preview_player.setPitchCompensation(not pitch)
+        self.preview_player.setPlaybackRate(rate)
+
+    def set_preview_volume(self, volume: float) -> None:
+        """Reach a preview already playing. `_play_preview` reads the setting
+        only as each loop starts, so a Settings change was not heard until the
+        song was selected again. Mid-fade, retarget the fade instead: set
+        directly, the next fade step would overwrite it."""
+        if self.preview_player is None or self._preview_loading:
+            return
+        if self.preview_fade.state() == QVariantAnimation.Running:
+            self.preview_fade.setEndValue(volume)
+        else:
+            self.preview_player.audioOutput().setVolume(volume)
 
     def stop_preview(self) -> None:
         self.preview_timer.stop()
@@ -11707,17 +11733,24 @@ class MainWindow(QMainWindow):
         than reacting to accept/reject and costs nothing: a rejected dialog
         wrote nothing, so this reads back exactly what was already in force.
         """
-        self.player.setVolume(self.settings.int_value("audio/music_volume", 65) / 100.0)
+        self._set_volumes(self.settings.int_value("audio/music_volume", 65),
+                          self.settings.int_value("audio/hitsound_volume", 70))
         self.hitsounds.enabled = self.settings.bool_value("audio/hitsounds_enabled", True)
         self.hitsounds.offset_ms = self.settings.int_value(
             "audio/hitsound_offset_ms", DEFAULT_HITSOUND_OFFSET_MS)
-        self.hitsounds.set_volume(self.settings.int_value("audio/hitsound_volume", 70) / 100.0)
         # Deliberately not defaulted to anything but zero. The lag between the
         # position the backend reports and the sound reaching the speakers is a
         # property of this machine's device and drivers, so the only honest
         # shipped value is "none", with the user free to dial in their own.
         self.audio_output_offset_ms = self.settings.int_value("audio/output_offset_ms", 0)
         self._apply_appearance_settings()
+
+    def _set_volumes(self, music_percent: int, hitsound_percent: int) -> None:
+        """Every player a volume slider governs: the editor's song, its
+        hitsounds, and song select's preview, which is a separate player."""
+        self.player.setVolume(music_percent / 100.0)
+        self.hitsounds.set_volume(hitsound_percent / 100.0)
+        self._library.set_preview_volume(music_percent / 100.0)
 
     def _register_chart_view(self, view) -> None:
         """Take a chart view into the playhead broadcast, skin and all.
@@ -11788,6 +11821,12 @@ class MainWindow(QMainWindow):
         dialog = SettingsDialog(self.settings, self.shortcuts, self)
         # Applied from here because settings_dialog cannot import gui -- gui
         # imports it. Same route ImageTraceDialog's spin boxes take.
+        # The volume sliders are heard while they move; nothing is written
+        # until OK, and the re-apply below puts a cancelled change back.
+        def live_volumes(_value=None):
+            self._set_volumes(dialog.music_volume.value(), dialog.hitsound_volume.value())
+        dialog.music_volume.valueChanged.connect(live_volumes)
+        dialog.hitsound_volume.valueChanged.connect(live_volumes)
         dialog.exec()
         self._apply_audio_settings()
 
@@ -12258,14 +12297,14 @@ class MainWindow(QMainWindow):
         mode_row.addWidget(segmented(list(self.mode_buttons.values())))
         self.mode_combo.currentIndexChanged.connect(self._sync_mode_buttons)
         self._sync_mode_buttons()
-        # Beside the mode, and only in Split: it is what Split is for.
+        # Beside the Don/Kat pills, and only in Split: it is what Split is for.
+        # On the mode row it pushed the row wider than the dock and overlapped.
         self.swap_don_kat_button = QPushButton(tr("MainWindow", "Swap Don ↔ Kat"))
         self.swap_don_kat_button.setVisible(False)
         self.swap_don_kat_button.setProperty("role", "ghost")
         self.swap_don_kat_button.setStyleSheet("QPushButton { border: 1px solid #3a4554; }")
         self.swap_don_kat_button.setToolTip(tr("MainWindow", "Swap transformation, parameters, and position between Don and Kat"))
         self.swap_don_kat_button.clicked.connect(self._swap_don_kat_transformations)
-        mode_row.addWidget(self.swap_don_kat_button)
         mode_row.addStretch(1)
         right_layout.addLayout(mode_row)
 
@@ -12279,6 +12318,10 @@ class MainWindow(QMainWindow):
         self.split_side_pills = segmented(self.split_side_buttons)
         side_row = QHBoxLayout()
         side_row.addWidget(self.split_side_pills)
+        # The pill group's height, so the two read as one row of buttons
+        # rather than a short ghost button beside a taller pill.
+        self.swap_don_kat_button.setFixedHeight(self.split_side_pills.sizeHint().height())
+        side_row.addWidget(self.swap_don_kat_button)
         side_row.addStretch(1)
         right_layout.addLayout(side_row)
 
@@ -18516,6 +18559,7 @@ class MainWindow(QMainWindow):
         if self._rate_mod():
             self._mods = frozenset(mod for mod in self._mods if mod not in RATE_MODS)
             self._store_mods()
+            self._library.apply_preview_rate()
         self.player.set_pitch_shift(False)
         self._change_playback_speed(rate)
 
@@ -18542,6 +18586,7 @@ class MainWindow(QMainWindow):
             # Pitch first: the engine reads both on its next grain, in order.
             self.player.set_pitch_shift(pitch)
             self._change_playback_speed(rate)
+            self._library.apply_preview_rate()
         for view in self._gameplay_views:
             view.set_mods(self._mods)
         self._sync_mod_controls()
