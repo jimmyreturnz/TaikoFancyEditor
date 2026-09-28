@@ -22,14 +22,10 @@ The editor does not support editing storyboards, breaks, colours, editor bookmar
 The main inspirations include Alchyr's ranked maps *13 Stairs* and *Helios*, which use unusual note placement to create visual expression. You should go check it out [here!](https://osu.ppy.sh/beatmapsets/1093671#taiko/3819326)
 
 ## Credits
-- Alchyr's TaikoEditor
+- [Alchyr's TaikoEditor](https://github.com/Alchyr/TaikoEditor)
 - {Mew, _gt, Alchyr}'s maps for study reference, thank you so much!
 
 ---
-
-## Screenshots
-
-Charting shots on Ph0eNiiXZ's Tanchiky vs. siromaru - Crystal Gravity, the gimmick editor on Hyper Bass (RENKA chan Drop) [Drop the GIMMICK].
 
 **Song select**: star ratings from your osu!.db, now with background and song preview!
 
