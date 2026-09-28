@@ -31,15 +31,15 @@ The main inspirations include Alchyr's ranked maps *13 Stairs* and *Helios*, whi
 
 Charting shots on Ph0eNiiXZ's Tanchiky vs. siromaru - Crystal Gravity, the gimmick editor on Hyper Bass (RENKA chan Drop) [Drop the GIMMICK].
 
-**Song select**: star ratings from your osu!.db, each difficulty's own background and preview.
+**Song select**: star ratings from your osu!.db, now with background and song preview!
 
 ![Song select](docs/screenshots/song-select.png)
 
-**Editor**: every difficulty of the song open at once, Kantan to Dimensional Distortion, on one timeline.
+**Editor**: You may edit multiple difficulties at once, copypasting from one to another is possible here too.
 
 ![Editor](docs/screenshots/editor.png)
 
-**Gameplay preview**: one difficulty's chart and SV, with the preview drawn the way osu! shows it.
+**Gameplay preview**: updated to match osu playfield size.
 
 ![Gameplay preview](docs/screenshots/gameplay-preview.png)
 
@@ -47,11 +47,11 @@ Charting shots on Ph0eNiiXZ's Tanchiky vs. siromaru - Crystal Gravity, the gimmi
 
 ![Gimmick editor](docs/screenshots/gimmick-editor.png)
 
-**Fancy Arranger**: selected notes previewed as a star over the map's background, at osu!'s playfield proportions.
+**Fancy Arranger**: transform notes into shape, text, or image.
 
 ![Fancy Arranger](docs/screenshots/fancy-arranger.png)
 
-**Config sheets**: settings grouped by tool, with a side panel that explains each field and draws what it writes.
+**Config sheets**: Improved the UI of the sheet and makes them more intuitive
 
 | | |
 |---|---|
