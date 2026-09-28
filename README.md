@@ -1,4 +1,4 @@
-# Taiko Fancy Arranger
+# TaikoFancyEditor
 
 If you want to ask on how to use it, suggest ideas, or report bugs, my osu name is [jimmyreturnz](https://osu.ppy.sh/users/11306153)\
 my discord is also jimmyreturnz, thanks in advance!
