@@ -4,7 +4,7 @@ If you want to ask on how to use it, suggest ideas, or report bugs, my osu name 
 my discord is also jimmyreturnz, thanks in advance!
 
 使い方の質問やアイデアの提案などがあれば僕のosu!ネームはjimmyreturnzです
-Discordもjimmyreturnzです
+Discordもjimmyreturnzです\
 よろしくお願いします！
 
 **An osu!taiko editor with a visual pattern arranger built in, now with gimmick editor**
