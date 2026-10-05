@@ -1653,6 +1653,14 @@ Every beatmap in it is checked once for taiko difficulties, and the result is re
             <translation>すべて再スキャン</translation>
         </message>
         <message>
+            <source>Reload this beatmap</source>
+            <translation>このビートマップを再読み込み</translation>
+        </message>
+        <message>
+            <source>Read the selected song's files again, and nothing else</source>
+            <translation>選択中の曲のファイルだけを読み直します</translation>
+        </message>
+        <message>
             <source>Songs folder</source>
             <translation>Songs フォルダー</translation>
         </message>
@@ -2405,8 +2413,8 @@ Every beatmap in it is checked once for taiko difficulties, and the result is re
             <translation>後で</translation>
         </message>
         <message>
-            <source>Download Update</source>
-            <translation>更新をダウンロード</translation>
+            <source>Update and Restart</source>
+            <translation>更新して再起動</translation>
         </message>
         <message>
             <source>Update failed</source>
@@ -2417,18 +2425,8 @@ Every beatmap in it is checked once for taiko difficulties, and the result is re
             <translation>更新をインストールできませんでした。現在のコピーは変更されていません。</translation>
         </message>
         <message>
-            <source>Update downloaded</source>
-            <translation>更新をダウンロードしました</translation>
-        </message>
-        <message>
-            <source>The new version was extracted to:
-{0}
-
-Close Taiko Fancy Arranger and start TaikoFancyArranger.exe from that folder. Your current copy was left untouched.</source>
-            <translation>新しいバージョンを次の場所に展開しました:
-{0}
-
-Taiko Fancy Arranger を閉じて、そのフォルダーの TaikoFancyArranger.exe を起動してください。現在のコピーはそのまま残されています。</translation>
+            <source>Running from source: update with git pull, or get the build from the release page.</source>
+            <translation>ソースから実行中です: git pull で更新するか、リリースページからビルドを入手してください。</translation>
         </message>
         <message>
             <source>Check for updates</source>
@@ -2441,6 +2439,22 @@ Taiko Fancy Arranger を閉じて、そのフォルダーの TaikoFancyArranger.
         <message>
             <source>Could not reach GitHub to check for updates. Please try again later.</source>
             <translation>GitHub に接続できなかったため、更新を確認できませんでした。しばらくしてからもう一度お試しください。</translation>
+        </message>
+        <message>
+            <source>Previous song</source>
+            <translation>前の曲</translation>
+        </message>
+        <message>
+            <source>Play or pause the preview</source>
+            <translation>プレビューを再生 / 一時停止</translation>
+        </message>
+        <message>
+            <source>Stop the preview and go back to its start</source>
+            <translation>プレビューを停止して最初に戻る</translation>
+        </message>
+        <message>
+            <source>Next song</source>
+            <translation>次の曲</translation>
         </message>
     </context>
     <context>
@@ -3199,6 +3213,30 @@ Taiko Fancy Arranger を閉じて、そのフォルダーの TaikoFancyArranger.
         <message>
             <source>Check for updates now</source>
             <translation>今すぐ更新を確認</translation>
+        </message>
+        <message>
+            <source>Editor background</source>
+            <translation>エディターの背景</translation>
+        </message>
+        <message>
+            <source>Background opacity</source>
+            <translation>背景の不透明度</translation>
+        </message>
+        <message>
+            <source>How strongly the map's own background shows behind the Editor and Gimmick pages. 0% leaves them plain.</source>
+            <translation>エディターとギミックのページの後ろに、譜面の背景をどれだけ濃く表示するか。0% で無地になります。</translation>
+        </message>
+        <message>
+            <source>Fancy Arranger</source>
+            <translation>Fancy Arranger</translation>
+        </message>
+        <message>
+            <source>Animate transforms</source>
+            <translation>変形をアニメーション</translation>
+        </message>
+        <message>
+            <source>Notes glide to their new places when a transform changes. Off jumps straight there, which is lighter on a dense map.</source>
+            <translation>変形を変えたとき、ノーツが新しい位置へ滑らかに移動します。オフにするとすぐに移動し、密度の高い譜面で軽くなります。</translation>
         </message>
     </context>
     <context>

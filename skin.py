@@ -362,7 +362,13 @@ class TaikoSkin:
                 self._tinted[tint_key] = source
         # Height is the bound: the lane height decides how big a note is, and
         # a skinner may draw a non-square element (taiko-roll-end is 64x128).
-        result = source.scaledToHeight(diameter, Qt.SmoothTransformation)
+        # The width is floored at one pixel rather than left to scaledToHeight,
+        # which rounds it: `taiko-roll-middle` is a 1px (2px at @2x) column, so
+        # at any note under 128px tall its width came out 0, the pixmap came
+        # back null, and every real drumroll lost its whole track -- head and
+        # cap with nothing between them. Callers stretch it to length anyway.
+        width = max(1, round(source.width() * diameter / max(1, source.height())))
+        result = source.scaled(width, diameter, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
         # ponytail: unbounded cache, but it is keyed on a handful of diameters
         # and three colours, and every entry is one the view is actively using.
         self._scaled[key] = result

@@ -303,6 +303,24 @@ class LibraryPageTests(unittest.TestCase):
         self.window.library_search.setText("nothing here")
         self.assertEqual(self.window.song_list.count(), 0)
 
+    def test_reload_this_song_rereads_only_the_selected_folder(self):
+        """An edit that keeps size and mtime is invisible to Quick scan;
+        reloading the song reads it anyway, and leaves the others' index alone."""
+        other = make_song(self.root, "Other - Second Song")
+        self.run_scan()
+        row = next(i for i in range(self.window.song_list.count())
+                   if "Test Song" in (self.window.song_list.item(i).data(Qt.UserRole) or ""))
+        self.window.song_list.setCurrentRow(row)
+        stat = self.song.stat()
+        self.song.write_bytes(self.song.read_bytes().replace(b"Version:Oni", b"Version:Ura"))
+        os.utime(self.song, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+
+        self.window._library.reload_current_song()
+
+        self.assertEqual(self.window.difficulty_list.item(0).text(), "Ura")
+        self.assertIn(str(other), self.window._library_cache)
+        self.assertIn(str(self.song), load_cache(self.root / "index.json"))
+
     def test_song_row_shows_the_mapper(self):
         self.run_scan()
         self.assertIn("jimmyreturnz", self.window.song_list.item(0).text())

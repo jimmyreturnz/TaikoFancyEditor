@@ -163,6 +163,19 @@ class TaikoSkinTests(unittest.TestCase):
         loaded = skin.TaikoSkin(self.folder)
         self.assertEqual(loaded.scaled("taikohitcircle", 80, QColor("red")).height(), 80)
 
+    def test_a_one_pixel_track_survives_scaling_down_to_a_note(self):
+        """`taiko-roll-middle` is a 1px column (2px at @2x). Scaled to a 44px
+        note by aspect it was 0.34px wide, which Qt returns as a null pixmap,
+        and every real drumroll in the editor lost its whole track."""
+        track = QImage(2, 256, QImage.Format_ARGB32)
+        track.fill(QColor("white"))
+        track.save(str(self.folder / "taiko-roll-middle.png"))
+        loaded = skin.TaikoSkin(self.folder)
+        for diameter in (30, 44, 62):
+            scaled = loaded.scaled("taiko-roll-middle", diameter, QColor("yellow"))
+            self.assertFalse(scaled.isNull(), diameter)
+            self.assertEqual((scaled.width(), scaled.height()), (1, diameter))
+
     def test_the_same_request_twice_is_the_same_cached_pixmap(self):
         """Rescaling a 256x256 source for every note on every frame is the kind
         of per-frame work that redoes static work."""

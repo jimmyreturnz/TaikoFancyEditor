@@ -974,7 +974,7 @@ def _square(p):
 
 def _triangle(p):
     r = _pos_float(p, "radius", 160)
-    return _place([(r * math.cos(-math.pi / 2 + 2 * math.pi * i / 3), r * math.sin(-math.pi / 2 + 2 * math.pi * i / 3)) for i in range(3)], p), True
+    return _place(_box_centred([(r * math.cos(-math.pi / 2 + 2 * math.pi * i / 3), r * math.sin(-math.pi / 2 + 2 * math.pi * i / 3)) for i in range(3)]), p), True
 
 
 def _diamond(p):
@@ -993,7 +993,7 @@ def _star(p):
     for i in range(count * 2):
         angle, radius = -math.pi / 2 + i * math.pi / count, outer if i % 2 == 0 else inner
         vertices.append((radius * math.cos(angle), radius * math.sin(angle)))
-    return _place(vertices, p), True
+    return _place(_box_centred(vertices), p), True
 
 
 def _spiral(p):
@@ -1073,6 +1073,21 @@ def _random_walk(p, seed):
 def _parametric(p, function, start=0.0, end=2 * math.pi):
     n = _samples(p)
     return _place([function(start + (end - start) * i / (n - 1)) for i in range(n)], p)
+
+
+def _box_centred(points):
+    """`points` shifted so their bounding box is centred on the origin.
+
+    A triangle or star drawn on its circumcircle with a point straight up is
+    centred on that circle, not on itself: the triangle's apex reached 160 above
+    the centre and its base only 80 below, so a default triangle sat 40
+    osu!pixels high of the Center it was given. The centre a mapper places is
+    the middle of the shape they see, so that is what it now means.
+    """
+    xs = [x for x, _ in points]
+    ys = [y for _, y in points]
+    mid_x, mid_y = (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2
+    return [(x - mid_x, y - mid_y) for x, y in points]
 
 
 def _place(points, p):

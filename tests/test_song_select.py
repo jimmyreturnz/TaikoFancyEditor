@@ -318,6 +318,57 @@ class PageTests(unittest.TestCase):
         self.window._library.rebuild_song_list()
         self.assertEqual(played, [])
 
+    def _current_folder(self):
+        return self.window.song_list.currentItem().data(Qt.UserRole)
+
+    def test_the_player_order_is_fixed_for_the_session(self):
+        library = self.window._library
+        first = list(library.song_order())
+        self.assertEqual(sorted(first), sorted(library.library_songs))
+        self.assertEqual(library.song_order(), first)
+        library.library_songs[self.root / "Late - Addition"] = [object()]
+        self.assertEqual(library.song_order()[:-1], first, "a late song joins the end; nothing moves")
+        self.assertEqual(library.song_order()[-1], self.root / "Late - Addition")
+
+    def test_next_selects_the_song_and_previous_comes_back(self):
+        library = self.window._library
+        library.song_order()
+        self.window.song_list.setCurrentRow(0)
+        start = self._current_folder()
+        library.step_song(1)
+        moved = self._current_folder()
+        self.assertNotEqual(moved, start)
+        self.assertEqual(Path(moved), library.song_order()[(library.song_order().index(Path(start)) + 1) % 2])
+        library.step_song(-1)
+        self.assertEqual(self._current_folder(), start)
+
+    def test_the_next_button_steps(self):
+        library = self.window._library
+        self.window.song_list.setCurrentRow(0)
+        start = self._current_folder()
+        library.player_buttons["next"].click()
+        self.assertNotEqual(self._current_folder(), start)
+
+    def test_space_toggles_the_preview_but_types_inside_a_query(self):
+        from PySide6.QtCore import QEvent, Qt
+        from PySide6.QtGui import QKeyEvent
+
+        library = self.window._library
+        toggles = []
+        library.toggle_preview = lambda: toggles.append(True)
+
+        def space(widget):
+            return library.keys.eventFilter(widget, QKeyEvent(QEvent.KeyPress, Qt.Key_Space, Qt.NoModifier, " "))
+
+        self.assertTrue(space(self.window.song_list))
+        self.assertTrue(space(library.library_search))
+        library.library_search.setText("yotsuya")
+        self.assertFalse(space(library.library_search))
+        self.assertEqual(len(toggles), 2)
+
+    def test_stop_with_nothing_playing_is_harmless(self):
+        self.window._library.rewind_preview()
+
     def _write_db(self, db: Path, song: Path, md5: str) -> Path:
         db.write_bytes(_osu_db(osu_db.FLOAT_STARS_VERSION, [(song.parent.name, song.name, md5, 4.5)]))
         return db

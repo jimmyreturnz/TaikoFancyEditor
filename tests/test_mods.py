@@ -94,16 +94,18 @@ class ModToggleTests(_Window):
         self.window._toggle_mod("HT")
         self.assertEqual(self.window.player.playbackRate(), 1.0)
 
-    def test_the_song_select_preview_takes_the_rate_mod(self):
+    def test_the_song_select_preview_ignores_the_rate_mod(self):
         library = self.window._library
         library.preview_player = gui.QMediaPlayer(self.window)
         preview = library.preview_player
-        self.window._toggle_mod("DT")
-        self.assertEqual((preview.playbackRate(), preview.pitchCompensation()), (1.5, True))
-        self.window._toggle_mod("DC")
-        self.assertEqual((preview.playbackRate(), preview.pitchCompensation()), (0.75, False))
-        self.window._choose_speed(0.5)
-        self.assertEqual(preview.playbackRate(), 1.0, "a speed button is not a mod")
+        library.preview_fade = gui.QVariantAnimation(self.window)
+        preview.setPlaybackRate(1.5)  # left over from some earlier state
+        for mod in ("NC", "DC", "DT", "HT"):
+            self.window._toggle_mod(mod)
+            library._resume_ms = 0  # as continue_song hands the editor's song back
+            library._play_preview()
+            self.assertEqual(preview.playbackRate(), 1.0, mod)
+        library.preview_fade.stop()
         library.preview_player = None  # no fade was made; closeEvent would reach for it
 
     def test_a_speed_button_replaces_the_rate_mod(self):

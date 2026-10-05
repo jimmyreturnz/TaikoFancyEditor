@@ -88,6 +88,15 @@ class WheelSeekTests(unittest.TestCase):
         # the nearest gridline to 100.0 lands at 162.162162...ms, rounded.
         self.assertEqual(result, 162.0)
 
+    def test_a_notch_stops_on_an_off_grid_red_line_both_ways(self) -> None:
+        points = [TimingPoint.uninherited_at(0, 120.0), TimingPoint.uninherited_at(1237, 120.0)]
+        # 1/4 at 120 BPM is 125ms: the old grid runs 1000, 1125, 1250...
+        self.assertEqual(wheel_seek_time(points, 1125.0, 1, 4), 1237.0)
+        self.assertEqual(wheel_seek_time(points, 1237.0, 1, 4), 1362.0)
+        self.assertEqual(wheel_seek_time(points, 1362.0, -1, 4), 1237.0)
+        # Back off the line lands on the *previous* section's grid.
+        self.assertEqual(wheel_seek_time(points, 1237.0, -1, 4), 1125.0)
+
 
 class BeatPulseWalkBackTests(unittest.TestCase):
     """A gimmick section's beat_length must not blank the flash for every
@@ -216,6 +225,42 @@ class GridTickTests(unittest.TestCase):
         view = self._view()
         placed = view.snap_ms(10000.0)
         self.assertIn(placed, self._drawn_tick_times(view))
+
+    def test_the_grid_restarts_on_an_off_grid_red_line(self):
+        """A red line placed between snaps to time a beat the grid missed: the
+        ticks after it follow *it*, whichever section the window opened in."""
+        view = gui.TimelineGameplay()
+        view.resize(1200, 180)
+        view.timing_points = [
+            TimingPoint.uninherited_at(0, 120.0),     # 500ms beat
+            TimingPoint.uninherited_at(1237, 120.0),  # same BPM, off every 1/4 snap
+        ]
+        view._timing_times = [point.time for point in view.timing_points]
+        view.snap_divisor = 1
+        view.window_ms = 2000.0
+        for centre in (1200.0, 1900.0, 2400.0):
+            view.current_time = centre
+            drawn = [t for t in self._drawn_tick_times(view) if t >= 1237]
+            self.assertTrue(drawn, f"no ticks after the red line at {centre}")
+            self.assertEqual([t for t in drawn if (t - 1237) % 500], [], f"at {centre}")
+            if centre - 1000 < 1237:
+                # The line's own downbeat, which the restart once stepped over.
+                self.assertEqual(drawn[0], 1237, f"at {centre}")
+
+    def test_the_grid_reaches_back_before_the_first_red_line(self):
+        """A map's first red line is rarely at 0 (Himeringo's Oni: 2629), and a
+        view opening before it drew nothing to its left -- the restart above
+        took the walk's very first section for a line it had just crossed."""
+        view = gui.TimelineGameplay()
+        view.resize(1200, 180)
+        view.timing_points = [TimingPoint.uninherited_at(2629, 120.0)]
+        view._timing_times = [point.time for point in view.timing_points]
+        view.snap_divisor = 1
+        view.window_ms = 4000.0
+        view.current_time = 2629.0
+        before = [t for t in self._drawn_tick_times(view) if t < 2629]
+        self.assertTrue(before, "no ticks before the first red line")
+        self.assertEqual([t for t in before if (2629 - t) % 500], [])
 
 
 class CursorReadoutTests(unittest.TestCase):

@@ -499,6 +499,30 @@ class SVEditorIntegrationTests(unittest.TestCase):
         # Dragging up the screen only ever raises SV -- never decreases.
         self.assertEqual(emitted, sorted(emitted))
 
+    def test_each_pixel_of_drag_is_one_hundredth(self):
+        """The axis is logarithmic, so mapping the cursor to it made a pixel
+        worth 0.03x at 1.0x and more above -- most 0.01 steps were unreachable.
+        The drag is relative to the press now: one pixel, one step."""
+        view = self._sv_view()
+        view.resize(800, 200)
+        view.window_ms = 4000.0
+        inherited = next(p for p in self.state.document.timing_points if not p.uninherited)
+        view.current_time = inherited.time
+        view.tool = "select"
+        start = round(inherited.sv_multiplier, 2)
+
+        x = view.x_for_time(inherited.time)
+        dot_y = view._sv_to_y(inherited.sv_multiplier, view._graph_top(), view._graph_bottom())
+        emitted = []
+        view.point_sv_edit_requested.connect(lambda uid, sv: emitted.append(sv))
+
+        _press(view, x, y=dot_y)
+        for step in (1, 2, 3, 2):
+            _move(view, x, y=dot_y - step)
+        _release(view, x, y=dot_y - 2)
+
+        self.assertEqual(emitted, [round(start + d, 2) for d in (0.01, 0.02, 0.03, 0.02)])
+
     def test_real_click_away_from_the_value_dot_retimes_instead(self):
         """A click on the same line but far from its dot is a horizontal
         (retime) drag, leaving SV untouched."""

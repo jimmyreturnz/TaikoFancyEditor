@@ -19,6 +19,22 @@ class TransformationTests(unittest.TestCase):
         positions=transform("vertical_taiko",indexes,params)
         self.assertTrue(all(0<=x<=512 and 0<=y<=384 for x,y in positions.values()))
 
+class ShapeCentreTests(unittest.TestCase):
+    """A shape sits on the Center it is given: its outline's middle, not the
+    middle of the circle its corners were drawn on. A default triangle's middle
+    was 40 osu!pixels above Center, a star's 16."""
+
+    def test_closed_shapes_are_centred_on_center(self):
+        import transformer
+        for name in ("triangle", "star", "square", "diamond"):
+            for center in ((256, 192), (100, 300)):
+                with self.subTest(shape=name, center=center):
+                    points = getattr(transformer, "_" + name)({"center_x": center[0], "center_y": center[1]})[0]
+                    xs = [x for x, _ in points]
+                    ys = [y for _, y in points]
+                    self.assertAlmostEqual((min(xs) + max(xs)) / 2, center[0], places=6)
+                    self.assertAlmostEqual((min(ys) + max(ys)) / 2, center[1], places=6)
+
 class WriterTests(unittest.TestCase):
     def test_writer_forces_ar_and_cs(self):
         with tempfile.TemporaryDirectory() as directory:

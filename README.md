@@ -15,7 +15,7 @@ Taiko Fancy Arranger started as a tool for turning osu!taiko notes into visual p
 
 The editor does not support editing storyboards, breaks, colours, editor bookmarks yet.
 
-> **Current release:** v3.4.1  
+> **Current release:** v3.4.2  
 > **Platform:** Windows x64  
 > **Author:** [jimmyreturnz](https://osu.ppy.sh/users/11306153)
 
@@ -56,6 +56,20 @@ The main inspirations include Alchyr's ranked maps *13 Stairs* and *Helios*, whi
 
 ---
 
+## What is new in 3.4.2
+
+The in-app updater, the map's background behind the editor, a music player on song select, and fixes from user reports.
+
+- **Updates install themselves**: **Update and Restart** puts the new version into the folder you run from and reopens. From 3.4.1, download 3.4.2 the old way once; see the release notes.
+- **The map's background behind the Editor and Gimmick pages**, with an opacity slider in Settings that updates as you drag.
+- **Right-click the empty space below the views** to add a view.
+- **A music player on song select** (previous, play / pause, stop, next), and **Space** to pause and resume.
+- **Song select's preview plays at 1.00x and the song's own pitch** whatever mod is selected.
+- **Fancy Arranger**: AR and CS are sliders again, CS starts at the map's own value, dragging a slider no longer clears the selection, the triangle and star are centred, and the glide can be turned off.
+- **Fixed**: skinned drumrolls missing their track, hitsounds dropped at DT, the wheel stepping over off-grid red lines.
+
+Full notes: [`docs/releases/v3.4.2.md`](docs/releases/v3.4.2.md).
+
 ## What is new in 3.4.0
 
 A redesign release: song select, the editor, the Fancy Arranger and every settings dialog were rebuilt, and the gameplay preview now shows what osu! shows.
@@ -82,7 +96,7 @@ Full development log detail lives in [`docs/DEVELOPMENT_PLAN.md`](docs/DEVELOPME
 
 ## Windows SmartScreen notice
 
-Taiko Fancy Arranger v3.4.1 is a currently unsigned Windows application. The release includes source-level security hardening, input validation, safer file handling, automated tests, and published SHA-256 checksums.
+Taiko Fancy Arranger v3.4.2 is a currently unsigned Windows application. The release includes source-level security hardening, input validation, safer file handling, automated tests, and published SHA-256 checksums.
 
 Windows Defender SmartScreen may still display an "unrecognized app" warning because the executable has not yet established download reputation.
 
@@ -112,7 +126,7 @@ TaikoFancyArranger-Windows-x64.zip
 TaikoFancyArranger.exe
 ```
 
-5. If update exists, upon opening the program, there will be a patch note alongside with an option to download the new version.
+5. That is the last time you download it by hand. When a new version is out, the app shows its patch notes on startup: click **Update and Restart** and it installs itself into the same folder and reopens. Your settings and shortcuts are kept. Keep the folder somewhere you can write to (not `Program Files`).
 Python and PySide6 are bundled with the portable Windows release. Players using the release ZIP do not need to install Python or run `pip`.
 
 > Windows may show a reputation warning for an unsigned new application. Review the repository and release files before running the program.
@@ -143,6 +157,10 @@ Controls:
 - **Group by** — nothing, mapper, or artist.
 - **Sort** — A→Z or Z→A, which reverses group order too.
 - **Original language metadata** — shows `ArtistUnicode`/`TitleUnicode` instead of the romanized fields, falling back to whichever the map actually has.
+- **Music player** — previous, play / pause, stop and next. Previous and next walk a shuffled song order that is fixed for the session, and select that song. **Space** pauses and resumes, except while typing a search.
+- **Songs folder menu** — Quick scan, Rescan everything, **Reload this beatmap** (`F5`, re-reads only the selected song) and Change folder.
+
+The preview plays at 1.00x and the song's own pitch whatever mod is selected; mods apply in the editor.
 
 Only taiko charts are listed.
 
@@ -152,7 +170,9 @@ There will be a rework on the song library soon, stay tuned!
 
 ## Editor page
 
-The Editor page stacks views vertically, grouped under their difficulty. Open one with **+** (view type + difficulty). Opening a difficulty automatically gives it a chart view and an SV view.
+The Editor page stacks views vertically, grouped under their difficulty. Open one with **+ Add view** (view type + difficulty), or right-click the empty space below the views. Opening a difficulty automatically gives it a chart view and an SV view.
+
+The map's own background shows faded behind the page. **Settings → Editor background → Background opacity** sets how strongly (0% leaves it plain), and changes while you drag it.
 
 Holding **Ctrl** places at 1ms precision regardless of the snap divisor, with a guide line and a live millisecond readout in the corner of every view.
 
@@ -200,8 +220,8 @@ With an SV view focused, the tool row becomes:
 - Click a green line to select it; drag vertically to change its SV, horizontally to retime it, snapped to the grid. Which axis you get depends on how close the click was to the value dot.
 - Deleting green lines will not remove Red lines
 - Double-clicking any timing line allows you to toggle kiai or the line's omit-barline flag.
+- Dragging vertically moves the SV one `0.01` step per pixel from where you pressed.
 - The graph shows **effective** SV — green over red where both exist — with a fixed 0.1x floor and an autoscaling ceiling. - to be changed to 0.01x
-Will fix vertical dragging increases SV by literally 8 decimal points later in the next update, it will be by 0.01 increment later.
 
 **Function mode:** drag a range, then choose initial rate, final rate, position offset, whether to omit the first barline, and whether the sweep is relative to the final BPM. Seven curves are offered as tiles, each drawing the sweep you actually typed:
 
@@ -417,12 +437,14 @@ Its controls include:
 2. Choose **All Notes** or **Split Don / Kat**, then a transformation.
 3. Adjust parameters, or drag the pattern directly inside the transformation view. In Split mode, dragging a Don moves the Don pattern and dragging a Kat moves the Kat pattern.
 4. Press **Transform selected notes** to commit it to the session. `Ctrl+Z` / `Ctrl+Y` still apply.
-5. Set **AR** and **CS** if needed — sliders from `0.00` to `10.00` in `0.01` steps, with a numeric field and pink `+` / `-` buttons (as on every spin box in the app now). `AR 0.00` is the slowest approach rate and `CS 0.00` the biggest circle size. Left alone, `ApproachRate:10` and `CircleSize:7` remain.
+5. Set **AR** and **CS** if needed — a slider and a number box each, from `0.00` to `10.00` in `0.01` steps. `AR 0.00` is the slowest approach rate and `CS 0.00` the biggest circle size. CS starts at the map's own value and sizes the circles in the transformation view as osu! does; AR starts at `10`.
 6. **Export applied map** writes a separate arranged difficulty. **Apply all changes to original file** overwrites the loaded `.osu`, after making a backup.
 
 The transformation pane is a preview. Nothing is written until you export or apply.
 
 The beatmap background is shown in the transformation view; its opacity is adjustable and another image can be dragged in to replace it.
+
+Notes glide to their new places when a transformation changes. **Settings → Fancy Arranger → Animate transforms** turns that off, which is lighter on a dense map.
 
 ---
 
@@ -490,7 +512,7 @@ Do not upload copyrighted audio or private beatmap assets unless permission has 
 
 ## Project status
 
-Version 3.4.1 is the current public release. The project focuses on creative single player editing, arrangement and previewing. Multiplayer and automatic difficulty calculation are outside the current scope.
+Version 3.4.2 is the current public release. The project focuses on creative single player editing, arrangement and previewing. Multiplayer and automatic difficulty calculation are outside the current scope.
 
 Not yet implemented, and next in line:
 

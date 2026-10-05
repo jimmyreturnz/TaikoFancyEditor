@@ -534,7 +534,8 @@ class HitsoundMixer:
         self._voiced_through = int(source_frame) - 1
 
     def mix(self, out: array.array, source_start: int, frames: int,
-            source_frames: int | None = None, rate: float = 1.0) -> None:
+            source_frames: int | None = None, rate: float = 1.0,
+            covers: tuple[int, int] | None = None) -> None:
         """Mix into `out`, which is `frames` frames of source from
         `source_start`.
 
@@ -568,6 +569,15 @@ class HitsoundMixer:
         falls inside roughly 1/rate of them -- four grains at 0.25x. Voicing it
         every time plays every note four times, 5ms apart, which is a flam and
         not a hit.
+
+        **`covers` is the source range the grain answers for**, when that is
+        wider than what it contains. At rate > 1 (DT) the read head advances
+        `sequence * rate` while a grain holds `sequence`, so the source between
+        grains is never in any output -- and neither were the notes in it, a
+        third of them at 1.5x. The search can also start a grain past the read
+        head at any rate. A note there has no music of its own to sit on, so
+        it goes on the nearest edge of this grain, which is the join its
+        skipped source collapsed into.
         """
         if self.music_gain != 1.0:
             # Before the notes, and over the music alone: that ordering is the
@@ -577,25 +587,25 @@ class HitsoundMixer:
             out[:] = scaled
         if self._voices:
             self._sound(out, frames)
+        begin = source_start
+        end = source_start + (frames if source_frames is None else source_frames)
+        if covers is not None:
+            begin, end = min(begin, covers[0]), max(end, covers[1])
         if not self.enabled or not self._samples:
             # Still advance: a note passed over while hitsounds are off has
             # been passed over, and turning them on mid-playback should start
             # from the playhead rather than replay the section behind it.
-            self._voiced_through = max(
-                self._voiced_through,
-                source_start + (frames if source_frames is None else source_frames) - 1)
+            self._voiced_through = max(self._voiced_through, end - 1)
             return
-        first = bisect_left(self._frames, max(source_start,
-                                              self._voiced_through + 1))
-        index = first
-        end = source_start + (frames if source_frames is None else source_frames)
+        index = bisect_left(self._frames, max(begin, self._voiced_through + 1))
         while index < len(self._frames) and self._frames[index] < end:
             pcm = self._samples.get(self._keys[index])
             gain = self._gains[index] * self.volume
             # Zero is a volume mappers set deliberately (see the Kiai and Sound
             # Volume layer), so it is obeyed rather than floored.
             if pcm and gain > 0.0 and len(self._voices) < self.MAX_VOICES:
-                offset = min(frames - 1, round((self._frames[index] - source_start) / rate))
+                offset = max(0, min(frames - 1, round(
+                    (self._frames[index] - source_start) / rate)))
                 self._voices.append([pcm, 0, gain])
                 self._sound(out, frames, start_frame=offset,
                             voice=self._voices[-1])
@@ -817,16 +827,19 @@ class TimeStretcher:
         # mixed before that would be carried into the next grain's crossfade
         # and into what the correlation searches against, so the search would
         # start matching hitsounds instead of music.
-        if self.mixer is not None:
-            self.mixer.mix(out, best_offset, sequence)
-        self._pending += out.tobytes()
-        self._pending_rate = rate
         # The read head advances by sequence * rate: that ratio, and only it, is
         # what makes the output 1/rate times longer than the input. The search
         # moves where a grain is taken from, never how far the head advances,
         # which is why WSOLA changes duration without changing the mapping from
         # output time back to source time.
         self._read += sequence * rate
+        if self.mixer is not None:
+            # Up to where the next grain's search starts, so no note falls
+            # between two grains -- see `HitsoundMixer.mix`.
+            self.mixer.mix(out, best_offset, sequence,
+                           covers=(start, int(self._read)))
+        self._pending += out.tobytes()
+        self._pending_rate = rate
         return True
 
     def _produce_resampled(self, source: array.array, start: int, available: int,

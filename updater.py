@@ -5,21 +5,32 @@ without a display or a network: the HTTP call is a single injectable `opener`
 argument, and every network path returns None rather than raising into the
 caller.
 
-Update strategy is deliberately the non-destructive one: download, verify the
-SHA-256 against the release's own SHA256SUMS.txt, extract to a *sibling*
-folder, and show it in Explorer. The running portable folder is never touched,
-so a failed update cannot leave the user without a working copy. A
-self-replacing update would have to hand the final swap to a detached helper
-because Windows locks the running .exe -- more moving parts than this app's
-release cadence justifies.
+Updates install in place, so nobody re-downloads a ZIP by hand again:
+
+1. download, verify the SHA-256 against the release's own SHA256SUMS.txt, and
+   extract to `<app folder>/_update/` (`stage_update`);
+2. the running app closes through its normal save prompt and starts the
+   *staged* exe with `--apply-update <app folder> <pid>` (`launch_apply`);
+3. that exe waits for the old process to exit -- Windows locks a running exe
+   and its loaded DLLs -- swaps itself into the app folder, rolling back on any
+   failure, and relaunches it (`run_apply_mode`);
+4. the relaunched app deletes `_update/` and `_old/` (`cleanup_leftovers`).
+
+Settings live in the registry and AppData, not the app folder, so the swap
+loses nothing. Run from source, there is no build to replace: the dialog only
+offers the release page.
 """
 from __future__ import annotations
 
 import hashlib
 import json
 import logging
+import os
+import shutil
+import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
 import zipfile
@@ -38,6 +49,12 @@ TIMEOUT_SECONDS = 10
 
 SETTING_CHECK_ON_STARTUP = "updates/check_on_startup"
 SETTING_SKIPPED_TAG = "updates/skipped_tag"
+
+EXE_NAME = "TaikoFancyArranger.exe"
+STAGING_FOLDER = "_update"
+OLD_FOLDER = "_old"
+FAILURE_MARKER = "_update_failed.txt"
+APPLY_FLAG = "--apply-update"
 
 
 # --------------------------------------------------------------------------
@@ -204,24 +221,28 @@ def application_folder() -> Path:
     return Path(__file__).resolve().parent
 
 
-def free_folder(parent: Path, name: str) -> Path:
-    """`parent/name`, suffixed -2, -3 ... rather than overwriting anything."""
-    candidate = parent / name
-    counter = 2
-    while candidate.exists():
-        candidate = parent / f"{name}-{counter}"
-        counter += 1
-    return candidate
+def can_install_in_place() -> bool:
+    """Only a frozen Windows build replaces itself.
+
+    From source, application_folder() is the repository, and writing a
+    PyInstaller build over it would be the worst thing an update could do.
+    """
+    return bool(getattr(sys, "frozen", False)) and sys.platform == "win32"
 
 
-def install_beside(release: ReleaseInfo, progress=None, opener=urllib.request.urlopen) -> Path:
-    """Download, verify, and extract the release into a new sibling folder.
+def stage_update(release: ReleaseInfo, progress=None, opener=urllib.request.urlopen,
+                 folder: Path | None = None) -> Path:
+    """Download, verify, and extract the release into `<folder>/_update/`.
 
-    Raises UpdateError before anything is written outside the temp directory if
-    the ZIP does not match the digest published in the release's SHA256SUMS.txt.
+    Nothing is written to `folder` unless the ZIP matches the digest published
+    in the release's SHA256SUMS.txt. Staging inside the app folder keeps it on
+    the same volume and proves the folder is writable before anyone is asked to
+    restart.
     """
     if not release.zip_url or not release.checksums_url:
         raise UpdateError("The release does not carry the portable Windows assets.")
+    folder = application_folder() if folder is None else folder
+    staging = folder / STAGING_FOLDER
 
     with tempfile.TemporaryDirectory(prefix="tfa-update-") as work:
         archive = Path(work) / PORTABLE_ASSET
@@ -233,13 +254,163 @@ def install_beside(release: ReleaseInfo, progress=None, opener=urllib.request.ur
         if not verify_digest(actual, expected_digest(checksums, PORTABLE_ASSET)):
             raise UpdateError("The download does not match the checksum published with the release.")
 
-        target = free_folder(application_folder().parent, f"TaikoFancyArranger-{release.version}")
-        target.mkdir(parents=True)
-        # extractall sanitises absolute paths and .. members itself, so the
-        # archive cannot reach outside target.
-        with zipfile.ZipFile(archive) as bundle:
-            bundle.extractall(target)
-    return target
+        shutil.rmtree(staging, ignore_errors=True)
+        try:
+            staging.mkdir(parents=True)
+            # extractall sanitises absolute paths and .. members itself, so the
+            # archive cannot reach outside staging.
+            with zipfile.ZipFile(archive) as bundle:
+                bundle.extractall(staging)
+        except PermissionError as error:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise UpdateError(
+                f"Taiko Fancy Arranger cannot write to {folder}. Move the folder somewhere "
+                f"you own (not Program Files) and try again."
+            ) from error
+    if not (staging / EXE_NAME).is_file():
+        shutil.rmtree(staging, ignore_errors=True)
+        raise UpdateError(f"The release archive does not contain {EXE_NAME}.")
+    return staging
+
+
+def _detached(arguments: list[str], cwd: Path) -> None:
+    flags = 0
+    if sys.platform == "win32":
+        flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+    subprocess.Popen(arguments, cwd=str(cwd), creationflags=flags, close_fds=True)
+
+
+def launch_apply(staging: Path, folder: Path | None = None) -> None:
+    """Start the staged build to copy itself over `folder` once we have exited.
+
+    The new exe is the helper because Windows will not let this process
+    overwrite its own exe or the DLLs it has loaded, and a dropped .bat or
+    PowerShell script is exactly what antivirus heuristics look for.
+    """
+    folder = application_folder() if folder is None else folder
+    _detached([str(staging / EXE_NAME), APPLY_FLAG, str(folder), str(os.getpid())], folder)
+
+
+def wait_for_exit(pid: int, timeout: float = 30.0) -> bool:
+    """True once `pid` has exited (or never existed), False on timeout."""
+    if sys.platform != "win32":
+        return True
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    # Without restype a 64-bit HANDLE is truncated to a C int.
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    kernel32.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    synchronize = 0x00100000
+    handle = kernel32.OpenProcess(synchronize, False, pid)
+    if not handle:
+        return True
+    try:
+        return kernel32.WaitForSingleObject(handle, int(timeout * 1000)) == 0
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _retry(action, *arguments, attempts: int = 25, delay: float = 0.2):
+    """Antivirus scanners and the exiting process hold files for a moment."""
+    for attempt in range(attempts):
+        try:
+            return action(*arguments)
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(delay)
+
+
+def _remove(path: Path) -> None:
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+    elif path.exists():
+        path.unlink()
+
+
+def apply_update(staging: Path, folder: Path, pid: int, wait=wait_for_exit) -> None:
+    """Swap every top-level entry of `staging` into `folder`, or change nothing.
+
+    The old entries are renamed into `<folder>/_old/` first (cheap: same
+    volume), then the new ones are copied in -- copied, not moved, because the
+    staged exe doing this is running out of `staging`. Any failure puts the old
+    entries back, so the user always ends up with a working copy.
+    """
+    if not wait(pid):
+        raise UpdateError("Taiko Fancy Arranger did not close, so the update was not installed.")
+    old = folder / OLD_FOLDER
+    shutil.rmtree(old, ignore_errors=True)
+    old.mkdir()
+    touched: list[str] = []
+    try:
+        for name in sorted(entry.name for entry in staging.iterdir()):
+            source, target = staging / name, folder / name
+            touched.append(name)
+            if target.exists():
+                _retry(os.replace, target, old / name)
+            if source.is_dir():
+                shutil.copytree(source, target)
+            else:
+                shutil.copy2(source, target)
+    except OSError:
+        # Only what was reached: an entry not yet processed is still the old
+        # one, and deleting it here would be the update destroying the app.
+        for name in touched:
+            target = folder / name
+            if (old / name).exists():
+                _remove(target)
+                os.replace(old / name, target)
+            elif target.exists():
+                _remove(target)
+        raise
+
+
+def run_apply_mode(argv: list[str]) -> bool:
+    """Handle `--apply-update <folder> <pid>`. False when argv is a normal launch.
+
+    Whatever happens, the app in `folder` is started again -- the new version
+    on success, the untouched old one after a rollback, with the reason left in
+    a marker file for that launch to show.
+    """
+    if APPLY_FLAG not in argv:
+        return False
+    index = argv.index(APPLY_FLAG)
+    folder = Path(argv[index + 1])
+    try:
+        apply_update(Path(sys.executable).resolve().parent, folder, int(argv[index + 2]))
+    except (UpdateError, OSError, ValueError) as error:
+        LOGGER.warning("Update could not be applied: %s", error)
+        try:
+            (folder / FAILURE_MARKER).write_text(str(error), encoding="utf-8")
+        except OSError:
+            pass
+    _detached([str(folder / EXE_NAME)], folder)
+    return True
+
+
+def cleanup_leftovers(folder: Path | None = None) -> str:
+    """Remove what an update left behind; return its failure message, if any.
+
+    Errors are ignored: the helper that just relaunched us may still be
+    exiting out of `_update`, and the next launch tries again.
+    """
+    folder = application_folder() if folder is None else folder
+    if folder.name == STAGING_FOLDER:
+        # Someone started the staged exe by hand; do not delete it from under itself.
+        return ""
+    shutil.rmtree(folder / STAGING_FOLDER, ignore_errors=True)
+    shutil.rmtree(folder / OLD_FOLDER, ignore_errors=True)
+    marker = folder / FAILURE_MARKER
+    try:
+        message = marker.read_text(encoding="utf-8")
+        marker.unlink()
+    except OSError:
+        return ""
+    return message
 
 
 # --------------------------------------------------------------------------
@@ -283,7 +454,7 @@ class CheckThread(QThread):
 
 
 class DownloadThread(QThread):
-    """Download + checksum + extract, off the GUI thread."""
+    """Download + checksum + stage, off the GUI thread."""
 
     progressed = Signal(int)
     finished_with = Signal(object, str)  # Path | None, error message
@@ -294,22 +465,30 @@ class DownloadThread(QThread):
 
     def run(self) -> None:  # noqa: D102
         try:
-            self.finished_with.emit(install_beside(self._release, self.progressed.emit), "")
+            self.finished_with.emit(stage_update(self._release, self.progressed.emit), "")
         except (UpdateError, urllib.error.URLError, OSError, zipfile.BadZipFile) as error:
             LOGGER.warning("Update download failed: %s", error)
             self.finished_with.emit(None, str(error))
 
 
 class UpdateDialog(QDialog):
-    """Offers the new release: download it, read it online, or skip the version."""
+    """Offers the new release: install it in place, read it online, or skip it.
+
+    `restart(staging)` is the window's: it asks about unsaved work, hands over
+    to the staged build and quits, returning False if the user stayed. Without
+    one -- or run from source -- there is nothing to install over, so only the
+    release page is offered.
+    """
 
     # QDialog.Rejected is 0 and Accepted is 1; a third code says "skip this
     # version" without a fourth signal.
     SKIPPED = 2
 
-    def __init__(self, release: ReleaseInfo, current: str, parent=None) -> None:
+    def __init__(self, release: ReleaseInfo, current: str, parent=None, restart=None) -> None:
         super().__init__(parent)
         self._release = release
+        self._restart = restart if can_install_in_place() else None
+        self._staging: Path | None = None
         self._download: DownloadThread | None = None
         self.setWindowTitle(tr("MainWindow", "Update available"))
         # main() sets the app-wide window icon from application_icon(); reusing
@@ -341,17 +520,26 @@ class UpdateDialog(QDialog):
         buttons.addWidget(self.skip_button)
         buttons.addStretch(1)
         self.page_button = QPushButton(tr("MainWindow", "Open Release Page"))
-        self.page_button.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(release.page_url)))
+        self.page_button.clicked.connect(self._open_release_page)
         buttons.addWidget(self.page_button)
         self.later_button = QPushButton(tr("MainWindow", "Later"))
         self.later_button.clicked.connect(self.reject)
         buttons.addWidget(self.later_button)
-        self.download_button = QPushButton(tr("MainWindow", "Download Update"))
+        self.download_button = QPushButton(tr("MainWindow", "Update and Restart"))
         self.download_button.setDefault(True)
         self.download_button.clicked.connect(self._start_download)
         self.download_button.setEnabled(bool(release.zip_url and release.checksums_url))
+        self.download_button.setVisible(self._restart is not None)
         buttons.addWidget(self.download_button)
         layout.addLayout(buttons)
+        if self._restart is None:
+            layout.insertWidget(layout.count() - 1, QLabel(tr(
+                "MainWindow", "Running from source: update with git pull, or get the build from the release page.")))
+
+    def _open_release_page(self) -> None:
+        # html_url comes straight from the API response; hand the OS only https.
+        if self._release.page_url.lower().startswith("https://"):
+            QDesktopServices.openUrl(QUrl(self._release.page_url))
 
     def skipped(self) -> bool:
         return self.result() == self.SKIPPED
@@ -368,6 +556,10 @@ class UpdateDialog(QDialog):
         super().reject()
 
     def _start_download(self) -> None:
+        if self._staging is not None:
+            # Already staged; the user stayed for unsaved work and is retrying.
+            self._hand_over()
+            return
         self.download_button.setEnabled(False)
         self.skip_button.setEnabled(False)
         self.later_button.setEnabled(False)
@@ -399,22 +591,21 @@ class UpdateDialog(QDialog):
                 + str(error),
             )
             return
-        QMessageBox.information(
-            self,
-            tr("MainWindow", "Update downloaded"),
-            tr(
-                "MainWindow",
-                "The new version was extracted to:\n{0}\n\nClose Taiko Fancy Arranger and start "
-                "TaikoFancyArranger.exe from that folder. Your current copy was left untouched.",
-            ).format(folder),
-        )
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
-        self.accept()
+        self._staging = Path(folder)
+        self._hand_over()
+
+    def _hand_over(self) -> None:
+        if self._restart(self._staging):
+            self.accept()
+            return
+        # The user chose to stay for unsaved work. The build stays staged, so
+        # the button now restarts without downloading again.
+        self.download_button.setEnabled(True)
 
 
-def present_update(release: ReleaseInfo, settings, parent=None) -> None:
+def present_update(release: ReleaseInfo, settings, parent=None, restart=None) -> None:
     """Show the offer and remember a skipped tag so it does not nag every launch."""
-    dialog = UpdateDialog(release, local_version(), parent)
+    dialog = UpdateDialog(release, local_version(), parent, restart)
     dialog.exec()
     if dialog.skipped():
         settings.set_value(SETTING_SKIPPED_TAG, release.tag)
@@ -430,7 +621,7 @@ def _alive(widget) -> bool:
     return True
 
 
-def check_now(parent, settings) -> CheckThread:
+def check_now(parent, settings, restart=None) -> CheckThread:
     """Manual check: always reports a result, and ignores a previously skipped tag.
 
     The thread is parented to the application, not to `parent`: the Settings
@@ -444,7 +635,7 @@ def check_now(parent, settings) -> CheckThread:
         if owner is parent:
             parent.unsetCursor()
         if isinstance(release, ReleaseInfo):
-            present_update(release, settings, owner)
+            present_update(release, settings, owner, restart)
         elif reachable:
             QMessageBox.information(
                 owner,

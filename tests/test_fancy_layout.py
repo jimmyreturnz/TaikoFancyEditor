@@ -166,5 +166,89 @@ class FancyButtonTests(_Window):
         self.assertFalse(self.window._is_split_mode())
 
 
+class SelectionSurvivesChromeTests(_Window):
+    """The click-to-clear check was a whitelist of three widgets, so a press on
+    the dock or the sub-toolbar (dragging Background Opacity, typing CS) threw
+    the selection away before the control acted on it."""
+
+    def _press(self, widget, point=None):
+        from PySide6.QtTest import QTest
+        QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, point or widget.rect().center())
+        QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, point or widget.rect().center())
+
+    def setUp(self) -> None:
+        super().setUp()
+        QApplication.processEvents()
+        self.window._selection_changed({0, 1})
+        self.assertEqual(self.window.selected, {0, 1})
+
+    def test_a_press_on_the_sub_toolbar_keeps_it(self):
+        self._press(self.window.circle_size_control.value_box)
+        self.assertEqual(self.window.selected, {0, 1})
+
+    def test_a_press_on_the_transform_dock_keeps_it(self):
+        self._press(self.window.fancy_transform_dock)
+        self.assertEqual(self.window.selected, {0, 1})
+
+    def test_a_press_on_empty_canvas_clears_it(self):
+        self._press(self.window.canvas, QPoint(3, 3))
+        self.assertEqual(self.window.selected, set())
+
+
+class CircleSizeTests(_Window):
+    def test_radius_follows_cs_from_0_to_10(self):
+        self.assertAlmostEqual(gui.osu_circle_radius(0.0), 54.4, places=6)
+        self.assertAlmostEqual(gui.osu_circle_radius(10.0), 9.6, places=6)
+
+    def test_loading_a_map_sets_the_cs_box_from_it(self):
+        # The fixture says CircleSize:5; the box used to stay at its 7.0.
+        self.assertAlmostEqual(self.window.circle_size_control.value(), 5.0)
+        self.assertAlmostEqual(self.window.canvas.circle_size, 5.0)
+
+    def test_the_cs_slider_and_box_are_one_value(self):
+        control = self.window.circle_size_control
+        seen = []
+        control.changed.connect(seen.append)
+        control.slider.setValue(420)
+        self.assertAlmostEqual(control.value(), 4.2)
+        self.assertAlmostEqual(self.window.canvas.circle_size, 4.2)
+        # One emit per step: the slider writes the box, and only the box emits.
+        self.assertEqual(seen, [4.2])
+        control.value_box.setValue(6.5)
+        self.assertEqual(control.slider.value(), 650)
+
+    def test_hit_radius_is_the_drawn_radius(self):
+        canvas = self.window.canvas
+        canvas.circle_size = 10.0
+        canvas._update_view_geometry()
+        note = canvas.notes[0]
+        canvas.selected = {note.original_index}
+        x, y = canvas.positions.get(note.original_index, (note.x, note.y))
+        centre = QPointF(canvas.view_offset_x + x * canvas.view_scale, canvas.view_offset_y + y * canvas.view_scale)
+        radius = canvas._drawn_radius()
+        self.assertIsNotNone(canvas._note_at_canvas_position(centre + QPointF(radius * 0.9, 0)))
+        self.assertIsNone(canvas._note_at_canvas_position(centre + QPointF(radius * 1.5 + 30, 0)))
+
+    def test_drawn_radius_stays_visible_on_the_smallest_canvas(self):
+        canvas = gui.TransformCanvas()
+        canvas.resize(300, 160)
+        canvas._update_view_geometry()
+        canvas.circle_size = 10.0
+        self.assertGreaterEqual(canvas._drawn_radius(), 2 * 1.5)
+        canvas.deleteLater()
+
+
+class TransformAnimationSettingTests(unittest.TestCase):
+    def test_off_means_no_glide(self):
+        from types import SimpleNamespace
+        canvas = gui.TransformCanvas()
+        canvas.show()
+        note = SimpleNamespace(original_index=1, x=0, y=0, is_kat=False, is_finisher=False)
+        canvas.animate_transforms = False
+        canvas.set_state([note], {1: (50, 50)}, set())
+        self.assertEqual(canvas._glide_t, 1.0)
+        canvas.close()
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -26,6 +26,7 @@ The host class must provide, as attributes or signals:
 from __future__ import annotations
 
 import math
+from bisect import bisect_right
 
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QPen
@@ -169,10 +170,34 @@ def wheel_seek_time(
     millisecond a placed object would use (see `TimeAxisMixin.snap_ms`).
     """
     timing = active_uninherited_at(timing_points, current_time)
-    return float(osu_snap_ms(max(
-        0.0,
-        snap_time(timing_points, current_time, divisor) + direction * timing.beat_length / divisor,
-    )))
+    step = timing.beat_length / divisor
+    snapped = snap_time(timing_points, current_time, divisor)
+    if direction > 0:
+        target = snapped + step
+        # A red line is a gridline of its own, and usually an off-grid one --
+        # a step that crossed it skipped the downbeat it was put there to mark.
+        index = bisect_right(timing_points, current_time, key=lambda point: point.time)
+        following = next(
+            (point.time for point in timing_points[index:]
+             if point.uninherited and point.beat_length > 0),
+            None,
+        )
+        if following is not None and following < target:
+            target = following
+    elif snapped <= timing.time:
+        # On this section's red line: the step back belongs to the section
+        # before it, whose last gridline is not one of this section's.
+        previous = active_uninherited_at(timing_points, timing.time - 1e-6)
+        if previous is timing:
+            target = snapped - step
+        else:
+            previous_step = previous.beat_length / divisor
+            target = previous.time + (math.ceil(
+                (timing.time - previous.time) / previous_step - 1e-6
+            ) - 1) * previous_step
+    else:
+        target = snapped - step
+    return float(osu_snap_ms(max(0.0, target)))
 
 
 class TimeAxisMixin:

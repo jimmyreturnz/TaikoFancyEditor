@@ -222,7 +222,9 @@ class SettingsDialog(QDialog):
 
     def _check_for_updates(self) -> None:
         # Held so the worker is not garbage collected while it is running.
-        self._update_check = updater.check_now(self, self.settings)
+        # The main window owns the restart: it asks about unsaved work and quits.
+        restart = getattr(self.parent(), "restart_into_update", None)
+        self._update_check = updater.check_now(self, self.settings, restart)
 
     def _audio_page(self) -> QWidget:
         sheet = self._sheet()
@@ -331,7 +333,7 @@ class SettingsDialog(QDialog):
         row_layout.addWidget(self.note_opacity, 1)
         row_layout.addWidget(self.note_opacity_value)
         opacity.field(self.tr("Note opacity"), opacity_row, span=2)
-        self.note_opacity_preview = _NoteOpacityPreview(self.note_opacity)
+        self.note_opacity_preview = _NoteOpacityPreview(self.note_opacity, self.skin_combo)
         opacity.add(self.note_opacity_preview, 2)
         opacity_note = QLabel(self.tr(
             "How solid notes are drawn in the editor timeline layers. Lower "
@@ -342,6 +344,38 @@ class SettingsDialog(QDialog):
         opacity_note.setObjectName("fieldNote")
         opacity_note.setWordWrap(True)
         opacity.add(opacity_note, 2)
+
+        # The same kind of control for the same reason; MainWindow listens to
+        # this one while it moves, so the Editor and Gimmick pages show what
+        # the number looks like and cancelling puts the saved value back.
+        backdrop = sheet.add_section("backdrop", self.tr("Editor background"))
+        self.background_opacity = QSlider(Qt.Horizontal)
+        self.background_opacity.setRange(0, 100)
+        self.background_opacity.setSingleStep(1)
+        self.background_opacity.setPageStep(10)
+        self.background_opacity_value = QLabel()
+        self.background_opacity_value.setMinimumWidth(44)
+        self.background_opacity.valueChanged.connect(
+            lambda percent: self.background_opacity_value.setText(f"{percent} %"))
+        backdrop_row = QWidget()
+        backdrop_layout = QHBoxLayout(backdrop_row)
+        backdrop_layout.setContentsMargins(0, 0, 0, 0)
+        backdrop_layout.addWidget(self.background_opacity, 1)
+        backdrop_layout.addWidget(self.background_opacity_value)
+        backdrop.field(self.tr("Background opacity"), backdrop_row, span=2)
+        backdrop_note = QLabel(self.tr(
+            "How strongly the map's own background shows behind the Editor and "
+            "Gimmick pages. 0% leaves them plain."
+        ))
+        backdrop_note.setObjectName("fieldNote")
+        backdrop_note.setWordWrap(True)
+        backdrop.add(backdrop_note, 2)
+
+        fancy = sheet.add_section("fancy", self.tr("Fancy Arranger"))
+        self.transform_animation = QCheckBox(self.tr("Animate transforms"))
+        fancy.switch(self.transform_animation, self.tr(
+            "Notes glide to their new places when a transform changes. Off "
+            "jumps straight there, which is lighter on a dense map."))
         return sheet
 
     def _calibrate_offset(self) -> None:
@@ -477,6 +511,7 @@ class SettingsDialog(QDialog):
 
     def _load_current_values(self) -> None:
         self.confirm_overwrite.setChecked(self.settings.bool_value("general/confirm_overwrite", True))
+        self.transform_animation.setChecked(self.settings.bool_value("appearance/transform_animation", True))
         self.check_updates_on_startup.setChecked(
             self.settings.bool_value(updater.SETTING_CHECK_ON_STARTUP, True)
         )
@@ -488,6 +523,7 @@ class SettingsDialog(QDialog):
         self.output_offset_ms.setValue(self.settings.int_value("audio/output_offset_ms", 0))
         self.note_opacity.setValue(self.settings.int_value(
             "appearance/note_opacity", NOTE_OPACITY_DEFAULT_PERCENT))
+        self.background_opacity.setValue(self.settings.int_value("appearance/background_opacity", 25))
         chosen = self.settings.string_value("appearance/skin", "")
         self.skin_combo.setCurrentIndex(max(0, self.skin_combo.findData(chosen)))
         language = self.settings.string_value("language/current", "en")
@@ -507,6 +543,7 @@ class SettingsDialog(QDialog):
         page = self._page_ids[self.pages.currentIndex()]
         if page == "general":
             self.confirm_overwrite.setChecked(True)
+            self.transform_animation.setChecked(True)
             self.check_updates_on_startup.setChecked(True)
         elif page == "audio":
             self.hitsounds_enabled.setChecked(True)
@@ -517,6 +554,7 @@ class SettingsDialog(QDialog):
         elif page == "skin":
             self.skin_combo.setCurrentIndex(0)
             self.note_opacity.setValue(NOTE_OPACITY_DEFAULT_PERCENT)
+            self.background_opacity.setValue(25)
         elif page == "language":
             self.language_combo.setCurrentIndex(self.language_combo.findData("en"))
         elif page == "shortcuts":
@@ -551,6 +589,7 @@ class SettingsDialog(QDialog):
         previous_language = self.settings.string_value("language/current", "en")
         selected_language = str(self.language_combo.currentData())
         self.settings.set_value("general/confirm_overwrite", self.confirm_overwrite.isChecked())
+        self.settings.set_value("appearance/transform_animation", self.transform_animation.isChecked())
         self.settings.set_value(
             updater.SETTING_CHECK_ON_STARTUP, self.check_updates_on_startup.isChecked()
         )
@@ -561,6 +600,7 @@ class SettingsDialog(QDialog):
         self.settings.set_value("audio/output_offset_ms", self.output_offset_ms.value())
         self.settings.set_value("appearance/skin", str(self.skin_combo.currentData()))
         self.settings.set_value("appearance/note_opacity", self.note_opacity.value())
+        self.settings.set_value("appearance/background_opacity", self.background_opacity.value())
         self.settings.set_value("language/current", selected_language)
         for action_id, sequence in self._shortcut_values().items():
             self.shortcuts.set_sequence(action_id, sequence)
@@ -626,11 +666,19 @@ class _NoteOpacityPreview(QWidget):
     """Three notes at the chosen opacity, over a snap grid, so the percent
     means something before Apply."""
 
-    def __init__(self, slider: QSlider) -> None:
+    def __init__(self, slider: QSlider, skin_combo: QComboBox | None = None) -> None:
         super().__init__()
         self.slider = slider
+        self.skin_combo = skin_combo
+        # Set by MainWindow.open_settings: (painter, rect, skin_name, percent).
+        # The notes are drawn by the editor timeline's own code, which lives in
+        # gui, and gui imports this module -- so it is handed in rather than
+        # imported. None (a dialog built alone) keeps the plain circles below.
+        self.paint_notes = None
         self.setFixedHeight(64)
         slider.valueChanged.connect(self.update)
+        if skin_combo is not None:
+            skin_combo.currentIndexChanged.connect(self.update)
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
@@ -640,6 +688,11 @@ class _NoteOpacityPreview(QWidget):
         for x in range(12, self.width(), 18):
             painter.setOpacity(0.35 if (x // 18) % 4 else 0.8)
             painter.drawLine(x, 6, x, self.height() - 6)
+        painter.setOpacity(1.0)
+        if self.paint_notes is not None:
+            name = str(self.skin_combo.currentData() or "") if self.skin_combo is not None else ""
+            self.paint_notes(painter, self.rect(), name, self.slider.value())
+            return
         painter.setOpacity(self.slider.value() / 100.0)
         y = self.height() / 2
         for index, (colour, radius) in enumerate(((QColor(229, 76, 46), 17), (QColor(67, 141, 171), 17),

@@ -922,6 +922,37 @@ def draw_note_sprite(
     painter.drawPixmap(QPointF(x - half, y - half), sprite)
 
 
+def paint_note_preview(painter: QPainter, rect, skin: TaikoSkin, percent: float) -> None:
+    """Don, kat, finisher, drumroll head and spinner as the editor timeline
+    draws them, for the Settings opacity preview.
+
+    The fills carry the same alpha `TimelineGameplay.set_note_opacity` gives
+    them (180 at the default, scaled by percent), and the notes go through
+    `draw_note_sprite` and `spinner_pixmap`, so a skin or an opacity that
+    reads one way here reads that way on the timeline. Radii are the timeline's
+    full-height ones (17 / 25).
+    """
+    alpha = max(1, min(255, round(180 * max(NOTE_OPACITY_MIN_PERCENT, percent) / NOTE_OPACITY_DEFAULT_PERCENT)))
+    pen = QPen(QColor(255, 255, 255, 220), 2)
+    y = rect.height() / 2
+    for index, (colour, radius, big) in enumerate((
+        (DON_COLOR, 17, False), (KAT_COLOR, 17, False),
+        (DON_COLOR, 25, True), (DRUMROLL_COLOR, 17, False),
+    )):
+        draw_note_sprite(painter, QColor(*colour, alpha), pen, 40 + index * 62, y, radius, skin, big=big)
+    # Spinner: grey band, edge caps, then the shared pixmap, as in the timeline.
+    x, end_x, radius = 40 + 4 * 62, 40 + 4 * 62 + 90, 25
+    painter.setBrush(QColor(190, 195, 205, max(1, min(255, round(70 * alpha / 180)))))
+    painter.setPen(Qt.NoPen)
+    painter.drawRoundedRect(QRectF(x, y - radius * 0.5, end_x - x, radius), radius * 0.25, radius * 0.25)
+    painter.setPen(QPen(QColor(220, 226, 236, 170), 2))
+    for edge_x in (x, end_x):
+        painter.drawLine(QPointF(edge_x, y - radius * 0.7), QPointF(edge_x, y + radius * 0.7))
+    pixmap = spinner_pixmap()
+    if not pixmap.isNull():
+        painter.drawPixmap(QRectF(x - radius, y - radius, radius * 2, radius * 2), pixmap, QRectF(pixmap.rect()))
+
+
 def kiai_flash_strength(note) -> float:
     """How brightly `note` takes the kiai flash, relative to a drawn object.
 
@@ -1285,13 +1316,16 @@ class ParameterControl(QWidget):
 
 
 class DifficultyValueControl(QWidget):
-    """AR or CS for the export: its short name and a number box, one field.
+    """AR or CS for the export: its short name, a slider and a number box.
 
     Was a caption, a 200px slider, a box and a pink +/- pair; the row ran off
-    a 1920 screen. The number is the exact thing written to the file, so a
-    box that steps by 0.1 (0.01 with the arrow keys held on the value) is the
-    whole control.
+    a 1920 screen, and the slider went with the +/- pair. It is back, short,
+    because a CS is chosen by watching the circles grow and shrink on the
+    canvas rather than by typing a number. The box stays for the exact value
+    written to the file; the slider moves in the same 0.01 steps it holds.
     """
+
+    SLIDER_STEPS_PER_UNIT = 100
 
     changed = Signal(float)
 
@@ -1309,11 +1343,27 @@ class DifficultyValueControl(QWidget):
         caption = QLabel(label); caption.setToolTip(tooltip); layout.addWidget(caption)
         self.value_box = QDoubleSpinBox(); self.value_box.setRange(0.0, 10.0); self.value_box.setDecimals(2)
         self.value_box.setSingleStep(0.1); self.value_box.setFixedWidth(84); self.value_box.setToolTip(tooltip)
+        self.slider = QSlider(Qt.Horizontal)
+        self.slider.setRange(0, int(10 * self.SLIDER_STEPS_PER_UNIT))
+        self.slider.setPageStep(self.SLIDER_STEPS_PER_UNIT)
+        # 110 where there is room, and it gives way first on a narrow window:
+        # fixed at 110, the two of them pushed Export off a 1366 screen.
+        self.slider.setMinimumWidth(56)
+        self.slider.setMaximumWidth(110)
+        self.slider.setToolTip(tooltip)
+        layout.addWidget(self.slider)
         layout.addWidget(self.value_box)
         scrub_label(caption, self.value_box)
+        # The box is the one source of truth and the only emitter: the slider
+        # writes into it, so a drag fires `changed` once per step, not twice.
+        self.slider.valueChanged.connect(
+            lambda position: self.value_box.setValue(position / self.SLIDER_STEPS_PER_UNIT))
         self.value_box.valueChanged.connect(self._box_changed); self.set_value(default)
 
     def _box_changed(self, value: float) -> None:
+        self.slider.blockSignals(True)
+        self.slider.setValue(round(value * self.SLIDER_STEPS_PER_UNIT))
+        self.slider.blockSignals(False)
         self.changed.emit(float(value))
 
     def value(self) -> float: return float(self.value_box.value())
@@ -1599,6 +1649,8 @@ class TransformCanvas(QWidget):
         self._glide.valueChanged.connect(self._glide_step)
         # The export's CS, which sizes the circles (osu_circle_radius).
         self.circle_size = 7.0
+        # The Settings switch; reduced_motion() is the OS's, this is the user's.
+        self.animate_transforms = True
         self.setAcceptDrops(True)
         # Small enough for a half-screen window; the docks around it take what
         # is left, and the 16:9 frame letterboxes inside whatever this gets.
@@ -1615,7 +1667,8 @@ class TransformCanvas(QWidget):
         # never makes them jump. Not while a note is being dragged by hand:
         # there the note follows the pointer, and easing it would lag behind.
         moved = positions is not self.positions and positions != self.positions
-        if moved and self.drag_last_position is None and not reduced_motion() and self.isVisible():
+        if (moved and self.drag_last_position is None and self.animate_transforms
+                and not reduced_motion() and self.isVisible()):
             self._glide_from = {
                 note.original_index: self._drawn_position(note) for note in self.notes
             }
@@ -1716,8 +1769,95 @@ class TransformCanvas(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, True)
         painter.fillRect(self.rect(), QColor("#11151c"))
-        if not self.background_pixmap.isNull():
-            target = self.render_rect
+        backdrop = self._scaled_background()
+        if backdrop is not None:
+            painter.drawPixmap(self.render_rect.topLeft(), backdrop)
+        painter.setPen(QPen(QColor("#465164"), 1))
+        painter.drawRect(
+            self.playfield_rect
+        )
+
+        radius = self._drawn_radius()
+        view_scale = self.view_scale
+        offset_x = self.view_offset_x
+        offset_y = self.view_offset_y
+        # A note is one of eight looks (kat/don x selected x finisher), so each
+        # is rasterised once per radius and stamped. Anti-aliased ellipses cost
+        # ~50us apiece and a dense map is thousands of them per glide frame.
+        # Stamped in note order rather than batched by colour: overlapping
+        # notes of different colours would swap which one is on top.
+        selected = self.selected
+        half = self._sprite_size(radius) / 2.0
+        # Off-canvas notes (a transform can fling them anywhere) cost nothing.
+        visible = self.rect().adjusted(-int(half), -int(half), int(half), int(half))
+        for note in self.notes:
+            position = self._drawn_position(note)
+            x = offset_x + position[0] * view_scale
+            y = offset_y + position[1] * view_scale
+            if not visible.contains(int(x), int(y)):
+                continue
+            sprite = self._note_sprite(note.is_kat, note.original_index in selected, note.is_finisher, radius)
+            painter.drawPixmap(QPointF(x - half, y - half), sprite)
+
+    _KAT_BRUSH = QColor("#4aa3ff")
+    _DON_BRUSH = QColor("#ff4f5e")
+    _NOTE_PEN_WIDTH = 2
+    _SELECTED_PEN = QPen(QColor("#ffd166"), _NOTE_PEN_WIDTH)
+    _NORMAL_PEN = QPen(QColor("#f4f7fb"), _NOTE_PEN_WIDTH)
+
+    def _sprite_size(self, radius: float) -> int:
+        # The circle plus half the pen on each side, and a pixel of
+        # anti-aliasing margin.
+        return int(2 * radius + self._NOTE_PEN_WIDTH) + 2
+
+    def _note_sprite(self, is_kat: bool, is_selected: bool, is_finisher: bool, radius: float):
+        ratio = self.devicePixelRatioF()
+        key = (round(radius, 2), ratio)
+        if getattr(self, "_sprite_key", None) != key:
+            self._sprite_key = key
+            self._sprites: dict[tuple[bool, bool, bool], QPixmap] = {}
+        look = (is_kat, is_selected, is_finisher)
+        sprite = self._sprites.get(look)
+        if sprite is None:
+            size = self._sprite_size(radius)
+            sprite = QPixmap(int(size * ratio), int(size * ratio))
+            sprite.setDevicePixelRatio(ratio)
+            sprite.fill(Qt.transparent)
+            stamper = QPainter(sprite)
+            stamper.setRenderHint(QPainter.Antialiasing, True)
+            stamper.setBrush(self._KAT_BRUSH if is_kat else self._DON_BRUSH)
+            stamper.setPen(self._SELECTED_PEN if is_selected else self._NORMAL_PEN)
+            centre = QPointF(size / 2.0, size / 2.0)
+            stamper.drawEllipse(centre, radius, radius)
+            if is_finisher:
+                stamper.setBrush(Qt.NoBrush)
+                stamper.drawEllipse(centre, radius * 0.72, radius * 0.72)
+            stamper.end()
+            self._sprites[look] = sprite
+        return sprite
+
+    def _drawn_radius(self) -> float:
+        # osu!'s circle at the export's CS, to scale with the playfield. Floored
+        # at the pen width and a half: CS 10 is 9.6 osu!px, which on the 160px
+        # minimum canvas is a radius the 2px outline alone would swallow, and a
+        # note that is all outline is not visibly a note.
+        return max(osu_circle_radius(self.circle_size) * self.view_scale, self._NOTE_PEN_WIDTH * 1.5)
+
+    def _scaled_background(self):
+        """The cropped, scaled, faded background, or None without one.
+
+        Cached because the glide repaints 60 times a second and each paint was
+        cropping and scaling a full-size image with opacity applied. Rebuilt
+        only when the size, the image or the opacity changes.
+        """
+        if self.background_pixmap.isNull():
+            return None
+        size = self.render_rect.size().toSize()
+        if size.isEmpty():
+            return None
+        ratio = self.devicePixelRatioF()
+        key = (size.width(), size.height(), ratio, self.background_pixmap.cacheKey(), self.background_opacity)
+        if getattr(self, "_background_cache_key", None) != key:
             source_width = self.background_pixmap.width()
             source_height = self.background_pixmap.height()
             source_ratio = source_width / max(1, source_height)
@@ -1727,47 +1867,17 @@ class TransformCanvas(QWidget):
             else:
                 crop_height = source_width * 9 / 16
                 source = QRectF(0, (source_height - crop_height) / 2, source_width, crop_height)
-            painter.save()
-            painter.setOpacity(self.background_opacity)
-            painter.drawPixmap(target, self.background_pixmap, source)
-            painter.restore()
-        painter.setPen(QPen(QColor("#465164"), 1))
-        painter.drawRect(
-            self.playfield_rect
-        )
-
-        for note in self.notes:
-            position = self._drawn_position(note)
-
-            x = self.view_offset_x + position[0] * self.view_scale
-            y = self.view_offset_y + position[1] * self.view_scale
-            # osu!'s circle at the export's CS, to scale with the playfield.
-            radius = osu_circle_radius(self.circle_size) * self.view_scale
-
-            painter.setBrush(
-                QColor("#4aa3ff")
-                if note.is_kat
-                else QColor("#ff4f5e")
-            )
-
-            painter.setPen(
-                QPen(
-                    QColor("#ffd166")
-                    if note.original_index in self.selected
-                    else QColor("#f4f7fb"),
-                    2,
-                )
-            )
-
-            painter.drawEllipse(
-                QPointF(x, y),
-                radius,
-                radius,
-            )
-            if note.is_finisher:
-                painter.setBrush(Qt.NoBrush)
-                painter.drawEllipse(QPointF(x, y), radius * 0.72, radius * 0.72)
-
+            baked = QPixmap(size * ratio)
+            baked.setDevicePixelRatio(ratio)
+            baked.fill(Qt.transparent)
+            baker = QPainter(baked)
+            baker.setRenderHint(QPainter.SmoothPixmapTransform, True)
+            baker.setOpacity(self.background_opacity)
+            baker.drawPixmap(QRectF(0, 0, size.width(), size.height()), self.background_pixmap, source)
+            baker.end()
+            self._background_cache = baked
+            self._background_cache_key = key
+        return self._background_cache
 
     def _note_at_canvas_position(self, position):
         self._update_view_geometry()
@@ -1785,7 +1895,9 @@ class TransformCanvas(QWidget):
             if distance < best_distance:
                 best_distance = distance
                 best_note = note
-        hit_radius = 60
+        # The circle as drawn, in playfield units, so what is grabbable is
+        # what is seen (a fixed 60 was bigger than any CS but 0).
+        hit_radius = self._drawn_radius() / self.view_scale
         return best_note if best_note is not None and best_distance <= hit_radius ** 2 else None
 
     def mousePressEvent(self, event) -> None:
@@ -2984,6 +3096,8 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
         while tick_time <= end_time + snap_length:
             at = tick_time + 0.001
             if at >= section_expires:
+                # -inf is the walk's first section, not a red line it crossed.
+                crossed = section_expires != -math.inf
                 timing = active_timing(snap_points, at)
                 following = self._next_timing_time_after(tick_time)
                 section_expires = math.inf if following is None else following
@@ -2999,6 +3113,25 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
                     if lines is None:
                         lines = batches[kind] = []
                     kinds.append((lines, tick_heights[kind]))
+                # Restart the walk on this section's own red line. Carrying the
+                # previous section's phase across it drew every tick after an
+                # off-grid red line where the *old* timing said, not where a
+                # note snaps (`snap_time` anchors on the red line) -- and since
+                # the phase came from whichever section the window opened in,
+                # the grid after the line shifted as the view scrolled.
+                # Counted from the last tick drawn, not this one: this one has
+                # already overshot the red line, and starting from it skipped
+                # the section's own downbeat -- the white beat tick on the line.
+                # Only on a line actually crossed: the walk's first section is
+                # already phased on its own red line, and restarting there
+                # jumped a view opening before a map's first red line straight
+                # to it, so the grid to its left vanished.
+                section_snap = timing.beat_length / grid_divisor
+                if crossed and section_snap >= min_snap_length:
+                    drawn = tick_time - snap_length
+                    tick_time = timing.time + max(0, math.floor(
+                        (drawn - timing.time) / section_snap + 1e-6
+                    ) + 1) * section_snap
 
             snap_length = timing.beat_length / grid_divisor
             if snap_length < min_snap_length:
@@ -4207,13 +4340,18 @@ class SVEditorView(TimeAxisMixin, QWidget):
             self.timing_line_edit_requested.emit(point.uid)
         event.accept()
 
-    def _begin_point_drag(self, point: TimingPoint, axis: str) -> None:
+    def _begin_point_drag(self, point: TimingPoint, axis: str, press_y: float = 0.0) -> None:
         self._drag_point = point
         self._drag_axis = axis
+        # A value drag is relative to where it was pressed -- see
+        # SV_DRAG_STEP. Held here because the point is replaced on every edit.
+        self._drag_press_y = press_y
+        self._drag_start_sv = point.sv_multiplier
         # See mouseMoveEvent: what the last emitted value-drag step was, so a
         # fresh drag does not inherit the previous one's and skip its own
-        # first, genuinely-new step.
-        self._last_drag_value = None
+        # first, genuinely-new step. The SV it starts at counts as sent, so a
+        # press that never moves emits nothing.
+        self._last_drag_value = None if self.volume_mode else self._drag_start_sv
         self.selected_uids = {point.uid}
         self.grabMouse()
         self.update()
@@ -4259,7 +4397,8 @@ class SVEditorView(TimeAxisMixin, QWidget):
             # replaced what was already there.
             existing = self._nearest_inherited(event.position().x())
             if existing is not None:
-                self._begin_point_drag(existing, self._drag_axis_for_click(existing, event.position()))
+                self._begin_point_drag(existing, self._drag_axis_for_click(existing, event.position()),
+                                       event.position().y())
                 event.accept()
                 return
             time_ms = self._placement_time(event.position().x())
@@ -4280,7 +4419,8 @@ class SVEditorView(TimeAxisMixin, QWidget):
         # plain click deselects.
         point = self._nearest_point(event.position().x())
         if point is not None:
-            self._begin_point_drag(point, self._drag_axis_for_click(point, event.position()))
+            self._begin_point_drag(point, self._drag_axis_for_click(point, event.position()),
+                                   event.position().y())
             event.accept()
             return
         self.selected_uids.clear()
@@ -4349,15 +4489,24 @@ class SVEditorView(TimeAxisMixin, QWidget):
             return
         if self._drag_point is not None:
             if self._drag_axis == "value":
-                value = self._y_to_sv(event.position().y(), self._graph_top(), self._graph_bottom())
                 if self.volume_mode:
                     # _y_to_sv is linear 0-100 here (see update_scale), so the
                     # number already is a volume percentage -- already coarse
                     # enough (100 steps) that the SV_DRAG_STEP problem below
                     # barely reaches it, but the same skip is free to apply.
-                    value = round(value)
+                    value = round(self._y_to_sv(
+                        event.position().y(), self._graph_top(), self._graph_bottom()))
                 else:
-                    value = round(value / SV_DRAG_STEP) * SV_DRAG_STEP
+                    # One SV_DRAG_STEP per pixel from the press, not the log
+                    # axis under the cursor: a pixel of that axis is 0.03x at
+                    # 1.0x and more above it, so an absolute drag skipped most
+                    # of the steps it was rounded to.
+                    moved = round(self._drag_press_y - event.position().y())
+                    # Unmoved, the typed 8-decimal value stays as it was
+                    # rather than being snapped to 0.01 by a jittery click.
+                    value = self._drag_start_sv if moved == 0 else round(max(
+                        SV_SCALE_FLOOR, min(SV_SCALE_CEILING, (round(
+                            self._drag_start_sv / SV_DRAG_STEP) + moved) * SV_DRAG_STEP)), 2)
                 # A mouse delivers far more move events than this many steps
                 # actually exist across a typical drag range -- most of them
                 # would otherwise ask for the exact value already in force.
@@ -4823,6 +4972,9 @@ class GameplayViewerView(QWidget):
 
     def __init__(self) -> None:
         super().__init__()
+        # paintEvent fills the whole rect; saying so keeps the page's map
+        # backdrop out of every per-frame repaint.
+        self.setAttribute(Qt.WA_OpaquePaintEvent, True)
         self.notes = []
         self.note_times: list[int] = []
         # Predicate deciding which hit objects scroll past; see refresh_notes.
@@ -6434,6 +6586,89 @@ class EditorViewFrame(QWidget):
         self.controls.setVisible(locked or self.underMouse())
 
 
+BACKDROP_OPACITY_DEFAULT_PERCENT = 25
+
+
+class MapBackdrop(QWidget):
+    """A page's floor: the window's navy with the active map's background
+    faded into it, cropped to fill.
+
+    One per page rather than one per lane, so ten open difficulties cost
+    nothing extra. The faded image is baked into a single cached pixmap and
+    rebuilt only when the size, the picture or the opacity changes, so a paint
+    is one blit -- and the lanes that sit on it are opaque and say so
+    (WA_OpaquePaintEvent), which keeps their per-frame repaints from reaching
+    it at all.
+    """
+
+    NAVY = QColor("#191f29")
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setObjectName("mapBackdrop")
+        self._path: Path | None = None
+        self._source: QPixmap | None = None
+        self._percent = BACKDROP_OPACITY_DEFAULT_PERCENT
+        self._baked: QPixmap | None = None
+
+    def set_background(self, path: Path | None) -> None:
+        if path == self._path:
+            return
+        self._path = path
+        source = QPixmap(str(path)) if path is not None else None
+        self._source = source if source is not None and not source.isNull() else None
+        self._baked = None
+        self.update()
+
+    def set_opacity(self, percent: int) -> None:
+        percent = max(0, min(100, int(percent)))
+        if percent != self._percent:
+            self._percent = percent
+            self._baked = None
+            self.update()
+
+    def _bake(self) -> QPixmap:
+        size = self.size()
+        baked = QPixmap(size)
+        baked.fill(self.NAVY)
+        if self._source is not None and self._percent > 0:
+            cover = self._source.scaled(size, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+            painter = QPainter(baked)
+            painter.setOpacity(self._percent / 100.0)
+            painter.drawPixmap((size.width() - cover.width()) // 2, (size.height() - cover.height()) // 2, cover)
+            painter.end()
+        return baked
+
+    def paintEvent(self, event) -> None:
+        if self._source is None or self._percent == 0:
+            QPainter(self).fillRect(event.rect(), self.NAVY)
+            return
+        if self._baked is None or self._baked.size() != self.size():
+            self._baked = self._bake()
+        QPainter(self).drawPixmap(event.rect(), self._baked, event.rect())
+
+
+def see_through(*widgets: QWidget) -> None:
+    """Let a page's backdrop show through these chrome containers.
+
+    The window's `QWidget { background }` rule paints every plain widget
+    opaque, so the ones between a page and its lanes opt out by property (see
+    the `seeThrough` rule in MainWindow's stylesheet) rather than the rule
+    being loosened for everything. A scroll area's container is also filled by
+    QScrollArea itself, which the stylesheet does not reach.
+    """
+    for widget in widgets:
+        widget.setProperty("seeThrough", True)
+        widget.setAutoFillBackground(False)
+
+
+def see_through_row(row: QWidget) -> QWidget:
+    """`row` and the plain containers inside it. Buttons, boxes and other
+    controls keep their own fills: only a bare QWidget is chrome."""
+    see_through(row, *(w for w in row.findChildren(QWidget) if type(w) is QWidget))
+    return row
+
+
 def add_view_row(on_click) -> QPushButton:
     """"+ Add view" as a dashed row under a page's stack of views.
 
@@ -6453,6 +6688,18 @@ def add_view_row(on_click) -> QPushButton:
     )
     button.clicked.connect(on_click)
     return button
+
+
+def add_view_on_empty_right_click(container: QWidget, on_click) -> None:
+    """Right click on the bare space under a page's views is "Add view" too.
+
+    A context menu request a child leaves unhandled travels up to its parent,
+    so a right click on a view arrives here as well: only a point with no
+    child under it is the empty space.
+    """
+    container.setContextMenuPolicy(Qt.CustomContextMenu)
+    container.customContextMenuRequested.connect(
+        lambda pos: on_click() if container.childAt(pos) is None else None)
 
 
 class AddViewDialog(QDialog):
@@ -9883,6 +10130,16 @@ class LibraryKeys(QObject):
             return False
         c = self.controller
         key = event.key()
+        if key == Qt.Key_F5:
+            c.reload_current_song()
+            return True
+        # Space pauses and resumes the preview, as in a music player -- except
+        # mid-query, where it is a space in what is being searched for.
+        if key == Qt.Key_Space and not event.modifiers() and not (
+            watched is c.library_search and c.library_search.text()
+        ):
+            c.toggle_preview()
+            return True
         if watched is c.library_search:
             if key in (Qt.Key_Up, Qt.Key_Down):
                 c.move_song(-1 if key == Qt.Key_Up else 1)
@@ -9950,6 +10207,9 @@ class LibraryPageController:
         # playhead, handed over on the way back to the song list.
         self._resume_ms: int | None = None
         self._preview_loading = False
+        # The player's Next/Previous walk: every song once, shuffled the first
+        # time it is wanted and then kept, so Previous retraces Next.
+        self._song_order: list[Path] | None = None
         self.preview_timer = QTimer(window)
         self.preview_timer.setSingleShot(True)
         self.preview_timer.setInterval(PREVIEW_SETTLE_MS)
@@ -10028,6 +10288,29 @@ class LibraryPageController:
         self.original_metadata_check.toggled.connect(self.original_metadata_toggled)
         top.addWidget(segmented([self.original_metadata_check]))
 
+        # osu!'s player: previous, play/pause, stop, next. In the top row with
+        # the other pills, where it is found at a glance -- under the banner it
+        # read as part of the selected song's details. Space toggles it too.
+        self.player_buttons = {}
+        for key, glyph, tip, slot in (
+            ("previous", "◀◀", tr("MainWindow", "Previous song"), lambda: self.step_song(-1)),
+            ("play", "▶", tr("MainWindow", "Play or pause the preview"), self.toggle_preview),
+            ("stop", "■", tr("MainWindow", "Stop the preview and go back to its start"), self.rewind_preview),
+            ("next", "▶▶", tr("MainWindow", "Next song"), lambda: self.step_song(1)),
+        ):
+            button = QPushButton(glyph)
+            button.setToolTip(tip)
+            # Not focusable, so Space reaches the song list's toggle instead
+            # of re-clicking whichever transport button was pressed last.
+            button.setFocusPolicy(Qt.NoFocus)
+            # A glyph, not a word: the window's 16px side padding made the four
+            # of them as wide as the search box could spare.
+            button.setStyleSheet("padding-left: 8px; padding-right: 8px;")
+            button.clicked.connect(lambda _checked=False, slot=slot: slot())
+            self.player_buttons[key] = button
+        equalize_button_widths(self.player_buttons.values())
+        top.addWidget(segmented(list(self.player_buttons.values())))
+
         # One quiet menu for three rare actions. Quick Scan is incremental and
         # Rescan throws the index away -- see `rescan` for why both exist.
         self.library_folder_label = QToolButton()
@@ -10042,7 +10325,10 @@ class LibraryPageController:
         full = folder_menu.addAction(tr("MainWindow", "Rescan everything"))
         full.setToolTip(tr("MainWindow", "Rebuild the whole index from scratch (slower; use if Quick Scan missed a change)"))
         full.triggered.connect(self.rescan)
-        change = folder_menu.addAction(tr("MainWindow", "Change folder…"))
+        reload_song = folder_menu.addAction(tr("MainWindow", "Reload this beatmap") + "\tF5")
+        reload_song.setToolTip(tr("MainWindow", "Read the selected song's files again, and nothing else"))
+        reload_song.triggered.connect(self.reload_current_song)
+        change =folder_menu.addAction(tr("MainWindow", "Change folder…"))
         change.triggered.connect(self.choose_songs_folder)
         folder_menu.setToolTipsVisible(True)
         self.library_folder_label.setMenu(folder_menu)
@@ -10193,6 +10479,61 @@ class LibraryPageController:
             if self.song_list.item(row).data(Qt.UserRole) is not None:
                 self.song_list.setCurrentRow(row)
                 return
+
+    def song_order(self) -> list[Path]:
+        """The shuffled walk, fixed for the session. Songs the scan finds
+        later are appended rather than reshuffled in, so nothing already
+        walked moves."""
+        if self._song_order is None:
+            self._song_order = sorted(self.library_songs)
+            random.Random().shuffle(self._song_order)
+        else:
+            known = set(self._song_order)
+            self._song_order += [folder for folder in sorted(self.library_songs) if folder not in known]
+        return self._song_order
+
+    def step_song(self, delta: int) -> None:
+        """Next/Previous in the shuffled order. Selecting the song in the list
+        is what starts its preview (difficulty_changed), so nothing here plays.
+        A song a search has filtered out of the list is stepped over."""
+        order = self.song_order()
+        item = self.song_list.currentItem()
+        current = item.data(Qt.UserRole) if item is not None else None
+        try:
+            index = order.index(Path(current))
+        except (ValueError, TypeError):
+            index = -1 if delta > 0 else 0
+        rows = {self.song_list.item(row).data(Qt.UserRole): row for row in range(self.song_list.count())}
+        for step in range(1, len(order) + 1):
+            row = rows.get(str(order[(index + delta * step) % len(order)]))
+            if row is not None:
+                self.song_list.setCurrentRow(row)
+                return
+
+    def toggle_preview(self) -> None:
+        player = self.preview_player
+        if player is not None and player.playbackState() == QMediaPlayer.PlayingState:
+            player.pause()
+        elif player is not None and player.playbackState() == QMediaPlayer.PausedState:
+            player.play()
+        elif player is not None and self._preview_audio is not None:
+            self._play_preview()  # stopped: from the preview point again
+        else:
+            # Nothing loaded yet (or stopped by opening a chart): load the
+            # selected difficulty's song now rather than after the settle delay.
+            if self.difficulty_list.currentItem() is not None:
+                self.difficulty_changed()
+                self.preview_timer.stop()
+                self.start_preview()
+
+    def rewind_preview(self) -> None:
+        """Stop, parked at the preview point so Play starts where song select does."""
+        player = self.preview_player
+        if player is None or self._preview_audio is None:
+            return
+        self.preview_fade.stop()
+        player.stop()
+        player.setPosition(max(0, self._preview_ms if self._preview_ms >= 0 else int(player.duration() * 0.4)))
 
     # -- recent charts ----------------------------------------------------
 
@@ -10353,6 +10694,42 @@ class LibraryPageController:
         self.library_songs = {}
         self.listed_paths = set()
         self.start_scan()
+
+    def reload_current_song(self) -> None:
+        """Re-read only the selected song's folder, from disk, ignoring the cache.
+
+        For the chart just saved in osu!'s editor: Quick scan walks every file
+        in Songs to find one, and trusts mtime and size, which an edit can
+        leave unchanged. osu!.db is re-read too, so stars osu! has recomputed
+        since show up.
+        """
+        item = self.song_list.currentItem()
+        if item is None or item.data(Qt.UserRole) is None:
+            return
+        folder = Path(item.data(Qt.UserRole))
+        # A fresh dict, not the library's: `scan` drops every cache entry it
+        # did not walk past, which over one folder is everything else.
+        fresh: dict[str, list] = {}
+        found = [d for d in scan(folder, fresh) if d is not None]
+        for key in [key for key in self.library_cache if Path(key).parent == folder]:
+            del self.library_cache[key]
+        self.library_cache.update(fresh)
+        self.listed_paths -= {d.path for d in self.library_songs.pop(folder, [])}
+        if found:
+            self.library_songs[folder] = found
+            self.listed_paths |= {d.path for d in found}
+        for difficulty in found:
+            self._tempo_cache.pop(difficulty.path, None)
+        songs_folder = self.window.settings.string_value("library/songs_folder", "")
+        if songs_folder:
+            self.load_star_ratings(Path(songs_folder))
+        try:
+            save_cache(self.window._library_cache_path(), self.library_cache)
+        except OSError:
+            pass  # Same trade as finish_scan: the list matters more.
+        # Selection is kept by folder, but the row is re-set from -1 so the
+        # difficulty list refills from the new entries.
+        self.rebuild_song_list()
 
     def start_scan(self) -> None:
         folder = self.window.settings.string_value("library/songs_folder", "")
@@ -10774,24 +11151,15 @@ class LibraryPageController:
         if self._resume_ms is not None:
             start, self._resume_ms = self._resume_ms, None
         player.setPosition(max(0, start))
-        self.apply_preview_rate()
+        # Always the original speed and pitch: the rate mod is an editing/play
+        # choice, and the player object persists across songs.
+        player.setPlaybackRate(1.0)
         player.play()
         volume = self.window.settings.int_value("audio/music_volume", 65) / 100.0
         self.preview_fade.stop()
         self.preview_fade.setStartValue(0.0)
         self.preview_fade.setEndValue(volume)
         self.preview_fade.start()
-
-    def apply_preview_rate(self) -> None:
-        """The rate mod reaches song select's preview too, as it does in
-        osu!. The speed buttons do not: they are an editing aid, not a mod."""
-        if self.preview_player is None:
-            return
-        mod = self.window._rate_mod()
-        rate, pitch = RATE_MODS[mod] if mod else (1.0, False)
-        # NC/DC resample (pitch follows); DT/HT keep the pitch.
-        self.preview_player.setPitchCompensation(not pitch)
-        self.preview_player.setPlaybackRate(rate)
 
     def set_preview_volume(self, volume: float) -> None:
         """Reach a preview already playing. `_play_preview` reads the setting
@@ -11667,15 +12035,17 @@ class MainWindow(QMainWindow):
         # Fancy-Arranger-only: this selection belongs to the transform
         # workflow on that page, so a click elsewhere (including anywhere on
         # the Editor page) must not clear it just because it landed outside
-        # these three widgets.
+        # a whitelist of widgets. The whitelist missed the dock scrollbar and
+        # the sub-toolbar's sliders, so dragging Background Opacity or CS
+        # dropped the selection the slider was about to act on. The one
+        # deliberate deselect here is a press on the canvas that misses every
+        # note; the timeline clears its own on an empty click, and Esc too.
         on_fancy_arranger_page = hasattr(self, "page_stack") and self.page_stack.currentWidget() is self.fancy_arranger_page
         if kind==QEvent.MouseButtonPress and on_fancy_arranger_page and hasattr(self,"timeline") and self.selected:
-            clicked=QApplication.widgetAt(event.globalPosition().toPoint())
-            inside_timeline = self._is_descendant(clicked, self.timeline)
-            inside_controls = self._is_descendant(clicked, self.transform_controls_panel)
-            inside_canvas = self._is_descendant(clicked, self.canvas)
-            if not inside_timeline and not inside_controls and not inside_canvas:
-                self.clear_transform_selection()
+            global_pos = event.globalPosition().toPoint()
+            if self._is_descendant(QApplication.widgetAt(global_pos), self.canvas):
+                if self.canvas._note_at_canvas_position(QPointF(self.canvas.mapFromGlobal(global_pos))) is None:
+                    self.clear_transform_selection()
         return super().eventFilter(watched,event)
     def clear_transform_selection(self)->None:
         self.selected.clear(); self.timeline.selected.clear(); self.preview_positions=dict(self.applied_positions); self.refresh_canvas()
@@ -11796,6 +12166,9 @@ class MainWindow(QMainWindow):
             self.timeline.skin = self.skin
             self.timeline.set_note_opacity(self.note_opacity_percent)
         self.hitsounds.set_skin_sounds(self.skin.sounds)
+        if hasattr(self, "canvas"):
+            self.canvas.animate_transforms = self.settings.bool_value("appearance/transform_animation", True)
+        self._sync_backdrops()
 
     def maybe_check_for_updates(self) -> None:
         """Startup update check, on a worker thread so the window never waits.
@@ -11810,12 +12183,36 @@ class MainWindow(QMainWindow):
 
         def finished(release: object, _reachable: bool) -> None:
             if release is not None and getattr(release, "tag", "") != skipped:
-                updater.present_update(release, self.settings, self)
+                updater.present_update(release, self.settings, self, self.restart_into_update)
 
         # Held on self so Qt does not destroy the thread while it is running.
         self._update_check = updater.CheckThread(self)
         self._update_check.result.connect(finished)
         self._update_check.start()
+
+    def restart_into_update(self, staging) -> bool:
+        """Quit into the staged build. False when the user stays for unsaved work.
+
+        The save prompt is asked here because close() from code is not
+        spontaneous, and closeEvent only asks for a quit the user started.
+        The helper is launched before closing so a failure to start it leaves
+        the window up rather than the app gone and nothing installed.
+        """
+        if not self._confirm_leaving_editor():
+            return False
+        try:
+            updater.launch_apply(staging)
+        except OSError as error:
+            QMessageBox.warning(
+                self,
+                tr("MainWindow", "Update failed"),
+                tr("MainWindow", "The update could not be installed. Your current copy was not changed.")
+                + "\n\n" + str(error),
+            )
+            return False
+        self.close()
+        QApplication.quit()
+        return True
 
     def open_settings(self) -> None:
         dialog = SettingsDialog(self.settings, self.shortcuts, self)
@@ -11827,8 +12224,24 @@ class MainWindow(QMainWindow):
             self._set_volumes(dialog.music_volume.value(), dialog.hitsound_volume.value())
         dialog.music_volume.valueChanged.connect(live_volumes)
         dialog.hitsound_volume.valueChanged.connect(live_volumes)
+        # Same for the backdrop's opacity; after exec the saved value is read
+        # back, which is the restore on Cancel and a no-op after OK.
+        dialog.background_opacity.valueChanged.connect(self._sync_backdrops)
+        # The opacity preview draws with the timeline's own note code, in
+        # whichever skin the combo shows. Loaded once per name so dragging the
+        # slider repaints without touching disk.
+        previews: dict[str, TaikoSkin] = {}
+
+        def paint_notes(painter, rect, name, percent):
+            if name not in previews:
+                root = skins_root(self.settings.string_value("library/songs_folder", ""))
+                folder = root / name if name and root is not None and (root / name).is_dir() else None
+                previews[name] = TaikoSkin(folder)
+            paint_note_preview(painter, rect, previews[name], percent)
+        dialog.note_opacity_preview.paint_notes = paint_notes
         dialog.exec()
         self._apply_audio_settings()
+        self._sync_backdrops()
 
     def _build_ui(self) -> None:
         central = QWidget()
@@ -11986,6 +12399,14 @@ class MainWindow(QMainWindow):
                 background: #191f29;
                 color: #e8edf3;
             }
+            /* The Editor/Gimmick pages' map backdrop: the chrome between it
+               and the (opaque) lanes lets it through, and nothing else does. */
+            QWidget[seeThrough="true"], QWidget#mapBackdrop, QWidget#mapBackdrop QLabel { background: transparent; }
+            /* Under a stylesheet a menu item with no padding of its own gets
+               no gap before its shortcut column: "Reload this beatmap\tF5"
+               drew the F5 over the label's last letters. */
+            QMenu::item { padding: 4px 12px; }
+            QMenu::item:selected { background: #2a3341; }
             QPushButton {
                 background: #f3a6bd; color: #17191f;
                 border: 0;
@@ -12203,7 +12624,7 @@ class MainWindow(QMainWindow):
         # object allocated there reached eventFilter as a QWidgetItem -- an
         # access violation inside show(), about one test_gimmick_editor run in six.
         self.approach_rate_control=DifficultyValueControl("AR",10.0,"Approach Rate: 0 is slowest, 10 is fastest. Export default is 10.00.")
-        self.circle_size_control=DifficultyValueControl("CS",7.0,"Circle Size: 0 is biggest, 10 is smallest. Export default is 7.00.")
+        self.circle_size_control=DifficultyValueControl("CS",7.0,"Circle Size: 0 is biggest, 10 is smallest. Starts at the map's own CS.")
         sub_toolbar.addWidget(self.approach_rate_control)
         sub_toolbar.addWidget(self.circle_size_control)
         page_layout.addWidget(sub_toolbar_scroll)
@@ -12831,8 +13252,30 @@ class MainWindow(QMainWindow):
 
     # -- Editor page: page switcher + multi-difficulty view stacking --------
 
+    def _new_backdrop_page(self) -> MapBackdrop:
+        """A page floored with the active map's faded background; the Editor
+        and Gimmick pages are the two that have one."""
+        page = MapBackdrop()
+        if not hasattr(self, "_backdrops"):
+            self._backdrops: list[MapBackdrop] = []
+        self._backdrops.append(page)
+        return page
+
+    def _sync_backdrops(self, percent: int | None = None) -> None:
+        """Hand every page's backdrop the active map's picture and the
+        opacity (the setting, or `percent` while Settings is previewing one).
+        Cheap when neither changed: they compare first."""
+        if not hasattr(self, "_backdrops"):
+            return  # the first appearance pass runs before any page exists
+        path = self.current_background_path
+        if percent is None:
+            percent = self.settings.int_value("appearance/background_opacity", BACKDROP_OPACITY_DEFAULT_PERCENT)
+        for page in getattr(self, "_backdrops", ()):
+            page.set_background(path)
+            page.set_opacity(percent)
+
     def _build_editor_page(self) -> QWidget:
-        page = QWidget()
+        page = self._new_backdrop_page()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
@@ -12938,14 +13381,16 @@ class MainWindow(QMainWindow):
         self.editor_views_layout.setSpacing(10)
         self.editor_views_layout.addStretch(1)
         scroll.setWidget(views_container)
+        see_through(scroll, scroll.viewport(), views_container)
+        add_view_on_empty_right_click(views_container, self._open_add_view_dialog)
         smooth(scroll)
         layout.addWidget(scroll, 1)
         layout.addWidget(add_view_row(self._open_add_view_dialog))
 
         # Global, not per-view: applies to whichever view has focus. Only
         # one of these two rows is visible at a time (chart vs SV).
-        layout.addWidget(self._build_global_tool_row())
-        layout.addWidget(self._build_global_sv_tool_row())
+        layout.addWidget(see_through_row(self._build_global_tool_row()))
+        layout.addWidget(see_through_row(self._build_global_sv_tool_row()))
 
         # Difficulty (source path) -> that group's QVBoxLayout. Views append
         # to the bottom of their difficulty's group and are never movable;
@@ -12963,7 +13408,7 @@ class MainWindow(QMainWindow):
         decided by GimmickEntryDialog on first entry, not by whatever happened
         to be open.
         """
-        page = QWidget()
+        page = self._new_backdrop_page()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
@@ -13036,6 +13481,8 @@ class MainWindow(QMainWindow):
         self.gimmick_views_layout.setSpacing(10)
         self.gimmick_views_layout.addStretch(1)
         scroll.setWidget(views_container)
+        see_through(scroll, scroll.viewport(), views_container)
+        add_view_on_empty_right_click(views_container, self._open_gimmick_add_view_dialog)
         smooth(scroll)
         layout.addWidget(scroll, 1)
         # Adds to the layer stack rather than to a difficulty group: the
@@ -13053,7 +13500,7 @@ class MainWindow(QMainWindow):
         self._gimmick_row_buttons: list[QPushButton] = []
         for layer_id, _view_type, _label in self.GIMMICK_LAYERS:
             row = self._build_gimmick_row(layer_id)
-            self.gimmick_tool_rows[layer_id] = row
+            self.gimmick_tool_rows[layer_id] = see_through_row(row)
             row.setVisible(False)
             layout.addWidget(row)
 
@@ -18055,6 +18502,11 @@ class MainWindow(QMainWindow):
         self.fancy_density.load_document(state.document, state.duration_hint)
 
         self.canvas.set_background(str(state.background_path) if state.background_path else None)
+        self._sync_backdrops()
+        # The box is what Ctrl+S / Export write, so left at its 7.0 default it
+        # overwrote every map's own CircleSize. Only the canvas listens to
+        # `changed`, so this redraws and marks nothing dirty.
+        self.circle_size_control.set_value(difficulty_setting(state.document, "CircleSize", 5.0))
 
         for button in (
             self.play_button, self.apply_button, self.reset_button, self.export_button,
@@ -18167,6 +18619,7 @@ class MainWindow(QMainWindow):
         # reached disk before Export or Apply to Original.
         self.state.history.touch()
         self.canvas.set_background(str(destination))
+        self._sync_backdrops()
         self.status.setText(f"Background set to {destination.name}. Ctrl+S (or Export/Apply to Original) writes it to the .osu.")
 
     def _selection_changed(self, selected) -> None:
@@ -18559,7 +19012,6 @@ class MainWindow(QMainWindow):
         if self._rate_mod():
             self._mods = frozenset(mod for mod in self._mods if mod not in RATE_MODS)
             self._store_mods()
-            self._library.apply_preview_rate()
         self.player.set_pitch_shift(False)
         self._change_playback_speed(rate)
 
@@ -18586,7 +19038,6 @@ class MainWindow(QMainWindow):
             # Pitch first: the engine reads both on its next grain, in order.
             self.player.set_pitch_shift(pitch)
             self._change_playback_speed(rate)
-            self._library.apply_preview_rate()
         for view in self._gameplay_views:
             view.set_mods(self._mods)
         self._sync_mod_controls()
@@ -19191,6 +19642,11 @@ register_shortcut_definitions(
 
 
 def main() -> None:
+    # Before anything else: this may be the staged build, started only to copy
+    # itself over the app folder. It shows no window and relaunches that copy.
+    if updater.run_apply_mode(sys.argv):
+        return
+    update_failure = updater.cleanup_leftovers() if updater.can_install_in_place() else ""
     settings = SettingsManager()
     # FreeType, not DirectWrite: DirectWrite draws Exo 2 with ClearType's red
     # and blue fringes whatever the font's style strategy asks for, which on
@@ -19225,6 +19681,13 @@ def main() -> None:
     window = MainWindow()
     window.showMaximized()
     window.start_library()
+    if update_failure:
+        QMessageBox.warning(
+            window,
+            tr("MainWindow", "Update failed"),
+            tr("MainWindow", "The update could not be installed. Your current copy was not changed.")
+            + "\n\n" + update_failure,
+        )
     window.maybe_check_for_updates()
     raise SystemExit(app.exec())
 

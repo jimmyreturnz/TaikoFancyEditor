@@ -629,6 +629,26 @@ class MusicAlignmentTests(unittest.TestCase):
                 out = _pull(stretcher, source, mono, 1.0 / rate + 0.5, rate)
                 self.assertEqual(len(_spikes(out, 1)), 1)
 
+    def test_no_note_is_lost_between_grains(self):
+        """DT's read head skips `sequence * (rate - 1)` of source per grain,
+        and the notes in that skip were never voiced -- a third of a chart at
+        1.5x. A 1/8 stream at 180 BPM puts a note in most of the gaps."""
+        source = _bed(SAMPLE_RATE * 6)
+        mono = downmix_to_mono(source)
+        notes = list(range(SAMPLE_RATE // 4, SAMPLE_RATE * 4, SAMPLE_RATE // 12))
+        for rate in (1.5, 1.25, 0.75):
+            for pitch in (False, True):
+                with self.subTest(rate=rate, pitch=pitch):
+                    mixer = HitsoundMixer()
+                    mixer.set_samples({"don": _impulse_sample(30)})
+                    mixer.set_schedule(notes, ["don"] * len(notes),
+                                       [1.0] * len(notes))
+                    stretcher = TimeStretcher(mixer)
+                    stretcher.pitch = pitch
+                    stretcher.reset(0.0)
+                    out = _pull(stretcher, source, mono, 4.5 / rate, rate)
+                    self.assertEqual(len(_spikes(out, 1)), len(notes))
+
     def test_the_notes_do_not_reach_the_splice_search(self):
         """Mixed into `out` after the tail is taken. Mixed any earlier, a note
         would be carried into the next grain's crossfade and into what the
