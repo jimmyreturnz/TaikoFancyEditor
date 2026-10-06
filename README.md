@@ -23,7 +23,8 @@ The main inspirations include Alchyr's ranked maps *13 Stairs* and *Helios*, whi
 
 ## Credits
 - [Alchyr's TaikoEditor](https://github.com/Alchyr/TaikoEditor)
-- {Mew, _gt, Alchyr}'s maps for study reference, thank you so much!
+- {Mew, _gt, Alchyr}'s maps for study reference
+- Many thanks to riunosk for many ideas to polish and improve the app
 
 ---
 
