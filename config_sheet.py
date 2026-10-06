@@ -44,6 +44,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+import theme
+
 from smooth_scroll import SmoothScroller
 
 WARN_COLOR = "#ffb347"
@@ -64,7 +66,8 @@ def ui_asset(name: str) -> str:
     for root in roots:
         path = root / "assets" / "ui" / name
         if str(root) and path.is_file():
-            return path.as_posix()
+            # The art carries pink-theme colours; see theme.svg_asset.
+            return theme.svg_asset(path.as_posix())
     return (roots[-1] / "assets" / "ui" / name).as_posix()
 
 
@@ -182,7 +185,9 @@ def bind_segments(combo: QComboBox, labels: list[str] | None = None) -> QFrame:
     group.setExclusive(True)
     for index in range(combo.count()):
         text = labels[index] if labels else combo.itemText(index)
-        button = QPushButton(text)
+        # Doubled: a button reads a lone "&" as a shortcut marker, and
+        # "A & B" came out as "A  B".
+        button = QPushButton(text.replace("&", "&&"))
         button.setCheckable(True)
         group.addButton(button, index)
         buttons.append(button)

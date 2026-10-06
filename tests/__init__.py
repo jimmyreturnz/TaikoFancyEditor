@@ -36,6 +36,9 @@ _real = QSettings(_settings.ORGANIZATION_NAME, _settings.APPLICATION_NAME)
 _copy = QSettings(_PATH, QSettings.IniFormat)
 for _key in _real.allKeys():
     _copy.setValue(_key, _real.value(_key))
+# Except the theme: the colours the tests assert are the pink literals in the
+# code, and theme.py reads this copy once, at import, for the whole process.
+_copy.setValue("appearance/theme", "pink")
 _copy.sync()
 del _real, _copy
 

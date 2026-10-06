@@ -60,7 +60,9 @@ recovery -- two real bugs inherited from reading a stale copy.
 
 - `tools/profile_playback.py <map> [frames] [--gimmick] [--profile]` — per-frame
   render cost against the 8.33ms budget. Reports the distribution, because
-  stutter is the tail, not the mean.
+  stutter is the tail, not the mean. `--playing RATE` plays the song for real
+  and reports the gaps between the app's own frames; it showed the
+  time-stretch thread costs no frames (2026-10-06).
 - `tools/measure_audio_backend.py <backend> <audio> <rate> [seconds]` — position
   reporting granularity and rate accuracy. Use a real map's audio; FFmpeg's
   granularity turned out to be codec-dependent, so a generated WAV lied.
@@ -532,6 +534,13 @@ there -- `timing_delete_enabled`, not `timing_edit_enabled`.
   label. `tools/check_button_widths.py` is the harness, and it has to run on
   the **real** platform: the offscreen plugin ships no fonts, every glyph
   measures as an identical tofu box, and it reports nothing.
+- **Write colours in the pink palette; `theme.py` recolours them.** A theme
+  is a map from the pink literals to its own, applied by a wrapped
+  `QWidget.setStyleSheet` and by `theme.color()` in paint code -- so a new
+  stylesheet is themed for free, but a new `QColor("#...")` of a chrome
+  colour must be `theme.color("#...")`. Chart colours (notes, snap ticks, SV
+  green) are deliberately not keys. Read once at import, so a change needs a
+  restart; the test suite is pinned to pink in `tests/__init__.py`.
 - **SV is typed to 8 decimals and shown at 2.** `SV_DECIMALS` is the spin-box
   precision, not the label's: under a 60000 BPM red line the SV that moves a
   note a visible distance differs from its neighbour in the seventh decimal, so
@@ -551,7 +560,7 @@ there -- `timing_delete_enabled`, not `timing_edit_enabled`.
   thing that is not a beat position: the millisecond under the cursor for Ctrl
   placement.
 - **`taiko_arranger/taiko_arranger/` is a stale untracked copy.** It will
-  pollute any repo-wide search. So will `patches_backup/`.
+  pollute any repo-wide search.
 - **Tests: run per file in parallel**, not `unittest discover`. Discover in one
   process still runs for tens of minutes; per file finishes in about 70s:
 

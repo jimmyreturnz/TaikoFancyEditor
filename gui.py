@@ -58,6 +58,7 @@ from settings import (
     register_shortcut_definitions, should_ignore_shortcut_focus,
 )
 from settings_dialog import SettingsDialog
+import theme
 import updater
 from osu_io.parser import parse_osu
 from osu_io.timing import (
@@ -290,6 +291,15 @@ SLIDER_MULTIPLIER_ASSUMED = 1.4
 
 
 @lru_cache(maxsize=None)
+def value_label_font(base: QFont) -> QFont:
+    """The numbers drawn on a layer -- SV, volume, BPM -- in the approved
+    mockup's 11px bold app font, rather than the painter's default."""
+    font = QFont(base)
+    font.setPixelSize(11)
+    font.setBold(True)
+    return font
+
+
 def tick_kind(position_in_beat: int, divisor: int) -> str:
     """Which tick style a grid line at `position_in_beat` of `divisor` gets."""
     if position_in_beat == 0:
@@ -1389,7 +1399,7 @@ class DrawingSurface(QWidget):
             if self.active is not None and (point-self.active[-1]).manhattanLength()>=1:self.active.append(point)
             self.active=None;event.accept();self.update()
     def paintEvent(self,event):
-        painter=QPainter(self);painter.fillRect(self.rect(),QColor("#11151c"));painter.setRenderHint(QPainter.Antialiasing,True);painter.setPen(QPen(QColor("#f3a6bd"),4,Qt.SolidLine,Qt.RoundCap,Qt.RoundJoin))
+        painter=QPainter(self);painter.fillRect(self.rect(),theme.color("#11151c"));painter.setRenderHint(QPainter.Antialiasing,True);painter.setPen(QPen(theme.color("#f3a6bd"),4,Qt.SolidLine,Qt.RoundCap,Qt.RoundJoin))
         for stroke in self.strokes:
             if len(stroke)==1:painter.drawPoint(stroke[0])
             for a,b in zip(stroke,stroke[1:]):painter.drawLine(a,b)
@@ -1768,11 +1778,11 @@ class TransformCanvas(QWidget):
         self._update_view_geometry()
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, True)
-        painter.fillRect(self.rect(), QColor("#11151c"))
+        painter.fillRect(self.rect(), theme.color("#11151c"))
         backdrop = self._scaled_background()
         if backdrop is not None:
             painter.drawPixmap(self.render_rect.topLeft(), backdrop)
-        painter.setPen(QPen(QColor("#465164"), 1))
+        painter.setPen(QPen(theme.color("#465164"), 1))
         painter.drawRect(
             self.playfield_rect
         )
@@ -2242,8 +2252,9 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
         self.ghost_pen = QPen(QColor(255, 255, 255, 110), 2)
         self.normal_note_pen = QPen(QColor(255, 255, 255, 220), 2)
         self.selected_note_pen = QPen(QColor(255, 220, 110, 235), 3)
-        self.baseline_pen = QPen(QColor("#7a8492"), 2)
+        self.baseline_pen = QPen(theme.color("#7a8492"), 2)
         self.bpm_label_pen = QPen(QColor(225, 230, 240, 200), 1)
+        self.label_font = value_label_font(self.font())
         self.cursor_pen = QPen(QColor("#ffffff"), 3)
         # Two weights of red line: the ones this view owns, and the ones drawn
         # so the owned ones can be read in context.
@@ -2272,6 +2283,7 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
             "thirteenth": (QPen(QColor("#8bd1ff"), 1), 12),
             "other": (QPen(QColor("#738098"), 1), 10),
         }
+        self.beat_line_pen = QPen(QColor(255, 255, 255, 70), 1)
         self._min_tick_spacing_px = max(
             pen.width() for pen, _height in self._tick_styles.values()
         ) + 1
@@ -3092,6 +3104,13 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
         height = self.height()
         split_rows, symmetric = self.split_rows, self.symmetric
         kinds: list[tuple[list[QLine], int]] = []
+        # Every whole beat also gets a faint line the full height of the view,
+        # under the ticks, as in the approved mockup: the ticks stay where each
+        # layer wants them (edges, or the middle on a split layer) and the line
+        # is what the eye follows down through the notes. Identity, not a
+        # second lookup: `kinds` below hands out this very list for "beat".
+        beat_lines = batches.setdefault("beat", [])
+        full_beats: list[QLine] = []
 
         while tick_time <= end_time + snap_length:
             at = tick_time + 0.001
@@ -3157,6 +3176,8 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
             # `tick_time`, which keeps the grid from drifting off its own beats
             # across a long section.
             x = round(max(-1.0, min(right_edge, x_for_time(osu_snap_ms(tick_time)))))
+            if lines is beat_lines:
+                full_beats.append(QLine(x, 0, x, height))
 
             if split_rows:
                 # Straddling the middle instead of growing in from the edges:
@@ -3174,6 +3195,9 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
 
             tick_time += snap_length
 
+        if full_beats:
+            painter.setPen(self.beat_line_pen)
+            painter.drawLines(full_beats)
         for kind, lines in batches.items():
             if lines:
                 painter.setPen(self._tick_styles[kind][0])
@@ -3238,8 +3262,11 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
                 and x - last_label_x >= SV_LABEL_MIN_SPACING_PX
             ):
                 last_label_x = x
+                painter.save()
+                painter.setFont(self.label_font)
                 painter.setPen(self.bpm_label_pen)
                 painter.drawText(QPointF(x + 4, self.height() - 4), f"{point.bpm:.0f} BPM")
+                painter.restore()
 
     def _gimmick_centre_near_x(self, x: float, radius_px: float = 12.0):
         """The owned gimmick line in the same pixel neighbourhood as `x`, if any.
@@ -3326,7 +3353,7 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor("#151b24"))
+        painter.fillRect(self.rect(), theme.color("#151b24"))
         self.draw_kiai_bands(painter)
 
         baseline_y = self._baseline_y()
@@ -3953,6 +3980,12 @@ class SVEditorView(TimeAxisMixin, QWidget):
         self.graph_pen = QPen(QColor(140, 255, 185, 210), 2)
         self.range_brush = QColor(190, 195, 205, 40)
         self.label_pen = QPen(QColor(225, 230, 240, 235), 1)
+        # The numbers on the graph, as the approved mockup draws them: the app
+        # font, bold, and the SV or volume values in the theme's accent so they
+        # read apart from the line labels. Kept off the painter's own font,
+        # which the shared cursor readout also uses.
+        self.label_font = value_label_font(self.font())
+        self.value_pen = QPen(theme.color("#ff9dcc"), 1)
         self.cursor_pen = QPen(QColor("#ffffff"), 2)
 
         self.setMinimumHeight(self.MIN_HEIGHT)
@@ -4614,7 +4647,7 @@ class SVEditorView(TimeAxisMixin, QWidget):
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor("#151b24"))
+        painter.fillRect(self.rect(), theme.color("#151b24"))
         self.draw_kiai_bands(painter)
         painter.setRenderHint(QPainter.Antialiasing, True)
 
@@ -4635,7 +4668,7 @@ class SVEditorView(TimeAxisMixin, QWidget):
             left, width = min(anchor_x, current_x), abs(current_x - anchor_x)
             painter.fillRect(QRectF(left, 0, width, self.height()), self.range_brush)
 
-        painter.setPen(QPen(QColor("#3a4554"), 1))
+        painter.setPen(QPen(theme.color("#3a4554"), 1))
         painter.drawLine(0, int(bottom), self.width(), int(bottom))
         self._draw_scale_guides(painter, top, bottom)
 
@@ -4677,8 +4710,11 @@ class SVEditorView(TimeAxisMixin, QWidget):
             painter.drawLine(round(x), 0, round(x), self.height())
             bpm = self._bpm_at.get(time_ms) if self.show_bpm_labels else None
             if bpm and clear_of_previous:
+                painter.save()
+                painter.setFont(self.label_font)
                 painter.setPen(self.label_pen)
                 painter.drawText(QPointF(x + 4, self.height() - 6), f"{bpm:.0f} BPM")
+                painter.restore()
 
         self._draw_sv_curve(painter, top, bottom, start_time, end_time)
         self._draw_placement_ghost(painter, top, bottom)
@@ -4697,6 +4733,8 @@ class SVEditorView(TimeAxisMixin, QWidget):
         """
         painter.setPen(QPen(QColor(120, 132, 150, 90), 1, Qt.DotLine))
         painter.drawLine(0, int(top), self.width(), int(top))
+        painter.save()
+        painter.setFont(self.label_font)
         painter.setPen(self.label_pen)
         if self.volume_mode:
             painter.drawText(QPointF(4, top + 12), f"{self.scale_max:.0f}%")
@@ -4704,6 +4742,7 @@ class SVEditorView(TimeAxisMixin, QWidget):
         else:
             painter.drawText(QPointF(4, top + 12), f"{self.scale_max:.2f}x")
             painter.drawText(QPointF(4, bottom - 4), f"{self.scale_min:.2f}x")
+        painter.restore()
 
     def _draw_sv_curve(
         self, painter: QPainter, top: float, bottom: float, start_time: float, end_time: float,
@@ -4799,14 +4838,18 @@ class SVEditorView(TimeAxisMixin, QWidget):
         # property of the pair: chaining from the last label instead made which
         # points got labelled depend on where the window happened to start, so
         # they blinked on and off as the view scrolled.
-        painter.setPen(self.label_pen)
+        painter.save()
+        painter.setFont(self.label_font)
+        painter.setPen(self.value_pen)
+        ascent = painter.fontMetrics().ascent()
         for i, (point, (_time_ms, sv)) in enumerate(zip(points, visible)):
             if not 0 <= point.x() <= self.width():
                 continue
             if i and point.x() - points[i - 1].x() < SV_LABEL_MIN_SPACING_PX:
                 continue
             label = f"{sv:.0f}%" if self.volume_mode else f"{sv:.2f}x"
-            painter.drawText(QPointF(point.x() + 3, point.y() - 4), label)
+            painter.drawText(QPointF(point.x() + 3, self._label_baseline(point.y(), ascent)), label)
+        painter.restore()
 
     def _draw_placement_ghost(self, painter: QPainter, top: float, bottom: float) -> None:
         """Dashed preview of the green line a click would place, at the snapped
@@ -4826,8 +4869,26 @@ class SVEditorView(TimeAxisMixin, QWidget):
             painter.setBrush(QColor(140, 255, 185, 130))
             painter.setPen(Qt.NoPen)
             painter.drawEllipse(QPointF(x, y), 4, 4)
-            painter.setPen(self.label_pen)
-            painter.drawText(QPointF(x + 6, y - 6), f"{self._hover_sv:.2f}x")
+            painter.save()
+            painter.setFont(self.label_font)
+            painter.setPen(self.value_pen)
+            painter.drawText(
+                QPointF(x + 6, self._label_baseline(y, painter.fontMetrics().ascent(), 6)),
+                f"{self._hover_sv:.2f}x")
+            painter.restore()
+
+    @staticmethod
+    def _label_baseline(y: float, ascent: int, gap: float = 4) -> float:
+        """Above the point, unless that runs off the top of the view.
+
+        The graph's top margin is 20px scaled by the band's height -- about 7px
+        on a gimmick band -- so a point at the top of the range (100% volume,
+        the highest SV) put its label's ascent above y=0 and cut it off. Below
+        the point it reads just as well.
+        """
+        if y - gap - ascent >= 0:
+            return y - gap
+        return y + gap + ascent
 
 
 # Screen distance one whole beat covers at 1.0x SV. osu!taiko's scroll speed is
@@ -5521,7 +5582,7 @@ class GameplayViewerView(QWidget):
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor("#12161d"))
+        painter.fillRect(self.rect(), theme.color("#12161d"))
 
         center_y = self.height() / 2
         normal_radius = self.height() * TAIKO_NOTE_SIZE / 2.0
@@ -5625,6 +5686,11 @@ class GameplayViewerView(QWidget):
                 # its head -- a fake slider's included, since that passes
                 # straight through the hit position.
                 if hit and not note.is_slider:
+                    continue
+                # Not a spinner: its art is not a CirclePiece, and the full
+                # drumroll-strength stamp it took lit the whole swell yellow on
+                # every beat of a chorus, which osu! does not do.
+                if note.is_spinner:
                     continue
                 x = self.x_for_time(note.time)
                 radius = big_radius if (note.is_finisher or note.is_spinner) else normal_radius
@@ -6027,6 +6093,14 @@ class TimingOverviewBar(QWidget):
         # fixed for the life of a document, so it is painted once into a pixmap
         # rather than 120 times a second. Same idiom as DensityOverview below.
         self.static_layer=QPixmap(); self.static_layer_dirty=True
+        # Two sources say how long the bar is: the document (its last object,
+        # via timeline_bar_data) and the decoded track (set_duration). They
+        # differ -- 170343 against 170793ms on can you hear my voice -- and each
+        # used to overwrite the other, so every edit squeezed the bar to the
+        # document's length and the info timer stretched it back: dragging a
+        # green line made every marker jump sideways and back on each step.
+        # Both are kept and the longer one drawn.
+        self._document_ms=1; self._media_ms=0
         self.setFixedHeight(28); self.setCursor(Qt.PointingHandCursor)
     def load_document(self,document,duration_ms:int)->None:
         self.apply_document_data(timeline_bar_data(document,duration_ms))
@@ -6038,7 +6112,8 @@ class TimingOverviewBar(QWidget):
         showing the same document. Each one deriving it for itself walked every
         timing point in the map three times over on every edit.
         """
-        self.duration_ms,self.kiai,self.timing_markers,self.bookmarks,self.preview_time,self._marker_kinds=data
+        self._document_ms,self.kiai,self.timing_markers,self.bookmarks,self.preview_time,self._marker_kinds=data
+        self.duration_ms=max(self._document_ms,self._media_ms)
         self._marker_cache_key=None
         self.static_layer_dirty=True
         self.update()
@@ -6049,8 +6124,11 @@ class TimingOverviewBar(QWidget):
         # dirtying the static layer each time rebuilt ~1150 marker lines for a
         # value that had not moved -- which is exactly the cost that layer
         # exists to avoid.
-        if value>0 and value!=self.duration_ms:
-            self.duration_ms=value;self.static_layer_dirty=True;self.update()
+        if value<=0:return
+        self._media_ms=value
+        duration=max(self._document_ms,value)
+        if duration!=self.duration_ms:
+            self.duration_ms=duration;self.static_layer_dirty=True;self.update()
     def set_time(self,value:int)->None:self.current_time=max(0,min(value,self.duration_ms));self.update()
     def set_viewport(self,center:int,window_ms:float)->None:
         self.viewport_start=max(0,center-window_ms/2);self.viewport_end=min(self.duration_ms,center+window_ms/2);self.update()
@@ -6109,7 +6187,7 @@ class TimingOverviewBar(QWidget):
         timeline above it. None of it changes while the song plays.
         """
         if self.width()<=0 or self.height()<=0:return
-        layer=QPixmap(self.size());layer.fill(QColor("#0d1219"))
+        layer=QPixmap(self.size());layer.fill(theme.color("#0d1219"))
         painter=QPainter(layer);painter.setRenderHint(QPainter.Antialiasing,False)
         center=self.height()//2
         kiai_height=max(3,self.height()//3);kiai_top=center-kiai_height//2
@@ -6346,16 +6424,16 @@ class _SnapTicks(QWidget):
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
-        painter.setPen(QColor("#7d8794"))
+        painter.setPen(theme.color("#7d8794"))
         metrics = painter.fontMetrics()
         current = self.owner.currentData()
         for divisor, _index, x in self._positions():
             text = str(divisor)
             if divisor == current:
-                painter.setPen(QColor("#e8edf3"))
+                painter.setPen(theme.color("#e8edf3"))
             painter.drawText(QPointF(x - metrics.horizontalAdvance(text) / 2, metrics.ascent()), text)
             if divisor == current:
-                painter.setPen(QColor("#7d8794"))
+                painter.setPen(theme.color("#7d8794"))
 
     def mousePressEvent(self, event) -> None:
         x = event.position().x()
@@ -6452,7 +6530,10 @@ class EditorViewFrame(QWidget):
     # The frame's own sheet is selector-less, so it reaches every descendant:
     # each rule below names its own border to undo that.
     FRAME_STYLE = "background: #1b212b; border: 1px solid #303947; border-radius: 6px;"
-    FOCUSED_FRAME_STYLE = "background: #1b212b; border: 1px solid #8a4a6a; border-radius: 6px;"
+    # The approved mockup's focused lane: a 2px rim in the theme's focus colour
+    # rather than a 1px one in a muted shade of it, which beside the other
+    # lanes' 1px #303947 read as no difference at all.
+    FOCUSED_FRAME_STYLE = "background: #1b212b; border: 2px solid #ff66aa; border-radius: 6px;"
     HEADER_STYLE = "QWidget#viewHeader { border: 0; border-right: 1px solid #303947; border-radius: 0; }"
     # The song select's selection: a pink rim at the left edge and a tint.
     FOCUSED_HEADER_STYLE = (
@@ -6471,6 +6552,11 @@ class EditorViewFrame(QWidget):
         self.content: QWidget | None = None
 
         self.setStyleSheet(self.FRAME_STYLE)
+        # A plain QWidget does not paint its own sheet: without this the rim
+        # above was never drawn, focused or not, and nothing marked the view
+        # the tool row acts on but the header's left edge. Its content paints
+        # opaque (WA_OpaquePaintEvent), so this costs nothing per frame.
+        self.setAttribute(Qt.WA_StyledBackground, True)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(1, 1, 1, 1)
@@ -6488,8 +6574,7 @@ class EditorViewFrame(QWidget):
         # A gimmick layer's name already says what it is ("SV (barlines)"),
         # so only the Editor page's views, named by difficulty, get a kind.
         self.kind_label = QLabel("" if compact else view_type_caption(view_type).upper())
-        self.kind_label.setStyleSheet(
-            "color: #7d8794; font-size: 10px; font-weight: 700; border: 0; background: transparent;")
+        self.kind_label.setStyleSheet(self._caption_style(False))
         header.addWidget(self.kind_label)
         # Hidden once parented, never shown here: setVisible(True) on a label
         # with no parent yet makes it a top-level window of its own, which
@@ -6498,12 +6583,19 @@ class EditorViewFrame(QWidget):
 
         # Wrapped, not elided: two lines fit in the shortest view, and
         # "The Pharaoh's C..." cut off the part that told two apart.
-        self.difficulty_name_label = QLabel(difficulty_label)
+        self.difficulty_name_label = QLabel()
         self.difficulty_name_label.setTextFormat(Qt.PlainText)
         self.difficulty_name_label.setWordWrap(True)
-        colour = "#e8edf3" if compact else ACCENT_PINK
-        self.difficulty_name_label.setStyleSheet(
-            f"color: {colour}; font-weight: 700; border: 0; background: transparent;")
+        self.difficulty_name_label.setStyleSheet(self._name_style(False))
+        # Word wrap only breaks at spaces, so a one-word name wider than the
+        # header ("worldwidesuperstar") ran under the view beside it instead.
+        # Under a stylesheet font() still reports the base weight, so the
+        # measure is a bold copy -- the weight the label is drawn in.
+        bold = QFont(self.difficulty_name_label.font())
+        bold.setBold(True)
+        room = self.HEADER_WIDTH - header.contentsMargins().left() - header.contentsMargins().right()
+        self.difficulty_name_label.setText(breakable_words(difficulty_label, QFontMetrics(bold), room))
+        self.difficulty_name_label.setToolTip(difficulty_label)
         header.addWidget(self.difficulty_name_label)
         header.addStretch(1)
 
@@ -6574,6 +6666,21 @@ class EditorViewFrame(QWidget):
         self.focused = focused
         self.setStyleSheet(self.FOCUSED_FRAME_STYLE if focused else self.FRAME_STYLE)
         self.header.setStyleSheet(self.FOCUSED_HEADER_STYLE if focused else self.HEADER_STYLE)
+        # Inset by the rim's width, or the 2px border is half under the view.
+        margin = 2 if focused else 1
+        self.layout().setContentsMargins(margin, margin, margin, margin)
+        # The caption names what is focused, in the accent, as in the mockup.
+        self.kind_label.setStyleSheet(self._caption_style(focused))
+        self.difficulty_name_label.setStyleSheet(self._name_style(focused))
+
+    def _caption_style(self, focused: bool) -> str:
+        colour = "#ff9dcc" if focused else "#7d8794"
+        return f"color: {colour}; font-size: 10px; font-weight: 700; border: 0; background: transparent;"
+
+    def _name_style(self, focused: bool) -> str:
+        # A gimmick layer has no caption, so there the name carries the mark.
+        colour = "#ff9dcc" if focused and self.compact else ("#e8edf3" if self.compact else ACCENT_PINK)
+        return f"color: {colour}; font-weight: 700; border: 0; background: transparent;"
 
     def set_content(self, widget: QWidget) -> None:
         self.content = widget
@@ -6601,7 +6708,7 @@ class MapBackdrop(QWidget):
     it at all.
     """
 
-    NAVY = QColor("#191f29")
+    NAVY = theme.color("#191f29")
 
     def __init__(self) -> None:
         super().__init__()
@@ -6660,6 +6767,34 @@ def see_through(*widgets: QWidget) -> None:
     for widget in widgets:
         widget.setProperty("seeThrough", True)
         widget.setAutoFillBackground(False)
+
+
+def breakable_words(text: str, metrics: QFontMetrics, width: int) -> str:
+    """`text` with a zero-width break point between the letters of any word
+    wider than `width`, so word wrap can split it. Words that fit are left
+    whole: breaking every word would split ordinary names mid-word too."""
+    def split(word: str) -> str:
+        return ZERO_WIDTH_SPACE.join(word) if metrics.horizontalAdvance(word) > width else word
+    return " ".join(split(word) for word in text.split(" "))
+
+
+ZERO_WIDTH_SPACE = "\u200b"
+
+
+def opaque_strip(strip: QHBoxLayout) -> QWidget:
+    """The page's snap / time / timing bar / transport / mods row, on the app's
+    own ground rather than the map's backdrop.
+
+    As a bare layout it sat directly on the backdrop, and the backdrop rule
+    makes every label on the page transparent, so the art showed between and
+    behind the controls -- a strip of tools reading as part of the picture.
+    """
+    holder = QWidget()
+    holder.setObjectName("controlStrip")
+    holder.setAttribute(Qt.WA_StyledBackground, True)
+    strip.setContentsMargins(4, 3, 4, 3)
+    holder.setLayout(strip)
+    return holder
 
 
 def see_through_row(row: QWidget) -> QWidget:
@@ -7000,8 +7135,8 @@ class GimmickEntryDialog(QDialog):
 # same offsets gimmick_session writes, so the picture is the structure and not
 # an illustration of it.
 
-_DIAGRAM_INK = QColor("#e8edf3")
-_DIAGRAM_MUTED = QColor("#7d8794")
+_DIAGRAM_INK = theme.color("#e8edf3")
+_DIAGRAM_MUTED = theme.color("#7d8794")
 _DIAGRAM_RULE = QColor(255, 255, 255, 20)
 
 
@@ -7136,9 +7271,9 @@ def paint_hidden_anti_barline(painter: QPainter, rect: QRect, config: GimmickCon
         if not (half and abs(x - centre) < half):
             painter.drawLine(QPointF(x, top), QPointF(x, bottom))
         x += gap
-    painter.setPen(QPen(QColor("#ff66aa"), 2))
+    painter.setPen(QPen(theme.color("#ff66aa"), 2))
     painter.drawLine(QPointF(target, top - 4), QPointF(target, bottom + 4))
-    _diagram_text(painter, target + 4, rect.bottom() - 8, tr("MainWindow", "hit position"), QColor("#f3a6bd"))
+    _diagram_text(painter, target + 4, rect.bottom() - 8, tr("MainWindow", "hit position"), theme.color("#f3a6bd"))
 
 
 def paint_fake_slider_structure(painter: QPainter, rect: QRect, config: GimmickConfig) -> None:
@@ -9090,8 +9225,8 @@ class SVFunctionPreview(QWidget):
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, True)
-        painter.fillRect(self.rect(), QColor("#151b24"))
-        painter.setPen(QPen(QColor("#3a4554"), 1))
+        painter.fillRect(self.rect(), theme.color("#151b24"))
+        painter.setPen(QPen(theme.color("#3a4554"), 1))
         painter.drawRect(self.rect().adjusted(0, 0, -1, -1))
 
         margin = 22.0 if self.labels else 10.0
@@ -9110,10 +9245,10 @@ class SVFunctionPreview(QWidget):
             ratio = 0.5 if span < 1e-9 else (rate - low) / span
             dots.append(QPointF(margin + t * width, margin + (1 - ratio) * height))
 
-        painter.setPen(QPen(QColor(243, 166, 189, 110), 1))
+        painter.setPen(QPen(theme.rgba(243, 166, 189, 110), 1))
         painter.drawPolyline(QPolygonF(dots))
         painter.setPen(Qt.NoPen)
-        painter.setBrush(QColor("#f3a6bd"))
+        painter.setBrush(theme.color("#f3a6bd"))
         radius = 3 if self.labels else 2
         for dot in dots:
             painter.drawEllipse(dot, radius, radius)
@@ -9486,14 +9621,14 @@ class SVFunctionDialog(SheetDialog):
             eased = sv_ease(function_id, t, a, b)
             y = eased if not falling else 1 - eased
             points.append(QPointF(2 + t * (w - 4), h - 2 - y * (h - 4)))
-        painter.setPen(QPen(QColor("#f3a6bd"), width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        painter.setPen(QPen(theme.color("#f3a6bd"), width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
         painter.drawPolyline(QPolygonF(points))
         painter.end()
         return pixmap
 
     def _paint_curve(self, painter: QPainter, rect: QRect) -> None:
         inner = rect.adjusted(16, 12, -16, -22)
-        painter.setPen(QPen(QColor("#3a4554"), 1))
+        painter.setPen(QPen(theme.color("#3a4554"), 1))
         painter.drawLine(inner.bottomLeft(), inner.bottomRight())
         painter.drawLine(inner.bottomLeft(), inner.topLeft())
         pixmap = self._curve_pixmap(self.selected_function(), (inner.width(), inner.height()), 2.2)
@@ -9799,18 +9934,18 @@ def _paint_selection(painter: QPainter, rect: QRectF, option, rim: bool) -> None
     marks it with a bar on the left, the difficulty list with a pink rim."""
     if option.state & QStyle.State_Selected:
         tint = QLinearGradient(rect.topLeft(), rect.topRight())
-        tint.setColorAt(0.0, QColor(255, 102, 170, 46))
-        tint.setColorAt(0.7, QColor(255, 102, 170, 10))
-        painter.setPen(QPen(QColor(ROW_PINK_ON), 1) if rim else Qt.NoPen)
+        tint.setColorAt(0.0, theme.rgba(255, 102, 170, 46))
+        tint.setColorAt(0.7, theme.rgba(255, 102, 170, 10))
+        painter.setPen(QPen(theme.color(ROW_PINK_ON), 1) if rim else Qt.NoPen)
         painter.setBrush(tint)
         painter.drawRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), 4, 4)
         if not rim:
             painter.setPen(Qt.NoPen)
-            painter.setBrush(QColor(ROW_PINK_ON))
+            painter.setBrush(theme.color(ROW_PINK_ON))
             painter.drawRoundedRect(QRectF(rect.left(), rect.top() + 4, 3, rect.height() - 8), 1.5, 1.5)
     elif option.state & QStyle.State_MouseOver:
         painter.setPen(Qt.NoPen)
-        painter.setBrush(QColor(ROW_HOVER))
+        painter.setBrush(theme.color(ROW_HOVER))
         painter.drawRoundedRect(rect, 4, 4)
 
 
@@ -9836,7 +9971,7 @@ class SongRowDelegate(QStyledItemDelegate):
             painter.setFont(font)
             painter.setPen(QColor(index.data(Qt.ForegroundRole).color()))
             painter.drawText(rect.adjusted(8, 0, -8, -2), Qt.AlignLeft | Qt.AlignBottom, index.data())
-            painter.setPen(QColor("#303947"))
+            painter.setPen(theme.color("#303947"))
             painter.drawLine(rect.bottomLeft() + QPointF(4, 0), rect.bottomRight() - QPointF(4, 0))
             painter.restore()
             return
@@ -9846,13 +9981,13 @@ class SongRowDelegate(QStyledItemDelegate):
         text = rect.adjusted(13, 5, -(dots_width + 18), -5)
         font.setWeight(QFont.DemiBold)
         painter.setFont(font)
-        painter.setPen(QColor(ROW_INK))
+        painter.setPen(theme.color(ROW_INK))
         metrics = QFontMetrics(font)
         painter.drawText(text, Qt.AlignLeft | Qt.AlignTop, metrics.elidedText(row["title"], Qt.ElideRight, int(text.width())))
         small = QFont(option.font)
         small.setPointSizeF(small.pointSizeF() * 0.86)
         painter.setFont(small)
-        painter.setPen(QColor(ROW_INK_2))
+        painter.setPen(theme.color(ROW_INK_2))
         painter.drawText(text, Qt.AlignLeft | Qt.AlignBottom,
                          QFontMetrics(small).elidedText(row["subtitle"], Qt.ElideRight, int(text.width())))
         x = rect.right() - dots_width - 8
@@ -9892,7 +10027,7 @@ class DifficultyRowDelegate(QStyledItemDelegate):
         stats = row.get("stats", ("", ""))
         stats_width = max(stats_metrics.horizontalAdvance(line) for line in stats) if any(stats) else 0
         painter.setFont(stats_font)
-        painter.setPen(QColor(ROW_INK_2))
+        painter.setPen(theme.color(ROW_INK_2))
         painter.drawText(inner, Qt.AlignRight | Qt.AlignTop, stats[0])
         painter.drawText(inner, Qt.AlignRight | Qt.AlignBottom, stats[1])
 
@@ -9918,13 +10053,13 @@ class DifficultyRowDelegate(QStyledItemDelegate):
         name_font = QFont(option.font)
         name_font.setBold(True)
         painter.setFont(name_font)
-        painter.setPen(QColor(ROW_INK))
+        painter.setPen(theme.color(ROW_INK))
         painter.drawText(QRectF(text_left, pill.top(), max(0, width), pill.height()), Qt.AlignLeft | Qt.AlignVCenter,
                          QFontMetrics(name_font).elidedText(index.data() or "", Qt.ElideRight, max(0, width)))
         by_font = QFont(option.font)
         by_font.setPointSizeF(by_font.pointSizeF() * 0.86)
         painter.setFont(by_font)
-        painter.setPen(QColor(ROW_INK_3))
+        painter.setPen(theme.color(ROW_INK_3))
         painter.drawText(QRectF(inner.left(), inner.top(), inner.width() - stats_width - 12, inner.height()),
                          Qt.AlignLeft | Qt.AlignBottom,
                          QFontMetrics(by_font).elidedText(row.get("by", ""), Qt.ElideRight,
@@ -10044,7 +10179,7 @@ class SongBanner(QWidget):
         clip = QPainterPath()
         clip.addRoundedRect(rect, 6, 6)
         painter.setClipPath(clip)
-        painter.fillRect(rect, QColor("#222a36"))
+        painter.fillRect(rect, theme.color("#222a36"))
         for art, opacity in ((self._previous, 1.0 - self._fade), (self._art, self._fade)):
             if art is not None and not art.isNull() and opacity > 0:
                 cover = self._cover(art)
@@ -10054,7 +10189,7 @@ class SongBanner(QWidget):
         painter.setOpacity(1.0)
         wash = QLinearGradient(rect.topLeft(), rect.bottomLeft())
         wash.setColorAt(0.25, QColor(0, 0, 0, 0))
-        wash.setColorAt(0.6, QColor(255, 102, 170, 20))
+        wash.setColorAt(0.6, theme.rgba(255, 102, 170, 20))
         wash.setColorAt(1.0, QColor(13, 17, 23, 242))
         painter.fillRect(rect, wash)
 
@@ -10066,18 +10201,18 @@ class SongBanner(QWidget):
         sub_font.setPointSizeF(sub_font.pointSizeF() * 0.93)
         sub_height = QFontMetrics(sub_font).height()
         painter.setFont(sub_font)
-        painter.setPen(QColor("#d5dce5"))
+        painter.setPen(theme.color("#d5dce5"))
         painter.drawText(text, Qt.AlignLeft | Qt.AlignBottom,
                          QFontMetrics(sub_font).elidedText(self.subtitle, Qt.ElideRight, int(text.width())))
         painter.setFont(title_font)
-        painter.setPen(QColor(ROW_INK))
+        painter.setPen(theme.color(ROW_INK))
         painter.drawText(text.adjusted(0, 0, 0, -sub_height), Qt.AlignLeft | Qt.AlignBottom | Qt.TextWordWrap,
                          self.title)
 
         # 0.95 on the beat, down to the kiai level by 60% of it, as the mockup.
         flash = max(self.BEAT_REST, 0.95 - (0.95 - self.BEAT_REST) * min(1.0, self._beat_phase / 0.6))
         painter.setOpacity(flash)
-        painter.fillRect(QRectF(rect.left(), rect.bottom() - 3, rect.width(), 3), QColor(ROW_PINK_ON))
+        painter.fillRect(QRectF(rect.left(), rect.bottom() - 3, rect.width(), 3), theme.color(ROW_PINK_ON))
 
 
 class ContinueCard(QFrame):
@@ -10880,7 +11015,7 @@ class LibraryPageController:
                 font = header.font()
                 font.setBold(True)
                 header.setFont(font)
-                header.setForeground(QColor(ACCENT_PINK))
+                header.setForeground(theme.color(ACCENT_PINK))
                 self.song_list.addItem(header)
             item = QListWidgetItem(text)
             item.setData(Qt.UserRole, str(folder))
@@ -13371,7 +13506,7 @@ class MainWindow(QMainWindow):
         for button in height_box.findChildren(QPushButton):
             button.setProperty("role", "ghost")
 
-        layout.addLayout(strip)
+        layout.addWidget(opaque_strip(strip))
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -13448,7 +13583,7 @@ class MainWindow(QMainWindow):
         strip.addWidget(segmented(self.gimmick_playback_speed_buttons))
         self._build_mod_strip(strip)
 
-        layout.addLayout(strip)
+        layout.addWidget(opaque_strip(strip))
 
         # Which file is edited and whose timing it follows: the status bar,
         # shown only on this page (see _build_status_bar). It was a row of
@@ -19657,6 +19792,7 @@ def main() -> None:
     if sys.platform == "win32" and "-platform" not in sys.argv:
         os.environ.setdefault("QT_QPA_PLATFORM", "windows:fontengine=freetype")
     app=QApplication(sys.argv)
+    theme.apply_palette(app)
     # Without these, QStandardPaths.AppDataLocation resolves to
     # AppData/Roaming/python -- shared with every other PySide app run by the
     # same interpreter, and where the song index would have been written.

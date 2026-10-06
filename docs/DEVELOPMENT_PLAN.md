@@ -695,14 +695,24 @@ still worth reading.
 1. **Splitting `gui.py`** (backlog 1 and 2). It is 12,982 lines and is the
    thing every other task pays for. The dialogs first.
 2. **Deciding backlog item 5** -- one small decision that then removes code.
-3. **Deleting `patches_backup/`** (backlog 6), which is the owner's call.
-4. **Measuring where the remaining frame time goes at 120fps.** Two specific
-   leads, neither yet tested: `tools/profile_playback.py` has never run with
-   playback actually started, so the audio thread's time-stretch -- pure
-   Python, roughly 20% of a core, which does not release the GIL -- has never
-   been present during a frame measurement; and the render timer is
+3. ~~**Deleting `patches_backup/`** (backlog 6)~~ -- deleted 2026-10-06.
+4. **Measuring where the remaining frame time goes at 120fps.** First lead
+   measured 2026-10-06 and **refuted**: `profile_playback.py --playing RATE`
+   plays the song for real and times the app's own render loop. Nbt-Hwt,
+   1920x1080, the same 1.5-16.5s of song time at both rates, two runs each:
+
+   | Layout | 1.0x (no stretch) | 0.75x (WSOLA running) |
+   | --- | --- | --- |
+   | Editor, 1 chart + 1 SV | 0.4% dropped | 0.1-0.4% |
+   | Gimmick, 3 chart + 4 SV bands | 2.3-2.6% | 2.0-2.5% |
+
+   The time-stretch holding the GIL costs no frames. What is left: **a 55-62ms
+   hitch on the first frame after Play, in every run**, and one ~22ms frame
+   at song time ~12.55s whatever the rate (content, not the clock). A gap is
+   8 or 12ms when healthy -- the timer ticks every 4ms -- so "dropped" is a gap
+   past 12.5ms. Second lead still untested: the render timer is
    phase-independent of the Windows compositor, which cannot be seen offscreen
-   at all. `ctypes.windll.dwmapi.DwmFlush()` measures the second without a new
+   at all. `ctypes.windll.dwmapi.DwmFlush()` measures it without a new
    dependency.
 
 Deferred, not blocking: R5 (`set_document_background` index repair), R10

@@ -212,3 +212,4 @@ test_beatmaps/
 # tools/run_tests.bat both call. Tracking it made every branch that added a
 # string conflict on a binary.
 translations/*.qm
+IAMGAY.md

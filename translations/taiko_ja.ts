@@ -3135,6 +3135,38 @@ Every beatmap in it is checked once for taiko difficulties, and the result is re
             <translation>後で再起動</translation>
         </message>
         <message>
+            <source>App theme</source>
+            <translation>アプリのテーマ</translation>
+        </message>
+        <message>
+            <source>Theme</source>
+            <translation>テーマ</translation>
+        </message>
+        <message>
+            <source>Pink</source>
+            <translation>ピンク</translation>
+        </message>
+        <message>
+            <source>Taiko</source>
+            <translation>太鼓</translation>
+        </message>
+        <message>
+            <source>Matsuri</source>
+            <translation>祭り</translation>
+        </message>
+        <message>
+            <source>Kiai</source>
+            <translation>キアイ</translation>
+        </message>
+        <message>
+            <source>The colours of the window around the chart. Notes, snap ticks and the SV graph keep osu!&apos;s own. Applies after a restart.</source>
+            <translation>譜面の周りのウィンドウの配色です。ノーツ、スナップ線、SV グラフは osu! の色のままです。再起動後に反映されます。</translation>
+        </message>
+        <message>
+            <source>Please restart Taiko Fancy Arranger to apply the theme.</source>
+            <translation>テーマを反映するには Taiko Fancy Arranger を再起動してください。</translation>
+        </message>
+        <message>
             <source>Could not restart automatically. Please close and reopen the program.</source>
             <translation>自動で再起動できませんでした。プログラムを一度終了してから開き直してください。</translation>
         </message>

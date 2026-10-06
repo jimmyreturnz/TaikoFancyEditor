@@ -15,7 +15,7 @@ Taiko Fancy Arranger started as a tool for turning osu!taiko notes into visual p
 
 The editor does not support editing storyboards, breaks, colours, editor bookmarks yet.
 
-> **Current release:** v3.4.2  
+> **Current release:** v3.4.3  
 > **Platform:** Windows x64  
 > **Author:** [jimmyreturnz](https://osu.ppy.sh/users/11306153)
 
@@ -56,19 +56,15 @@ The main inspirations include Alchyr's ranked maps *13 Stairs* and *Helios*, whi
 
 ---
 
-## What is new in 3.4.2
+## What is new in 3.4.3
 
-The in-app updater, the map's background behind the editor, a music player on song select, and fixes from user reports.
+App themes, delivered by the in-place updater.
 
-- **Updates install themselves**: **Update and Restart** puts the new version into the folder you run from and reopens. From 3.4.1, download 3.4.2 the old way once; see the release notes.
-- **The map's background behind the Editor and Gimmick pages**, with an opacity slider in Settings that updates as you drag.
-- **Right-click the empty space below the views** to add a view.
-- **A music player on song select** (previous, play / pause, stop, next), and **Space** to pause and resume.
-- **Song select's preview plays at 1.00x and the song's own pitch** whatever mod is selected.
-- **Fancy Arranger**: AR and CS are sliders again, CS starts at the map's own value, dragging a slider no longer clears the selection, the triangle and star are centred, and the glide can be turned off.
-- **Fixed**: skinned drumrolls missing their track, hitsounds dropped at DT, the wheel stepping over off-grid red lines.
+- **Four app themes** in **Settings → Skin → App theme**: Pink (default), Taiko, Matsuri and Kiai. Notes, snap ticks and the SV graph keep osu!'s colours.
+- **Fixed**: SV and volume labels cut off at the top of a layer.
+- **Updating from 3.4.2** is one click: **Update and Restart**.
 
-Full notes: [`docs/releases/v3.4.2.md`](docs/releases/v3.4.2.md).
+Full notes: [`docs/releases/v3.4.3.md`](docs/releases/v3.4.3.md).
 
 ## What is new in 3.4.0
 
@@ -96,7 +92,7 @@ Full development log detail lives in [`docs/DEVELOPMENT_PLAN.md`](docs/DEVELOPME
 
 ## Windows SmartScreen notice
 
-Taiko Fancy Arranger v3.4.2 is a currently unsigned Windows application. The release includes source-level security hardening, input validation, safer file handling, automated tests, and published SHA-256 checksums.
+Taiko Fancy Arranger v3.4.3 is a currently unsigned Windows application. The release includes source-level security hardening, input validation, safer file handling, automated tests, and published SHA-256 checksums.
 
 Windows Defender SmartScreen may still display an "unrecognized app" warning because the executable has not yet established download reputation.
 
@@ -512,7 +508,7 @@ Do not upload copyrighted audio or private beatmap assets unless permission has 
 
 ## Project status
 
-Version 3.4.2 is the current public release. The project focuses on creative single player editing, arrangement and previewing. Multiplayer and automatic difficulty calculation are outside the current scope.
+Version 3.4.3 is the current public release. The project focuses on creative single player editing, arrangement and previewing. Multiplayer and automatic difficulty calculation are outside the current scope.
 
 Not yet implemented, and next in line:
 

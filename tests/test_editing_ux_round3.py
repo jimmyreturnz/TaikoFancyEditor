@@ -149,7 +149,10 @@ class DifficultyLabelTests(WindowTestCase):
         for frame in self.window._editor_views:
             self.assertIs(frame.layout().itemAt(0).widget(), frame.header)
             self.assertTrue(frame.header.isAncestorOf(frame.difficulty_name_label))
-            self.assertEqual(frame.difficulty_name_label.text(), self.state.document.version)
+            # Less the break points a too-long word gets (gui.breakable_words).
+            self.assertEqual(
+                frame.difficulty_name_label.text().replace(gui.ZERO_WIDTH_SPACE, ""),
+                self.state.document.version)
 
     def test_focusing_a_view_rims_its_frame_only(self):
         frames = self.window._editor_views

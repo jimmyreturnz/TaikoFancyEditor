@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
 
 from config_sheet import DIALOG_STYLE, ConfigSheet, bind_segments, ui_asset
 
+import theme
 import updater
 from smooth_scroll import smooth
 from audio_engine import DEFAULT_HITSOUND_OFFSET_MS
@@ -294,6 +295,24 @@ class SettingsDialog(QDialog):
         """Skin selection. Its own page rather than a row on the Audio one:
         nothing here is about sound."""
         sheet = self._sheet()
+        look = sheet.add_section("theme", self.tr("App theme"))
+        self.theme_combo = QComboBox()
+        for name, label in (
+            ("pink", self.tr("Pink")),
+            ("taiko", self.tr("Taiko")),
+            ("matsuri", self.tr("Matsuri")),
+            ("kiai", self.tr("Kiai")),
+        ):
+            self.theme_combo.addItem(label, name)
+        look.field(self.tr("Theme"), bind_segments(self.theme_combo), span=2)
+        theme_note = QLabel(self.tr(
+            "The colours of the window around the chart. Notes, snap ticks and "
+            "the SV graph keep osu!'s own. Applies after a restart."
+        ))
+        theme_note.setObjectName("fieldNote")
+        theme_note.setWordWrap(True)
+        look.add(theme_note, 2)
+
         skin = sheet.add_section("skin", self.tr("Gameplay preview"))
         # Skins live beside the songs folder the user already chose, so this
         # asks for nothing new. Only folders carrying taiko note art are
@@ -447,7 +466,7 @@ class SettingsDialog(QDialog):
                 font.setBold(True)
                 font.setPointSizeF(font.pointSizeF() * 0.85)
                 heading.setFont(font)
-                heading.setForeground(QColor("#7d8794"))
+                heading.setForeground(theme.color("#7d8794"))
                 # A heading is not a row anyone edits or picks.
                 heading.setFlags(Qt.NoItemFlags)
                 self.shortcuts_table.setItem(row, 0, heading)
@@ -524,6 +543,8 @@ class SettingsDialog(QDialog):
         self.note_opacity.setValue(self.settings.int_value(
             "appearance/note_opacity", NOTE_OPACITY_DEFAULT_PERCENT))
         self.background_opacity.setValue(self.settings.int_value("appearance/background_opacity", 25))
+        chosen_theme = self.settings.string_value(theme.SETTING, theme.DEFAULT)
+        self.theme_combo.setCurrentIndex(max(0, self.theme_combo.findData(chosen_theme)))
         chosen = self.settings.string_value("appearance/skin", "")
         self.skin_combo.setCurrentIndex(max(0, self.skin_combo.findData(chosen)))
         language = self.settings.string_value("language/current", "en")
@@ -552,6 +573,7 @@ class SettingsDialog(QDialog):
             self.output_offset_ms.setValue(0)
             self.music_volume.setValue(65)
         elif page == "skin":
+            self.theme_combo.setCurrentIndex(0)
             self.skin_combo.setCurrentIndex(0)
             self.note_opacity.setValue(NOTE_OPACITY_DEFAULT_PERCENT)
             self.background_opacity.setValue(25)
@@ -588,6 +610,10 @@ class SettingsDialog(QDialog):
             return False
         previous_language = self.settings.string_value("language/current", "en")
         selected_language = str(self.language_combo.currentData())
+        # Against the theme this process is drawn in, not the stored one: a
+        # change saved with "Restart Later" still needs the restart next time.
+        selected_theme = str(self.theme_combo.currentData())
+        self.settings.set_value(theme.SETTING, selected_theme)
         self.settings.set_value("general/confirm_overwrite", self.confirm_overwrite.isChecked())
         self.settings.set_value("appearance/transform_animation", self.transform_animation.isChecked())
         self.settings.set_value(
@@ -610,6 +636,8 @@ class SettingsDialog(QDialog):
             parent._reload_shortcuts()
         if selected_language != previous_language:
             self._prompt_language_restart()
+        elif selected_theme != theme.active():
+            self._prompt_restart(self.tr("Please restart Taiko Fancy Arranger to apply the theme."))
         return True
 
     def _prompt_language_restart(self) -> None:
@@ -625,11 +653,13 @@ class SettingsDialog(QDialog):
         import i18n
 
         i18n.install_translator(QApplication.instance(), self.settings)
+        self._prompt_restart(self.tr("Please restart Taiko Fancy Arranger to apply the language change."))
 
+    def _prompt_restart(self, text: str) -> None:
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Information)
         box.setWindowTitle(self.tr("Restart required"))
-        box.setText(self.tr("Please restart Taiko Fancy Arranger to apply the language change."))
+        box.setText(text)
         restart_button = box.addButton(self.tr("Restart Now"), QMessageBox.AcceptRole)
         box.addButton(self.tr("Restart Later"), QMessageBox.RejectRole)
         box.exec()
@@ -683,8 +713,8 @@ class _NoteOpacityPreview(QWidget):
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        painter.fillRect(self.rect(), QColor("#151b24"))
-        painter.setPen(QPen(QColor("#e8edf3"), 1))
+        painter.fillRect(self.rect(), theme.color("#151b24"))
+        painter.setPen(QPen(theme.color("#e8edf3"), 1))
         for x in range(12, self.width(), 18):
             painter.setOpacity(0.35 if (x // 18) % 4 else 0.8)
             painter.drawLine(x, 6, x, self.height() - 6)

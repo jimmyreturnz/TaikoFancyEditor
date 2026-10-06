@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
+import theme
 from image_to_drawing import TraceOptions, fit_strokes, trace_image
 
 
@@ -32,9 +33,9 @@ class TracePreview(QWidget):
 
     def paintEvent(self, event):
         painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor("#11151c"))
+        painter.fillRect(self.rect(), theme.color("#11151c"))
         painter.setRenderHint(QPainter.Antialiasing, True)
-        painter.setPen(QPen(QColor("#f3a6bd"), 2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        painter.setPen(QPen(theme.color("#f3a6bd"), 2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
         for stroke in fit_strokes(self.strokes, self.width(), self.height(), 14):
             for first, second in zip(stroke, stroke[1:]):
                 painter.drawLine(QPointF(*first), QPointF(*second))

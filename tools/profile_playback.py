@@ -2,7 +2,10 @@
 
     python tools/profile_playback.py <a real .osu> [frames] [--gimmick]
                                      [--gameplay] [--skin NAME] [--profile]
-                                     [--at MS]
+                                     [--at MS] [--playing RATE]
+
+--playing plays the song for real at RATE and reports the gaps between the
+app's own rendered frames instead of timing synthetic ones.
 
 --at starts the run at a millisecond rather than at the first hit object. A
 gimmick is a *section* of a map, and the first note is almost never in it.
@@ -143,6 +146,61 @@ for name in ("_chart_views", "_sv_views", "_gameplay_views", "_density_views", "
     group = list(getattr(window, name, ()) or ())
     views.append((name, group))
     print(f"     {name}: {len(group)} ({sum(1 for v in group if v.isVisible())} visible)")
+
+
+if "--playing" in sys.argv:
+    # Every run below this block renders with the song *stopped*, so the
+    # audio thread's time-stretch -- pure Python, holding the GIL -- has never
+    # been in the same measurement as a frame. Here the song really plays and
+    # the app's own 4ms PreciseTimer drives its own _render_gameplay_frame.
+    # The timer already holds a bound method, so replacing the attribute would
+    # time nothing (tests/test_window_lifecycle.py); reconnect the signal.
+    from PySide6.QtCore import QEventLoop, QTimer
+    rate = float(sys.argv[sys.argv.index("--playing") + 1])
+    seconds = frames / 120.0
+    stamps = []
+    timer = window.gameplay_render_timer
+    timer.timeout.disconnect()
+
+    def timed_frame() -> None:
+        before = window._last_broadcast_position
+        began = perf_counter()
+        window._render_gameplay_frame()
+        if window._last_broadcast_position != before:
+            # update() only schedules the paint; it lands in this same
+            # event-loop pass, so the gap between frames is what shows a drop.
+            stamps.append(began)
+
+    timer.timeout.connect(timed_frame)
+    at = float(state.document.hit_objects[0].time)
+    if "--at" in sys.argv:
+        at = float(sys.argv[sys.argv.index("--at") + 1])
+    window.seek_audio(at)
+    window._change_playback_speed(rate)
+    window.toggle_playback()
+    loop = QEventLoop()
+    QTimer.singleShot(int(seconds * 1000), loop.quit)
+    loop.exec()
+    window.toggle_playback()
+    timeline = [((a - stamps[0]), (b - a) * 1000.0) for a, b in zip(stamps, stamps[1:])]
+    gaps = sorted(gap for _at, gap in timeline)
+
+    def q(values, p): return values[min(len(values) - 1, int(len(values) * p))]
+    print(f"\nplaying at {rate}x for {seconds:.1f}s from {at:.0f} ms: "
+          f"{len(stamps)} frames ({len(stamps) / seconds:.1f}/s, 120 wanted)")
+    # Only the gap means anything here: update() queues the paint for later in
+    # the same loop pass, so timing the broadcast itself measures set_time and
+    # none of the painting.
+    # The render timer ticks every 4ms, so a healthy gap is 8 or 12ms, never
+    # 8.33 -- a gap past 12.5 is a frame that was due and did not happen.
+    print(f"  frame gap   median {q(gaps, .5):6.2f}ms   p95 {q(gaps, .95):6.2f}ms   "
+          f"p99 {q(gaps, .99):6.2f}ms   max {gaps[-1]:6.2f}ms")
+    late = [(t, g) for t, g in timeline if g > 12.5]
+    print(f"  dropped (gap > 12.5ms): {len(late)}/{len(gaps)} ({100.0 * len(late) / len(gaps):.1f}%)")
+    for t, g in sorted(late, key=lambda item: -item[1])[:6]:
+        print(f"    {g:6.2f}ms at {t:5.2f}s")
+    window.close()
+    sys.exit(0)
 
 
 def render_one(position: float) -> None:
