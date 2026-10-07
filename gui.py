@@ -2305,8 +2305,9 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
         # it again. Measured: over half of a six-chart Editor frame was Qt's
         # own work in processEvents, not these paintEvents. If a paintEvent
         # here ever stops filling its whole rect, this has to go with it, or
-        # stale pixels show through.
-        self.setAttribute(Qt.WA_OpaquePaintEvent, True)
+        # stale pixels show through -- which is why it follows View opacity
+        # (`set_view_opacity`): below 100% the fill lets the backdrop through.
+        self.setAttribute(Qt.WA_OpaquePaintEvent, view_ground_is_opaque())
 
     def _draw_skinned_roll_body(self, painter, x, end_x, center_y, radius) -> bool:
         """A drumroll's stretched body and its tail cap, from the skin.
@@ -3360,7 +3361,7 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
-        painter.fillRect(self.rect(), theme.color("#151b24"))
+        painter.fillRect(self.rect(), view_ground("#151b24"))
         self.draw_kiai_bands(painter)
 
         baseline_y = self._baseline_y()
@@ -4005,8 +4006,9 @@ class SVEditorView(TimeAxisMixin, QWidget):
         # it again. Measured: over half of a six-chart Editor frame was Qt's
         # own work in processEvents, not these paintEvents. If a paintEvent
         # here ever stops filling its whole rect, this has to go with it, or
-        # stale pixels show through.
-        self.setAttribute(Qt.WA_OpaquePaintEvent, True)
+        # stale pixels show through -- which is why it follows View opacity
+        # (`set_view_opacity`): below 100% the fill lets the backdrop through.
+        self.setAttribute(Qt.WA_OpaquePaintEvent, view_ground_is_opaque())
 
     # -- data ----------------------------------------------------------------
 
@@ -4654,7 +4656,7 @@ class SVEditorView(TimeAxisMixin, QWidget):
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
-        painter.fillRect(self.rect(), theme.color("#151b24"))
+        painter.fillRect(self.rect(), view_ground("#151b24"))
         self.draw_kiai_bands(painter)
         painter.setRenderHint(QPainter.Antialiasing, True)
 
@@ -5074,8 +5076,9 @@ class GameplayViewerView(QWidget):
     def __init__(self) -> None:
         super().__init__()
         # paintEvent fills the whole rect; saying so keeps the page's map
-        # backdrop out of every per-frame repaint.
-        self.setAttribute(Qt.WA_OpaquePaintEvent, True)
+        # backdrop out of every per-frame repaint -- while View opacity is
+        # 100%, which is what `view_ground_is_opaque` says.
+        self.setAttribute(Qt.WA_OpaquePaintEvent, view_ground_is_opaque())
         self.notes = []
         self.note_times: list[int] = []
         # Predicate deciding which hit objects scroll past; see refresh_notes.
@@ -5622,7 +5625,7 @@ class GameplayViewerView(QWidget):
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
-        painter.fillRect(self.rect(), theme.color("#12161d"))
+        painter.fillRect(self.rect(), view_ground("#12161d"))
 
         center_y = self.height() / 2
         normal_radius = self.height() * TAIKO_NOTE_SIZE / 2.0
@@ -6556,11 +6559,15 @@ class EditorViewFrame(QWidget):
     HEADER_WIDTH = 148
     # The frame's own sheet is selector-less, so it reaches every descendant:
     # each rule below names its own border to undo that.
-    FRAME_STYLE = "background: #1b212b; border: 1px solid #303947; border-radius: 6px;"
+    #
+    # Edge to edge since 2026-10-07: square, with one divider under each view
+    # and no gap between them, so the page's backdrop shows only where View
+    # opacity lets it. It used to show in a strip between every pair of views.
+    FRAME_STYLE = "background: {ground}; border: 0; border-bottom: 1px solid #303947; border-radius: 0;"
     # The approved mockup's focused lane: a 2px rim in the theme's focus colour
     # rather than a 1px one in a muted shade of it, which beside the other
     # lanes' 1px #303947 read as no difference at all.
-    FOCUSED_FRAME_STYLE = "background: #1b212b; border: 2px solid #ff66aa; border-radius: 6px;"
+    FOCUSED_FRAME_STYLE = "background: {ground}; border: 2px solid #ff66aa; border-radius: 0;"
     HEADER_STYLE = "QWidget#viewHeader { border: 0; border-right: 1px solid #303947; border-radius: 0; }"
     # The song select's selection: a pink rim at the left edge and a tint.
     FOCUSED_HEADER_STYLE = (
@@ -6578,7 +6585,7 @@ class EditorViewFrame(QWidget):
         self.focused = False
         self.content: QWidget | None = None
 
-        self.setStyleSheet(self.FRAME_STYLE)
+        self.setStyleSheet(self._frame_style())
         # A plain QWidget does not paint its own sheet: without this the rim
         # above was never drawn, focused or not, and nothing marked the view
         # the tool row acts on but the header's left edge. Its content paints
@@ -6586,7 +6593,7 @@ class EditorViewFrame(QWidget):
         self.setAttribute(Qt.WA_StyledBackground, True)
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(1, 1, 1, 1)
+        layout.setContentsMargins(0, 0, 0, 1)
         layout.setSpacing(0)
 
         self.header = QWidget()
@@ -6691,14 +6698,26 @@ class EditorViewFrame(QWidget):
         if focused == self.focused:
             return
         self.focused = focused
-        self.setStyleSheet(self.FOCUSED_FRAME_STYLE if focused else self.FRAME_STYLE)
+        self.setStyleSheet(self._frame_style())
         self.header.setStyleSheet(self.FOCUSED_HEADER_STYLE if focused else self.HEADER_STYLE)
-        # Inset by the rim's width, or the 2px border is half under the view.
-        margin = 2 if focused else 1
-        self.layout().setContentsMargins(margin, margin, margin, margin)
+        # Inset by the rim's width, or the 2px border is half under the view;
+        # unfocused, only the divider underneath.
+        if focused:
+            self.layout().setContentsMargins(2, 2, 2, 2)
+        else:
+            self.layout().setContentsMargins(0, 0, 0, 1)
         # The caption names what is focused, in the accent, as in the mockup.
         self.kind_label.setStyleSheet(self._caption_style(focused))
         self.difficulty_name_label.setStyleSheet(self._name_style(focused))
+
+    def _frame_style(self) -> str:
+        ground = view_ground("#1b212b")
+        rgba = f"rgba({ground.red()}, {ground.green()}, {ground.blue()}, {ground.alpha()})"
+        return (self.FOCUSED_FRAME_STYLE if self.focused else self.FRAME_STYLE).format(ground=rgba)
+
+    def refresh_ground(self) -> None:
+        """Re-read View opacity (`set_view_opacity`)."""
+        self.setStyleSheet(self._frame_style())
 
     def _caption_style(self, focused: bool) -> str:
         colour = "#ff9dcc" if focused else "#7d8794"
@@ -6721,6 +6740,36 @@ class EditorViewFrame(QWidget):
 
 
 BACKDROP_OPACITY_DEFAULT_PERCENT = 25
+
+# Settings > View opacity: how much of each editor view's own ground covers
+# the page's map backdrop. 100 is the old look and the cheap path -- the lanes
+# stay WA_OpaquePaintEvent, so the backdrop is never repainted under them.
+VIEW_OPACITY_DEFAULT_PERCENT = 100
+_view_ground_alpha = 255
+
+
+def view_ground_is_opaque() -> bool:
+    return _view_ground_alpha >= 255
+
+
+def view_ground(colour: str) -> QColor:
+    """A lane's ground colour at the View opacity in force."""
+    ground = theme.color(colour)
+    ground.setAlpha(_view_ground_alpha)
+    return ground
+
+
+def set_view_opacity(percent: int, widgets) -> None:
+    """Apply View opacity to `widgets` (lanes and frames) and to every one
+    built after this. Live: Settings calls it while its slider moves."""
+    global _view_ground_alpha
+    _view_ground_alpha = round(max(0, min(100, int(percent))) * 2.55)
+    for widget in widgets:
+        if isinstance(widget, EditorViewFrame):
+            widget.refresh_ground()
+        else:
+            widget.setAttribute(Qt.WA_OpaquePaintEvent, view_ground_is_opaque())
+            widget.update()
 
 
 class MapBackdrop(QWidget):
@@ -12365,6 +12414,7 @@ class MainWindow(QMainWindow):
         if hasattr(self, "canvas"):
             self.canvas.animate_transforms = self.settings.bool_value("appearance/transform_animation", True)
         self._sync_backdrops()
+        self._apply_view_opacity()
 
     def maybe_check_for_updates(self) -> None:
         """Startup update check, on a worker thread so the window never waits.
@@ -12423,6 +12473,7 @@ class MainWindow(QMainWindow):
         # Same for the backdrop's opacity; after exec the saved value is read
         # back, which is the restore on Cancel and a no-op after OK.
         dialog.background_opacity.valueChanged.connect(self._sync_backdrops)
+        dialog.view_opacity.valueChanged.connect(self._apply_view_opacity)
         # The opacity preview draws with the timeline's own note code, in
         # whichever skin the combo shows. Loaded once per name so dragging the
         # slider repaints without touching disk.
@@ -12438,6 +12489,7 @@ class MainWindow(QMainWindow):
         dialog.exec()
         self._apply_audio_settings()
         self._sync_backdrops()
+        self._apply_view_opacity()
 
     def _build_ui(self) -> None:
         central = QWidget()
@@ -13534,6 +13586,17 @@ class MainWindow(QMainWindow):
         self._backdrops.append(page)
         return page
 
+    def _apply_view_opacity(self, percent: int | None = None) -> None:
+        """Every editor view's ground at View opacity: the setting, or
+        `percent` while Settings is previewing one."""
+        if percent is None:
+            percent = self.settings.int_value("appearance/view_opacity", VIEW_OPACITY_DEFAULT_PERCENT)
+        set_view_opacity(percent, [
+            widget
+            for kind in (EditorViewFrame, TimelineGameplay, SVEditorView, GameplayViewerView)
+            for widget in self.findChildren(kind)
+        ])
+
     def _sync_backdrops(self, percent: int | None = None) -> None:
         """Hand every page's backdrop the active map's picture and the
         opacity (the setting, or `percent` while Settings is previewing one).
@@ -13636,8 +13699,9 @@ class MainWindow(QMainWindow):
         scroll.setWidgetResizable(True)
         views_container = QWidget()
         self.editor_views_layout = QVBoxLayout(views_container)
-        self.editor_views_layout.setContentsMargins(4, 4, 4, 4)
-        self.editor_views_layout.setSpacing(10)
+        # Edge to edge: see EditorViewFrame.FRAME_STYLE.
+        self.editor_views_layout.setContentsMargins(0, 0, 0, 0)
+        self.editor_views_layout.setSpacing(0)
         self.editor_views_layout.addStretch(1)
         scroll.setWidget(views_container)
         see_through(scroll, scroll.viewport(), views_container)
@@ -13746,8 +13810,8 @@ class MainWindow(QMainWindow):
         self.gimmick_scroll = scroll
         views_container = QWidget()
         self.gimmick_views_layout = QVBoxLayout(views_container)
-        self.gimmick_views_layout.setContentsMargins(4, 4, 4, 4)
-        self.gimmick_views_layout.setSpacing(10)
+        self.gimmick_views_layout.setContentsMargins(0, 0, 0, 0)
+        self.gimmick_views_layout.setSpacing(0)
         self.gimmick_views_layout.addStretch(1)
         scroll.setWidget(views_container)
         see_through(scroll, scroll.viewport(), views_container)
@@ -16366,7 +16430,7 @@ class MainWindow(QMainWindow):
         group = QWidget()
         group_layout = QVBoxLayout(group)
         group_layout.setContentsMargins(0, 0, 0, 0)
-        group_layout.setSpacing(6)
+        group_layout.setSpacing(0)
 
         # Insert before the trailing stretch that keeps groups pinned to the top.
         self.editor_views_layout.insertWidget(self.editor_views_layout.count() - 1, group)

@@ -3255,6 +3255,14 @@ Every beatmap in it is checked once for taiko difficulties, and the result is re
             <translation>エディターの背景</translation>
         </message>
         <message>
+            <source>View opacity</source>
+            <translation>ビューの不透明度</translation>
+        </message>
+        <message>
+            <source>How solid the views are. Under 100% the background shows through them as well as around them.</source>
+            <translation>ビューの不透明度です。100% 未満では、背景がビューの周りだけでなくビューの中からも透けて見えます。</translation>
+        </message>
+        <message>
             <source>Background opacity</source>
             <translation>背景の不透明度</translation>
         </message>

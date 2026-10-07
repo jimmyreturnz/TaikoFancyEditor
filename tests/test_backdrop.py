@@ -72,6 +72,44 @@ class BackdropTests(unittest.TestCase):
         self.assertEqual(len(bakes), 3)
 
 
+class ViewOpacityTests(unittest.TestCase):
+    """Settings > View opacity: how much of a view covers the backdrop."""
+
+    def tearDown(self):
+        gui.set_view_opacity(100, [])
+
+    def _rendered_over_white(self, percent):
+        holder = self.holder = QWidget()  # kept: it owns the lane
+        holder.setAutoFillBackground(True)
+        palette = holder.palette()
+        palette.setColor(holder.backgroundRole(), QColor("#ffffff"))
+        holder.setPalette(palette)
+        holder.resize(300, 120)
+        frame = gui.EditorViewFrame("sv", "Oni")
+        lane = gui.SVEditorView()
+        frame.set_content(lane)
+        frame.setParent(holder)
+        frame.resize(300, 120)
+        gui.set_view_opacity(percent, [frame, lane])
+        image = holder.grab().toImage()
+        return lane, image.pixelColor(lane.mapTo(holder, QPoint(150, 5)))
+
+    def test_full_opacity_is_the_opaque_fast_path(self):
+        lane, colour = self._rendered_over_white(100)
+        self.assertTrue(lane.testAttribute(gui.Qt.WA_OpaquePaintEvent))
+        self.assertLess(colour.lightness(), 80, "a solid lane hides the white")
+
+    def test_zero_lets_the_backdrop_through(self):
+        lane, colour = self._rendered_over_white(0)
+        self.assertFalse(lane.testAttribute(gui.Qt.WA_OpaquePaintEvent))
+        self.assertGreater(colour.lightness(), 200, "the white shows through")
+
+    def test_views_sit_edge_to_edge(self):
+        frame = gui.EditorViewFrame("chart", "Oni")
+        self.assertIn("border-radius: 0", frame.styleSheet())
+        self.assertEqual(frame.layout().contentsMargins().top(), 0)
+
+
 class AddViewRightClickTests(unittest.TestCase):
     def test_only_the_empty_space_opens_add_view(self):
         container = QWidget()

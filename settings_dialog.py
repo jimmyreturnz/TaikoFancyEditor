@@ -390,6 +390,28 @@ class SettingsDialog(QDialog):
         backdrop_note.setObjectName("fieldNote")
         backdrop_note.setWordWrap(True)
         backdrop.add(backdrop_note, 2)
+        # Live, like the one above, and for the same reason.
+        self.view_opacity = QSlider(Qt.Horizontal)
+        self.view_opacity.setRange(0, 100)
+        self.view_opacity.setSingleStep(1)
+        self.view_opacity.setPageStep(10)
+        self.view_opacity_value = QLabel()
+        self.view_opacity_value.setMinimumWidth(44)
+        self.view_opacity.valueChanged.connect(
+            lambda percent: self.view_opacity_value.setText(f"{percent} %"))
+        view_row = QWidget()
+        view_layout = QHBoxLayout(view_row)
+        view_layout.setContentsMargins(0, 0, 0, 0)
+        view_layout.addWidget(self.view_opacity, 1)
+        view_layout.addWidget(self.view_opacity_value)
+        backdrop.field(self.tr("View opacity"), view_row, span=2)
+        view_note = QLabel(self.tr(
+            "How solid the views are. Under 100% the background shows through "
+            "them as well as around them."
+        ))
+        view_note.setObjectName("fieldNote")
+        view_note.setWordWrap(True)
+        backdrop.add(view_note, 2)
 
         fancy = sheet.add_section("fancy", self.tr("Fancy Arranger"))
         self.transform_animation = QCheckBox(self.tr("Animate transforms"))
@@ -544,6 +566,7 @@ class SettingsDialog(QDialog):
         self.note_opacity.setValue(self.settings.int_value(
             "appearance/note_opacity", NOTE_OPACITY_DEFAULT_PERCENT))
         self.background_opacity.setValue(self.settings.int_value("appearance/background_opacity", 25))
+        self.view_opacity.setValue(self.settings.int_value("appearance/view_opacity", 100))
         chosen_theme = self.settings.string_value(theme.SETTING, theme.DEFAULT)
         chosen_theme = theme.RENAMED.get(chosen_theme, chosen_theme)
         self.theme_combo.setCurrentIndex(max(0, self.theme_combo.findData(chosen_theme)))
@@ -579,6 +602,7 @@ class SettingsDialog(QDialog):
             self.skin_combo.setCurrentIndex(0)
             self.note_opacity.setValue(NOTE_OPACITY_DEFAULT_PERCENT)
             self.background_opacity.setValue(25)
+            self.view_opacity.setValue(100)
         elif page == "language":
             self.language_combo.setCurrentIndex(self.language_combo.findData("en"))
         elif page == "shortcuts":
@@ -629,6 +653,7 @@ class SettingsDialog(QDialog):
         self.settings.set_value("appearance/skin", str(self.skin_combo.currentData()))
         self.settings.set_value("appearance/note_opacity", self.note_opacity.value())
         self.settings.set_value("appearance/background_opacity", self.background_opacity.value())
+        self.settings.set_value("appearance/view_opacity", self.view_opacity.value())
         self.settings.set_value("language/current", selected_language)
         for action_id, sequence in self._shortcut_values().items():
             self.shortcuts.set_sequence(action_id, sequence)

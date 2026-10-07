@@ -2,7 +2,7 @@
 
     python tools/profile_playback.py <a real .osu> [frames] [--gimmick]
                                      [--gameplay] [--skin NAME] [--profile]
-                                     [--at MS] [--playing RATE]
+                                     [--at MS] [--playing RATE] [--view-opacity N]
 
 --playing plays the song for real at RATE and reports the gaps between the
 app's own rendered frames instead of timing synthetic ones.
@@ -103,6 +103,14 @@ if "--skin" in sys.argv:
     window.settings.set_value("appearance/skin", name)
     window._apply_appearance_settings()
     print(f"     skin: {window.skin.name or '(built-in)'}")
+    app.processEvents()
+
+if "--view-opacity" in sys.argv:
+    # Under 100% every lane gives up WA_OpaquePaintEvent, so each frame also
+    # repaints the frame sheet and the page's backdrop beneath it.
+    percent = int(sys.argv[sys.argv.index("--view-opacity") + 1])
+    window._apply_view_opacity(percent)
+    print(f"     view opacity: {percent}%")
     app.processEvents()
 
 # The track is still decoding when the window is ready, and the decode
