@@ -4997,6 +4997,41 @@ FL_CENTRE_STABLE = 208.0
 FL_PLAYFIELD_TOP_STABLE = 135.0
 
 
+# The pill row's layout, and only that: scroll, visibility, rate.
+MOD_PILL_GROUPS = (("HR", "EZ"), ("HD", "FL"), ("DT", "NC", "HT", "DC"))
+# Hard-coded, like the note colours: a mod is the same colour in every theme,
+# and none of these is a pink-palette key `theme` would move. Red and green
+# are osu!'s own mod-select colours (DifficultyIncrease / Reduction).
+MOD_COLORS = {
+    "HD": "#ffc801", "FL": "#2c2c30", "HR": "#fe6465",
+    "DT": "#8c65ff", "NC": "#5b5fe0",
+    "EZ": "#b0ff65", "HT": "#b0ff65", "DC": "#b0ff65",
+}
+
+
+def mod_pill_style(colour: str) -> str:
+    """One mod pill: tinted with its colour while off, filled with it while on.
+    White text both ways (owner's call). Set on the button itself, so it wins
+    over the segment's shared pink `:checked`."""
+    # The segment's own ground, as the active theme draws it, so the tint
+    # sits on the same colour in every theme.
+    base = theme.color("#252d39")
+    own = QColor(colour)
+    def mix(amount: float) -> str:
+        return QColor(
+            round(base.red() + (own.red() - base.red()) * amount),
+            round(base.green() + (own.green() - base.green()) * amount),
+            round(base.blue() + (own.blue() - base.blue()) * amount),
+        ).name()
+    return (
+        f"QPushButton {{ background: {mix(0.16)}; color: #ffffff;"
+        f" border-bottom: 2px solid {mix(0.7)}; }}"
+        f"QPushButton:hover {{ background: {mix(0.32)}; color: #ffffff; }}"
+        f"QPushButton:checked {{ background: {colour}; color: #ffffff; font-weight: 700;"
+        " border-bottom: 2px solid #ffffff; }"
+    )
+
+
 def mod_string(mods) -> str:
     """`mods` as osu! writes them: "HDDT", in MOD_ORDER, "" for none."""
     return "".join(mod for mod in MOD_ORDER if mod in mods)
@@ -19121,9 +19156,9 @@ class MainWindow(QMainWindow):
     _mods: frozenset = frozenset()
 
     def _build_mod_strip(self, strip) -> None:
-        """HD | NC DT DC HT | HR EZ | FL. Grouped
-        the way osu! orders them (MOD_ORDER), so every row and every string
-        reads the same."""
+        """HR EZ | HD FL | DT NC HT DC, each in its own colour. The row is
+        grouped by what the mods do (owner's call, 2026-10-07); every mod
+        *string* still reads in osu!'s order (MOD_ORDER)."""
         if not hasattr(self, "_mod_buttons"):
             self._mod_buttons: list[dict[str, QPushButton]] = []
         tips = {
@@ -19143,8 +19178,10 @@ class MainWindow(QMainWindow):
             button.setToolTip(tips[mod])
             button.clicked.connect(lambda checked=False, m=mod: self._toggle_mod(m))
             buttons[mod] = button
-        for group in (("HD",), ("NC", "DT", "DC", "HT"), ("HR", "EZ"), ("FL",)):
+        for group in MOD_PILL_GROUPS:
             strip.addWidget(segmented([buttons[mod] for mod in group]))
+            for mod in group:
+                buttons[mod].setStyleSheet(mod_pill_style(MOD_COLORS[mod]))
         self._mod_buttons.append(buttons)
 
     def _rate_mod(self) -> str | None:
@@ -19242,7 +19279,9 @@ class MainWindow(QMainWindow):
             + getattr(self,"editor_playback_speed_buttons",[])
             + getattr(self,"gimmick_playback_speed_buttons",[])
         ):
-            active=not self._rate_mod() and abs(float(button.property("playbackRate"))-rate)<0.0001
+            # The speed the song is at, whoever set it: HT/DC light 75% too
+            # (owner's call), and DT/NC light nothing, since there is no 150%.
+            active=abs(float(button.property("playbackRate"))-rate)<0.0001
             button.blockSignals(True);button.setChecked(active);button.blockSignals(False)
         self._sync_mod_controls()
 

@@ -116,10 +116,40 @@ class ModToggleTests(_Window):
         self.assertEqual(self.window.player.playbackRate(), 0.5)
         self.assertEqual(self.pitch_calls[-1], False)
 
-    def test_speed_buttons_show_nothing_pressed_under_a_rate_mod(self):
+    def test_speed_buttons_show_nothing_pressed_under_double_time(self):
+        """There is no 150% button, so DT and NC light none of them."""
         self.window._toggle_mod("DT")
         pressed = [b for b in self.window.editor_playback_speed_buttons if b.isChecked()]
         self.assertEqual(pressed, [])
+
+    def test_half_time_lights_seventy_five_percent_with_it(self):
+        """Owner's call: the speed buttons show the speed the song is at,
+        so HT and DC light 75% alongside themselves."""
+        for mod in ("HT", "DC"):
+            self.window._toggle_mod(mod)
+            for buttons in (self.window.editor_playback_speed_buttons,
+                            self.window.gimmick_playback_speed_buttons):
+                pressed = [b.text() for b in buttons if b.isChecked()]
+                self.assertEqual(pressed, ["75%"], mod)
+            self.assertTrue(self.window._mod_buttons[0][mod].isChecked())
+
+    def test_the_pills_are_grouped_by_what_they_do(self):
+        """Layout only: the row reads [HR EZ] [HD FL] [DT NC HT DC] while every
+        mod *string* keeps osu!'s order."""
+        for buttons in self.window._mod_buttons:
+            holders = {b.parentWidget() for b in buttons.values()}
+            strip = next(iter(holders)).parentWidget().layout()
+            groups = sorted(holders, key=strip.indexOf)
+            self.assertEqual(
+                [tuple(b.text() for b in group.findChildren(gui.QPushButton)) for group in groups],
+                [("HR", "EZ"), ("HD", "FL"), ("DT", "NC", "HT", "DC")])
+        self.assertEqual(gui.mod_string({"FL", "DT", "HR", "HD"}), "HDDTHRFL")
+
+    def test_each_pill_wears_its_own_colour(self):
+        """Hard-coded, so no theme moves them: none is a pink-palette key."""
+        button = self.window._mod_buttons[0]["HD"]
+        self.assertIn("#ffc801", button.styleSheet())
+        self.assertIn("#2c2c30", self.window._mod_buttons[0]["FL"].styleSheet())
 
     def test_every_strip_and_the_chip_agree(self):
         self.window._toggle_mod("HR")
