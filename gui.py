@@ -5132,6 +5132,8 @@ class GameplayViewerView(QWidget):
         # A fraction of the osu!-screen height below, for the song select's
         # smaller preview; None is the whole of it.
         self.height_share: float | None = None
+        # Called with the new height whenever resizeEvent sets one.
+        self.height_changed = None
         # The song select's preview sits on the detail pane, not on a page
         # backdrop, so Settings > View opacity is not about it.
         self.follows_view_opacity = True
@@ -5154,6 +5156,8 @@ class GameplayViewerView(QWidget):
             height = round(height * self.height_share)
         if height != self.height():
             self.setFixedHeight(height)
+            if self.height_changed is not None:
+                self.height_changed(height)
 
     # -- document ------------------------------------------------------------
 
@@ -6354,7 +6358,7 @@ class SnapSlider(QWidget):
     A combo hid 22 divisors behind a click; the slider shows where the current
     one sits among them, with the ones people use labelled underneath.
 
-    The wheel is the slider's own (`_gimmick_wheel_target` leaves every
+    The wheel is the slider's own (`_page_wheel_target` leaves every
     QAbstractSlider alone), which is what the combo's wheel did too.
     """
 
@@ -10173,6 +10177,7 @@ class SongBanner(QWidget):
     """
 
     BEAT_REST = 0.15
+    MIN_HEIGHT = 150
     # The beat stripe is also a seek bar, and says nothing about it (owner's
     # call: a hidden feature). Its whole width is the whole song; the band
     # that takes the pointer is taller than the 3px it draws, or nobody would
@@ -10185,7 +10190,7 @@ class SongBanner(QWidget):
         super().__init__(parent)
         self._seeking = False
         # The height the difficulty slots leave; see DIFFICULTY_SLOTS.
-        self.setMinimumHeight(150)
+        self.setMinimumHeight(self.MIN_HEIGHT)
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         self.title = ""
         self.subtitle = ""
@@ -10700,6 +10705,7 @@ class LibraryPageController:
         self.set_chart_preview_share(self.window.settings.int_value(
             "song_select/preview_percent", SONG_SELECT_PREVIEW_DEFAULT_PERCENT))
         self.chart_preview.seek_requested.connect(self.seek_preview_to)
+        self.chart_preview.height_changed = self._fit_banner_to_preview
         self.song_banner.seek_fraction.connect(self._seek_preview_fraction)
         self.song_banner.seek_step.connect(self._step_preview)
         detail_layout.addWidget(self.chart_preview)
@@ -11412,7 +11418,16 @@ class LibraryPageController:
         percent = max(SONG_SELECT_PREVIEW_MIN_PERCENT, min(SONG_SELECT_PREVIEW_MAX_PERCENT, int(percent)))
         self.chart_preview.height_share = percent / 100.0
         width = self.chart_preview.width()
-        self.chart_preview.setFixedHeight(round(osu_screen_height_for(width) * percent / 100.0))
+        height = round(osu_screen_height_for(width) * percent / 100.0)
+        self.chart_preview.setFixedHeight(height)
+        self._fit_banner_to_preview(height)
+
+    def _fit_banner_to_preview(self, preview_height: int) -> None:
+        """The preview's height comes out of the banner's minimum, not on top
+        of it: added on top, it raised the whole window's minimum height by
+        114px (836 -> 950), past a 1366x768 screen's. At any ordinary window
+        size the banner is far taller than its minimum anyway."""
+        self.song_banner.setMinimumHeight(max(0, SongBanner.MIN_HEIGHT - preview_height))
 
     def _load_chart_preview(self) -> None:
         path = self._chart_pending
@@ -12307,10 +12322,17 @@ class MainWindow(QMainWindow):
             if widget is ancestor: return True
             widget=widget.parentWidget()
         return False
-    def _gimmick_wheel_target(self, watched):
-        """Which gimmick layer a wheel event on that page belongs to, or None.
+    def _page_wheel_target(self, watched):
+        """Which view a wheel event on the gimmick or Editor page belongs to,
+        or None.
 
-        **Every wheel on this page seeks, except on the scrollbar.** Seeking is
+        The Editor page joined on 2026-10-07 (owner: "global inside editor
+        and gimmick editor"): a wheel over a header, the space below the views
+        or the strip scrolled the page or did nothing. One difference there --
+        Alt+wheel is left to the page's own branch below, which moves every
+        chart view's snap together rather than one view's.
+
+        **Every wheel on these pages seeks, except on the scrollbar.** Seeking is
         what the wheel means here wherever the pointer is, so the pointer does
         not have to be inside a band for it to work.
 
@@ -12337,7 +12359,10 @@ class MainWindow(QMainWindow):
         scroll they exist for.
         """
         stack = getattr(self, "page_stack", None)
-        if stack is None or stack.currentIndex() != PAGE_GIMMICK:
+        page = stack.currentIndex() if stack is not None else None
+        if page == PAGE_EDITOR:
+            return self._editor_wheel_target(watched)
+        if page != PAGE_GIMMICK:
             return None
         if not self._gimmick_views or isinstance(
             watched, (QComboBox, QAbstractSpinBox, QAbstractSlider, SnapSlider)
@@ -12361,6 +12386,29 @@ class MainWindow(QMainWindow):
             if watched is view or self._is_descendant(watched, view):
                 return view
         return views[0]
+
+    def _editor_wheel_target(self, watched):
+        """`_page_wheel_target` on the Editor page: the view under the
+        pointer, else the one last clicked into, else the first on screen."""
+        modifiers = QApplication.keyboardModifiers()
+        if modifiers & Qt.AltModifier or isinstance(
+            watched, (QComboBox, QAbstractSpinBox, QAbstractSlider, SnapSlider)
+        ) or isinstance(watched.parentWidget() if isinstance(watched, QWidget) else None, SnapSlider):
+            return None
+        if isinstance(watched, QWidget) and watched.window() is not self:
+            return None
+        views = [
+            frame.content for frame in self._editor_views
+            if isinstance(frame.content, (TimelineGameplay, SVEditorView, GameplayViewerView))
+            and frame.content.isVisible()
+        ]
+        if not views:
+            return None
+        for view in views:
+            if watched is view or self._is_descendant(watched, view):
+                return view
+        focused = getattr(self, "_last_focused_editor_view", None)
+        return focused if focused in views else views[0]
 
     # The only event types the application filter below acts on. Everything
     # else -- paints, timers, layout requests, every mouse move -- is handed
@@ -12423,7 +12471,7 @@ class MainWindow(QMainWindow):
             # to every other Shift-modified gesture (Shift+click, Shift+drag).
         if self.drawing_dialog_active and kind==QEvent.MouseButtonPress:return super().eventFilter(watched,event)
         if kind==QEvent.Wheel:
-            target = self._gimmick_wheel_target(watched)
+            target = self._page_wheel_target(watched)
             if target is not None:
                 target.wheelEvent(event)
                 return True

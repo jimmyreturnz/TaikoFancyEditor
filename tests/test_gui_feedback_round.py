@@ -593,6 +593,45 @@ class SessionViewsTests(_Mapset):
             [("chart", self.third, False), ("sv", self.third, False)])
 
 
+class PageWheelTests(_Mapset):
+    """The wheel scrolls the song anywhere on the page, not only over a lane
+    (owner's call, 2026-10-07)."""
+
+    def _wheel(self, widget):
+        from PySide6.QtCore import QPoint, QPointF
+        from PySide6.QtGui import QWheelEvent
+        centre = QPointF(widget.rect().center())
+        event = QWheelEvent(
+            centre, QPointF(widget.mapToGlobal(centre.toPoint())), QPoint(0, 0),
+            QPoint(0, -120), gui.Qt.NoButton, gui.Qt.NoModifier,
+            gui.Qt.NoScrollPhase, False)
+        gui.QApplication.sendEvent(widget, event)
+
+    def test_the_wheel_over_the_space_around_the_views_moves_the_playhead(self):
+        """A wheel the views ignore (a header, a label, the space below them)
+        is passed up to the scroll viewport by Qt, which is where it is
+        caught -- sent there directly, since a synthetic event is not
+        propagated the way a real one is."""
+        self.window.seek_audio(1000.0)
+        viewport = self.window.editor_views_layout.parentWidget().parentWidget()
+        self._wheel(viewport)
+        self.assertGreater(self.window.timeline.current_time, 1000.0)
+
+    def test_the_strip_above_the_views_moves_it_too(self):
+        self.window.seek_audio(1000.0)
+        page = self.window.page_stack.widget(gui.PAGE_EDITOR)
+        self._wheel(page)
+        self.assertGreater(self.window.timeline.current_time, 1000.0)
+
+    def test_the_page_does_not_scroll_vertically_for_it(self):
+        scroll = self.window.editor_views_layout.parentWidget().parentWidget().parentWidget()
+        bar = scroll.verticalScrollBar()
+        bar.setRange(0, 500)
+        bar.setValue(0)
+        self._wheel(self.window.editor_views_layout.parentWidget())
+        self.assertEqual(bar.value(), 0)
+
+
 class MoveAcrossDifficultiesTests(_Mapset):
     """Up/down used to stop dead at a difficulty group's edge.
 

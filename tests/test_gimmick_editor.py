@@ -409,7 +409,7 @@ class DialogWheelIsolationTests(_GimmickFixture, unittest.TestCase):
     def setUp(self) -> None:
         super().setUp()
         self._enter(gui.GimmickEntryDialog.USE_CURRENT)
-        # Shown, because `_gimmick_wheel_target` only claims a wheel while the
+        # Shown, because `_page_wheel_target` only claims a wheel while the
         # gimmick page is current -- without this the routing below is never
         # exercised and the wheel only worked by reaching the layer directly.
         self.window._show_page(gui.PAGE_GIMMICK)
@@ -456,7 +456,7 @@ class DialogWheelIsolationTests(_GimmickFixture, unittest.TestCase):
         millisecond. A single notch doing nothing there is the *correct*
         behaviour, not a lost event.
         """
-        self.assertIsNotNone(self.window._gimmick_wheel_target(self.layer))
+        self.assertIsNotNone(self.window._page_wheel_target(self.layer))
         before = self.layer.current_time
         for _ in range(8):
             self._wheel(self.layer)
@@ -467,7 +467,7 @@ class ScrollBarWheelTests(_GimmickFixture, unittest.TestCase):
     """The scrollbar is the one control on the page whose whole job is the
     wheel, and it was the one control that did not get it.
 
-    `_gimmick_wheel_target` hands every wheel on the gimmick page to a layer so
+    `_page_wheel_target` hands every wheel on the gimmick page to a layer so
     that seeking works wherever the pointer is. Six bands do not fit on one
     screen, so the page has a scrollbar -- and a wheel over it seeked a layer
     and left the scroll position where it was, which made everything below the
@@ -478,7 +478,7 @@ class ScrollBarWheelTests(_GimmickFixture, unittest.TestCase):
         super().setUp()
         self._enter(gui.GimmickEntryDialog.USE_CURRENT)
         # The page has to be *shown*: an unshown scroll area is never laid out,
-        # so its bar has no range -- and `_gimmick_wheel_target` only claims a
+        # so its bar has no range -- and `_page_wheel_target` only claims a
         # wheel while the gimmick page is current, so without this the "a layer
         # still seeks" test below would pass for the wrong reason.
         self.window._show_page(gui.PAGE_GIMMICK)
@@ -490,6 +490,12 @@ class ScrollBarWheelTests(_GimmickFixture, unittest.TestCase):
         self.scroll = self.window.gimmick_scroll
         self.bar = self.scroll.verticalScrollBar()
         self.layer = self.window._gimmick_views[0].chart_view
+        # The window cannot be made shorter than its minimum, and since the
+        # bands went edge to edge all seven fit inside it -- so the scroll
+        # area is held short instead. The scrollbar is what this class is about.
+        self.scroll.setMaximumHeight(300)
+        for _ in range(8):
+            QApplication.processEvents()
 
     def _wheel(self, widget, delta=-120) -> None:
         centre = QPointF(widget.width() / 2, widget.height() / 2)
@@ -552,10 +558,10 @@ class ScrollBarWheelTests(_GimmickFixture, unittest.TestCase):
     def test_only_the_scrollbar_is_exempt(self):
         """Everything else on the page belongs to a band, whatever the
         modifiers -- which is what it has always done."""
-        self.assertIsNone(self.window._gimmick_wheel_target(self.bar))
+        self.assertIsNone(self.window._page_wheel_target(self.bar))
         for widget in (self.scroll.viewport(), self.layer, self.window.gimmick_page):
             with self.subTest(widget=type(widget).__name__):
-                self.assertIsNotNone(self.window._gimmick_wheel_target(widget))
+                self.assertIsNotNone(self.window._page_wheel_target(widget))
 
     def test_and_does_not_seek_a_layer_at_the_same_time(self):
         self.bar.setValue(0)
@@ -2957,11 +2963,12 @@ class GimmickWheelTests(_GimmickFixture, unittest.TestCase):
         self.assertLess(windows.pop(), before)
 
     def test_a_combo_box_keeps_its_own_wheel(self):
-        self.assertIsNone(self.window._gimmick_wheel_target(self.window.gimmick_snap_combo))
+        self.assertIsNone(self.window._page_wheel_target(self.window.gimmick_snap_combo))
 
-    def test_the_editor_page_is_untouched(self):
+    def test_the_editor_page_seeks_its_own_views_not_these(self):
         self.window._show_page(gui.PAGE_EDITOR)
-        self.assertIsNone(self.window._gimmick_wheel_target(self.window.editor_page))
+        target = self.window._page_wheel_target(self.window.editor_page)
+        self.assertNotIn(target, self.layers)
 
 
 class GimmickPlacementToolMoveTests(_GimmickFixture, unittest.TestCase):
