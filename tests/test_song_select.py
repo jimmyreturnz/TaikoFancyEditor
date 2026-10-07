@@ -12,7 +12,7 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import QApplication
 
@@ -395,6 +395,68 @@ class PageTests(unittest.TestCase):
         self.window.state = types.SimpleNamespace(document=object())
         self.window.play_shortcut.activated.emit()
         self.assertEqual((len(toggles), len(editor)), (1, 0))
+
+    def test_the_beat_stripe_is_a_hidden_seek_bar(self):
+        """Owner's easter egg: the stripe's whole width is the whole song,
+        and nothing on screen says so."""
+        from PySide6.QtCore import QPointF
+        from PySide6.QtGui import QMouseEvent
+
+        banner = self.window._library.song_banner
+        banner.resize(400, 200)
+        seen = []
+        banner.seek_fraction.connect(seen.append)
+
+        def press(x, y):
+            event = QMouseEvent(QEvent.MouseButtonPress, QPointF(x, y), QPointF(x, y),
+                                Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+            banner.mousePressEvent(event)
+            release = QMouseEvent(QEvent.MouseButtonRelease, QPointF(x, y), QPointF(x, y),
+                                  Qt.LeftButton, Qt.NoButton, Qt.NoModifier)
+            banner.mouseReleaseEvent(release)
+
+        press(100, 50)
+        self.assertEqual(seen, [], "the art above the stripe is not a seek bar")
+        press(100, 195)
+        self.assertEqual(seen, [0.25])
+        banner.resize(800, 200)  # the splitter widened the pane
+        press(100, 195)
+        self.assertEqual(seen[-1], 0.125)
+
+    def test_a_fraction_seeks_the_song_lists_player_only(self):
+        import gui
+
+        library = self.window._library
+        seeks = []
+
+        class Player:
+            def duration(self):
+                return 200000
+            def setPosition(self, ms):
+                seeks.append(ms)
+            def playbackState(self):
+                return gui.QMediaPlayer.PausedState
+            def position(self):
+                return seeks[-1] if seeks else 0
+
+        library.preview_player = Player()
+        library._seek_preview_fraction(0.5)
+        self.assertEqual(seeks, [100000])
+        self.assertEqual(library.chart_preview.current_time, 100000)
+        library.preview_player = None
+
+    def test_the_chart_preview_shows_the_selected_difficulty(self):
+        import gui
+
+        library = self.window._library
+        self.window.song_list.setCurrentRow(0)
+        library.difficulty_changed()
+        library._load_chart_preview()
+        self.assertTrue(library.chart_preview.notes)
+        library.chart_preview.resize(600, 300)
+        natural = gui.osu_screen_height_for(600)
+        self.assertEqual(library.chart_preview.height(), round(natural * 0.67))
+        self.assertFalse(library.chart_preview.follows_view_opacity)
 
     def test_stop_with_nothing_playing_is_harmless(self):
         self.window._library.rewind_preview()

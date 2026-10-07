@@ -2983,6 +2983,10 @@ Every beatmap in it is checked once for taiko difficulties, and the result is re
             <translation>エディターのタイムライン各レイヤーでノートをどれだけ濃く描画するかです。低くすると密集した箇所でもスナップグリッドや背後の線が透けて読みやすくなり、100% では不透明になります。ゲームプレイプレビューには影響しません。</translation>
         </message>
         <message>
+            <source>Song select preview size</source>
+            <translation>選曲画面プレビューの大きさ</translation>
+        </message>
+        <message>
             <source>Gameplay skin</source>
             <translation>ゲームプレイスキン</translation>
         </message>

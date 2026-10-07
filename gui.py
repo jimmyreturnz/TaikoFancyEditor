@@ -5129,6 +5129,12 @@ class GameplayViewerView(QWidget):
 
         self.setMinimumHeight(GAMEPLAY_MIN_HEIGHT)
         self.setFocusPolicy(Qt.StrongFocus)
+        # A fraction of the osu!-screen height below, for the song select's
+        # smaller preview; None is the whole of it.
+        self.height_share: float | None = None
+        # The song select's preview sits on the detail pane, not on a page
+        # backdrop, so Settings > View opacity is not about it.
+        self.follows_view_opacity = True
 
     def resizeEvent(self, event) -> None:
         """Take the height that makes this view exactly an osu! screen.
@@ -5144,6 +5150,8 @@ class GameplayViewerView(QWidget):
         """
         super().resizeEvent(event)
         height = osu_screen_height_for(self.width())
+        if self.height_share is not None:
+            height = round(height * self.height_share)
         if height != self.height():
             self.setFixedHeight(height)
 
@@ -5625,7 +5633,9 @@ class GameplayViewerView(QWidget):
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
-        painter.fillRect(self.rect(), view_ground("#12161d"))
+        painter.fillRect(
+            self.rect(),
+            view_ground("#12161d") if self.follows_view_opacity else theme.color("#12161d"))
 
         center_y = self.height() / 2
         normal_radius = self.height() * TAIKO_NOTE_SIZE / 2.0
@@ -6741,6 +6751,11 @@ class EditorViewFrame(QWidget):
 
 BACKDROP_OPACITY_DEFAULT_PERCENT = 25
 
+# The song select's chart preview, as a share of a gameplay view's height.
+SONG_SELECT_PREVIEW_DEFAULT_PERCENT = 67
+SONG_SELECT_PREVIEW_MIN_PERCENT = 50
+SONG_SELECT_PREVIEW_MAX_PERCENT = 75
+
 # Settings > View opacity: how much of each editor view's own ground covers
 # the page's map backdrop. 100 is the old look and the cheap path -- the lanes
 # stay WA_OpaquePaintEvent, so the backdrop is never repainted under them.
@@ -6765,6 +6780,8 @@ def set_view_opacity(percent: int, widgets) -> None:
     global _view_ground_alpha
     _view_ground_alpha = round(max(0, min(100, int(percent))) * 2.55)
     for widget in widgets:
+        if not getattr(widget, "follows_view_opacity", True):
+            continue
         if isinstance(widget, EditorViewFrame):
             widget.refresh_ground()
         else:
@@ -10156,9 +10173,17 @@ class SongBanner(QWidget):
     """
 
     BEAT_REST = 0.15
+    # The beat stripe is also a seek bar, and says nothing about it (owner's
+    # call: a hidden feature). Its whole width is the whole song; the band
+    # that takes the pointer is taller than the 3px it draws, or nobody would
+    # ever land on it.
+    SEEK_BAND = 10
+    seek_fraction = Signal(float)
+    seek_step = Signal(int)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
+        self._seeking = False
         # The height the difficulty slots leave; see DIFFICULTY_SLOTS.
         self.setMinimumHeight(150)
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
@@ -10238,6 +10263,46 @@ class SongBanner(QWidget):
     def hideEvent(self, event) -> None:
         self.beat.stop()  # nothing to keep time for on a page nobody is looking at
         super().hideEvent(event)
+
+    def _in_seek_band(self, position) -> bool:
+        return position.y() >= self.height() - self.SEEK_BAND
+
+    def _seek_to(self, position) -> None:
+        # The width is read here, per event, so a pane the splitter has
+        # widened or narrowed maps the same 0-100% across whatever it is now.
+        width = max(1, self.width())
+        self.seek_fraction.emit(min(1.0, max(0.0, position.x() / width)))
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton and self._in_seek_band(event.position()):
+            self._seeking = True
+            self._seek_to(event.position())
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        if self._seeking:
+            self._seek_to(event.position())
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        if self._seeking and event.button() == Qt.LeftButton:
+            self._seeking = False
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def wheelEvent(self, event) -> None:
+        if not self._in_seek_band(event.position()):
+            super().wheelEvent(event)
+            return
+        delta = event.angleDelta().y() or event.angleDelta().x()
+        if delta:
+            self.seek_step.emit(-1 if delta > 0 else 1)
+        event.accept()
 
     def _cover(self, art: QPixmap) -> QPixmap:
         key = art.cacheKey()
@@ -10621,6 +10686,36 @@ class LibraryPageController:
         detail_layout.setSpacing(0)
         self.song_banner = SongBanner()
         detail_layout.addWidget(self.song_banner, 1)
+        # The selected difficulty, scrolling as it does in game -- SV, BPM and
+        # SliderMultiplier, the editor's own preview -- at a share of its
+        # usual height (owner's call, 2026-10-07: 67% by default, 50-75%).
+        # It follows this page's song, not the editor's.
+        self.chart_preview = GameplayViewerView()
+        self.chart_preview.follows_view_opacity = False
+        self.chart_preview.setAttribute(Qt.WA_OpaquePaintEvent, True)
+        self.chart_preview.setFocusPolicy(Qt.NoFocus)  # the arrows are the lists'
+        self.chart_preview.setMinimumHeight(0)
+        if getattr(self.window, "skin", None) is not None:
+            self.chart_preview.set_skin(self.window.skin)
+        self.set_chart_preview_share(self.window.settings.int_value(
+            "song_select/preview_percent", SONG_SELECT_PREVIEW_DEFAULT_PERCENT))
+        self.chart_preview.seek_requested.connect(self.seek_preview_to)
+        self.song_banner.seek_fraction.connect(self._seek_preview_fraction)
+        self.song_banner.seek_step.connect(self._step_preview)
+        detail_layout.addWidget(self.chart_preview)
+        self._chart_documents: dict[Path, object] = {}
+        self._chart_pending: Path | None = None
+        self._chart_shown: Path | None = None
+        # After the same settle as the audio: arrowing down a list of
+        # difficulties parses none of the ones passed on the way.
+        self.chart_timer = QTimer(self.window)
+        self.chart_timer.setSingleShot(True)
+        self.chart_timer.setInterval(PREVIEW_SETTLE_MS)
+        self.chart_timer.timeout.connect(self._load_chart_preview)
+        # A frame for the preview, only while this page shows it.
+        self.chart_frame = QTimer(self.window)
+        self.chart_frame.setInterval(16)
+        self.chart_frame.timeout.connect(self._tick_chart_preview)
         self.difficulty_list = QListWidget()
         self.difficulty_list.setObjectName("difficultyList")
         self.difficulty_list.setItemDelegate(DifficultyRowDelegate(self.difficulty_list))
@@ -11308,6 +11403,76 @@ class LibraryPageController:
             self.schedule_preview(difficulty)
             self._show_banner_art(difficulty)
             self._keep_time_with(difficulty)
+            self._chart_pending = difficulty.path
+            self.chart_timer.start()
+
+    # -- the chart preview under the banner -------------------------------
+
+    def set_chart_preview_share(self, percent: int) -> None:
+        percent = max(SONG_SELECT_PREVIEW_MIN_PERCENT, min(SONG_SELECT_PREVIEW_MAX_PERCENT, int(percent)))
+        self.chart_preview.height_share = percent / 100.0
+        width = self.chart_preview.width()
+        self.chart_preview.setFixedHeight(round(osu_screen_height_for(width) * percent / 100.0))
+
+    def _load_chart_preview(self) -> None:
+        path = self._chart_pending
+        if path is None or path == self._chart_shown:
+            return
+        document = self._chart_documents.get(path)
+        if document is None:
+            try:
+                document = parse_osu(path)
+            except Exception:
+                return  # unreadable: the preview keeps what it had
+            # A handful, not the library: each holds every hit object.
+            if len(self._chart_documents) >= 8:
+                self._chart_documents.pop(next(iter(self._chart_documents)))
+            self._chart_documents[path] = document
+        self._chart_shown = path
+        self.chart_preview.refresh_notes(document)
+        self._tick_chart_preview(force=True)
+        self.chart_frame.start()
+
+    def _chart_clock(self) -> float:
+        """Song milliseconds for the chart preview: the beat line's clock
+        while the song plays, and the player's own position while it is
+        paused -- the beat clock counts wall time and would scroll on."""
+        player = self.preview_player
+        if player is None:
+            return self._beat_anchor_ms
+        if player.playbackState() == QMediaPlayer.PlayingState:
+            return self._beat_clock()
+        return float(player.position())
+
+    def _tick_chart_preview(self, force: bool = False) -> None:
+        if not force and not self.chart_preview.isVisible():
+            return
+        now = self._chart_clock()
+        if force or abs(now - self.chart_preview.current_time) > 0.5:
+            self.chart_preview.current_time = now
+            self.chart_preview.update()
+
+    def seek_preview_to(self, position_ms: int) -> None:
+        """Move this page's song (and so the beat and the chart) to
+        `position_ms`. Never the editor's."""
+        player = self.preview_player
+        if player is None or player.duration() <= 0:
+            return
+        position_ms = max(0, min(int(position_ms), player.duration() - 1))
+        player.setPosition(position_ms)
+        self._beat_anchor_ms = float(position_ms)
+        self._beat_elapsed.restart()
+        self._tick_chart_preview(force=True)
+
+    def _seek_preview_fraction(self, fraction: float) -> None:
+        player = self.preview_player
+        if player is not None:
+            self.seek_preview_to(round(fraction * player.duration()))
+
+    def _step_preview(self, direction: int) -> None:
+        player = self.preview_player
+        if player is not None:
+            self.seek_preview_to(round(self._chart_clock() + direction * player.duration() * 0.01))
 
     def play_ui_sound(self, key: str) -> None:
         """select-expand / select-difficulty: the skin's own, or the app's.
@@ -11400,6 +11565,8 @@ class LibraryPageController:
         # choice, and the player object persists across songs.
         player.setPlaybackRate(1.0)
         player.play()
+        if self._chart_shown is not None:
+            self.chart_frame.start()
         volume = self.window.settings.int_value("audio/music_volume", 65) / 100.0
         self.preview_fade.stop()
         self.preview_fade.setStartValue(0.0)
@@ -11419,6 +11586,7 @@ class LibraryPageController:
             self.preview_player.audioOutput().setVolume(volume)
 
     def stop_preview(self) -> None:
+        self.chart_frame.stop()
         self.preview_timer.stop()
         self._preview_pending = None
         self._preview_loading = False
@@ -12422,6 +12590,11 @@ class MainWindow(QMainWindow):
             self.canvas.animate_transforms = self.settings.bool_value("appearance/transform_animation", True)
         self._sync_backdrops()
         self._apply_view_opacity()
+        # getattr: this first runs before the song list's page is built.
+        if getattr(getattr(self, "_library", None), "chart_preview", None) is not None:
+            self._library.chart_preview.set_skin(self.skin)
+            self._library.set_chart_preview_share(self.settings.int_value(
+                "song_select/preview_percent", SONG_SELECT_PREVIEW_DEFAULT_PERCENT))
 
     def maybe_check_for_updates(self) -> None:
         """Startup update check, on a worker thread so the window never waits.
@@ -12481,6 +12654,7 @@ class MainWindow(QMainWindow):
         # back, which is the restore on Cancel and a no-op after OK.
         dialog.background_opacity.valueChanged.connect(self._sync_backdrops)
         dialog.view_opacity.valueChanged.connect(self._apply_view_opacity)
+        dialog.song_select_preview.valueChanged.connect(self._library.set_chart_preview_share)
         # The opacity preview draws with the timeline's own note code, in
         # whichever skin the combo shows. Loaded once per name so dragging the
         # slider repaints without touching disk.
@@ -12497,6 +12671,8 @@ class MainWindow(QMainWindow):
         self._apply_audio_settings()
         self._sync_backdrops()
         self._apply_view_opacity()
+        self._library.set_chart_preview_share(self.settings.int_value(
+            "song_select/preview_percent", SONG_SELECT_PREVIEW_DEFAULT_PERCENT))
 
     def _build_ui(self) -> None:
         central = QWidget()

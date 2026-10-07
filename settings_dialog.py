@@ -333,6 +333,22 @@ class SettingsDialog(QDialog):
         skin_note.setObjectName("fieldNote")
         skin_note.setWordWrap(True)
         skin.add(skin_note, 2)
+        # The song list's preview, under the art. Live, so the size can be
+        # picked by eye against the pane it is in.
+        self.song_select_preview = QSlider(Qt.Horizontal)
+        self.song_select_preview.setRange(50, 75)
+        self.song_select_preview.setSingleStep(1)
+        self.song_select_preview.setPageStep(5)
+        self.song_select_preview_value = QLabel()
+        self.song_select_preview_value.setMinimumWidth(44)
+        self.song_select_preview.valueChanged.connect(
+            lambda percent: self.song_select_preview_value.setText(f"{percent} %"))
+        preview_row = QWidget()
+        preview_layout = QHBoxLayout(preview_row)
+        preview_layout.setContentsMargins(0, 0, 0, 0)
+        preview_layout.addWidget(self.song_select_preview, 1)
+        preview_layout.addWidget(self.song_select_preview_value)
+        skin.field(self.tr("Song select preview size"), preview_row, span=2)
 
         # A slider, because this is a look rather than a number: nobody knows
         # they want 62%, they want it a bit fainter than it is. The readout
@@ -567,6 +583,7 @@ class SettingsDialog(QDialog):
             "appearance/note_opacity", NOTE_OPACITY_DEFAULT_PERCENT))
         self.background_opacity.setValue(self.settings.int_value("appearance/background_opacity", 25))
         self.view_opacity.setValue(self.settings.int_value("appearance/view_opacity", 100))
+        self.song_select_preview.setValue(self.settings.int_value("song_select/preview_percent", 67))
         chosen_theme = self.settings.string_value(theme.SETTING, theme.DEFAULT)
         chosen_theme = theme.RENAMED.get(chosen_theme, chosen_theme)
         self.theme_combo.setCurrentIndex(max(0, self.theme_combo.findData(chosen_theme)))
@@ -603,6 +620,7 @@ class SettingsDialog(QDialog):
             self.note_opacity.setValue(NOTE_OPACITY_DEFAULT_PERCENT)
             self.background_opacity.setValue(25)
             self.view_opacity.setValue(100)
+            self.song_select_preview.setValue(67)
         elif page == "language":
             self.language_combo.setCurrentIndex(self.language_combo.findData("en"))
         elif page == "shortcuts":
@@ -654,6 +672,7 @@ class SettingsDialog(QDialog):
         self.settings.set_value("appearance/note_opacity", self.note_opacity.value())
         self.settings.set_value("appearance/background_opacity", self.background_opacity.value())
         self.settings.set_value("appearance/view_opacity", self.view_opacity.value())
+        self.settings.set_value("song_select/preview_percent", self.song_select_preview.value())
         self.settings.set_value("language/current", selected_language)
         for action_id, sequence in self._shortcut_values().items():
             self.shortcuts.set_sequence(action_id, sequence)
