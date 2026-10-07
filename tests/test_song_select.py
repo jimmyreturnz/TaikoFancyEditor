@@ -6,6 +6,7 @@ import json
 import os
 import struct
 import tempfile
+import types
 import unittest
 from pathlib import Path
 
@@ -365,6 +366,22 @@ class PageTests(unittest.TestCase):
         library.library_search.setText("yotsuya")
         self.assertFalse(space(library.library_search))
         self.assertEqual(len(toggles), 2)
+
+    def test_space_on_the_song_list_after_editing_is_the_song_lists(self):
+        """The Space shortcut is application-wide, so on the song list it fires
+        before `LibraryKeys` sees the key. With a difficulty opened earlier it
+        used to restart the editor's song from the editor's playhead."""
+        import gui
+
+        library = self.window._library
+        toggles, editor = [], []
+        library.toggle_preview = lambda: toggles.append(True)
+        self.window.toggle_playback = lambda: editor.append(True)
+        self.window._show_page(gui.PAGE_LIBRARY)
+        # A difficulty was opened earlier: `document` reads it from the state.
+        self.window.state = types.SimpleNamespace(document=object())
+        self.window.play_shortcut.activated.emit()
+        self.assertEqual((len(toggles), len(editor)), (1, 0))
 
     def test_stop_with_nothing_playing_is_harmless(self):
         self.window._library.rewind_preview()

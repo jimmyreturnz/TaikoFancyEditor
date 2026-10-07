@@ -12188,6 +12188,14 @@ class MainWindow(QMainWindow):
     def _toggle_playback_from_shortcut(self) -> None:
         if should_ignore_shortcut_focus(QApplication.focusWidget()):
             return
+        # The song list has its own player. This shortcut is application-wide,
+        # so it reaches the song list before `LibraryKeys` sees the KeyPress, and
+        # once a difficulty had been opened `self.document` stayed set: Space
+        # on the song list restarted the *editor's* song from the editor's
+        # playhead.
+        if self.page_stack.currentIndex() == PAGE_LIBRARY:
+            self._library.toggle_preview()
+            return
         if self.document is not None:
             self.toggle_playback()
 
