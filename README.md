@@ -24,7 +24,7 @@ The main inspirations include Alchyr's ranked maps *13 Stairs* and *Helios*, whi
 ## Credits
 - [Alchyr's TaikoEditor](https://github.com/Alchyr/TaikoEditor)
 - {Mew, _gt, Alchyr}'s maps for study reference
-- Many thanks to riunosk for many ideas to polish and improve the app
+- Many thanks to riunosk for many ideas to polish and improve the app!
 
 ---
 
@@ -74,18 +74,16 @@ A redesign release: song select, the editor, the Fancy Arranger and every settin
 - **Mods** on the Editor and Gimmick pages: HD, NC / DT / DC / HT, HR / EZ and FL. NC and DC change the song's pitch and leave the hitsounds alone.
 - **New song select** with star ratings from your osu!.db, each difficulty's own background and preview, and a Continue row. Going back from the editor keeps the song playing at 1.00x.
 - **Every settings dialog redone**: settings grouped by tool, a side panel that explains each field and draws what it writes, and a warning on the fields that clash.
-- **Fancy Arranger** as its mockup: shape tiles, parameters as sliders, movable docks, osu!'s playfield proportions, and notes that glide to a new shape.
-- **The gameplay preview** matches osu!'s range, draws objects in osu!'s order (a shiny's note sits over its fake sliders), and flashes plain notes white in kiai.
+- **Fancy Arranger** UI and Animation overhaul.
+- **The gameplay preview** now matches osu!'s range, Kiai effect is still appears different from osu taiko though.
 - **Resnap** (Ctrl+R) puts objects that sit a millisecond off their snap back on it.
 - Faster heavy gimmick sections, eased scrolling everywhere, and a sharper font.
 
 Full notes: [`docs/releases/v3.4.0.md`](docs/releases/v3.4.0.md).
 
 ## To be added / fixed:
-- improving the smoothness when scrolling too fast, been actively trying to find solutions and improve it for a while now. It is much better than before, and there is still a room for an improvement.
+- improving the smoothness when scrolling too fast.
 - Will also try to come up with a way that you can make barline kat or fake slider kat to have different approaching behavior (like adding an increasing SV speed to barline kat to make them look harder to read). 
-- Further optimization when applicable.
-- Reworking the settings of every transformation.
 
 Full development log detail lives in [`docs/DEVELOPMENT_PLAN.md`](docs/DEVELOPMENT_PLAN.md).
 
