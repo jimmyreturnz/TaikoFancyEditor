@@ -9889,22 +9889,16 @@ def format_bpm(low: float, high: float) -> str:
     return f"{round(low)}–{round(high)}"
 
 
-def opened_ago(opened: float | None) -> str:
-    """When the chart was last opened *here* -- the file's own mtime is the
-    mapper's last edit, which read "edited 124 days ago" on a chart opened a
-    minute before. Empty for an entry saved before times were kept."""
-    if not opened:
-        return ""
-    seconds = max(0.0, wall_clock() - opened)
-    if seconds < 60:
-        return tr("MainWindow", "opened just now")
-    if seconds < 3600:
-        return tr("MainWindow", "opened {n} min ago").format(n=int(seconds // 60))
-    if seconds < 86400:
-        return tr("MainWindow", "opened {n} h ago").format(n=int(seconds // 3600))
-    if seconds < 2 * 86400:
-        return tr("MainWindow", "opened yesterday")
-    return tr("MainWindow", "opened {n} days ago").format(n=int(seconds // 86400))
+def decode_background(path: Path, max_width: int) -> QPixmap | None:
+    """A beatmap background, decoded no wider than `max_width`: a 4K
+    background at full size costs a visible pause on every selection."""
+    reader = QImageReader(str(path))
+    reader.setAutoTransform(True)
+    size = reader.size()
+    if size.isValid() and size.width() > max_width:
+        reader.setScaledSize(size.scaled(max_width, max_width, Qt.KeepAspectRatio))
+    image = reader.read()
+    return QPixmap.fromImage(image) if not image.isNull() else None
 
 
 def tabular(font: QFont) -> QFont:
@@ -10243,7 +10237,13 @@ class SongBanner(QWidget):
 
 
 class ContinueCard(QFrame):
-    """One recent chart: title, difficulty in pink, how long ago it was saved."""
+    """One recent chart: title and difficulty, over its own background very
+    dim. "Opened N min ago" went on 2026-10-07 (owner's call): the order of
+    the cards already says which was most recent."""
+
+    # How much of the chart's art shows through. Enough to tell two cards
+    # apart at a glance, not so much that it competes with the title.
+    ART_OPACITY = 0.16
 
     clicked = Signal(str)
 
@@ -10259,19 +10259,38 @@ class ContinueCard(QFrame):
         self.title.setStyleSheet(f"font-weight: 700; color: {ROW_INK};")
         self.version = QLabel()
         self.version.setStyleSheet(f"color: {ACCENT_PINK};")
-        self.when = QLabel()
-        self.when.setStyleSheet(f"color: {ROW_INK_3}; font-size: 11px;")
-        for label in (self.title, self.version, self.when):
+        for label in (self.title, self.version):
             label.setMaximumWidth(220)
             layout.addWidget(label)
+        self.art: QPixmap | None = None
 
-    def show_chart(self, path: str, title: str, version: str, opened: float | None) -> None:
+    def show_chart(self, path: str, title: str, version: str, art: QPixmap | None = None) -> None:
         self.path = path
         metrics = self.title.fontMetrics()
         self.title.setText(metrics.elidedText(title, Qt.ElideRight, 220))
         self.version.setText(self.version.fontMetrics().elidedText(version, Qt.ElideRight, 220))
-        self.when.setText(opened_ago(opened))
+        self.art = art
         self.setToolTip(path)
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)  # the sheet's fill and rim
+        if self.art is None:
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+        # Inside the 1px rim, on the same 6px corners, cropped to fill.
+        inner = QRectF(self.rect()).adjusted(1, 1, -1, -1)
+        clip = QPainterPath()
+        clip.addRoundedRect(inner, 5, 5)
+        painter.setClipPath(clip)
+        painter.setOpacity(self.ART_OPACITY)
+        cover = self.art.scaled(
+            inner.size().toSize(), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+        painter.drawPixmap(
+            QPointF(inner.center().x() - cover.width() / 2, inner.center().y() - cover.height() / 2),
+            cover)
 
     def mouseReleaseEvent(self, event) -> None:
         if event.button() == Qt.LeftButton and self.rect().contains(event.position().toPoint()):
@@ -10617,6 +10636,7 @@ class LibraryPageController:
             QToolButton#folderMenu::menu-indicator {{ image: none; }}
             QFrame#continueCard {{ background: #222a36; border: 1px solid #303947; border-radius: 6px; }}
             QFrame#continueCard:hover {{ background: {ROW_HOVER}; border-color: #ff66aa55; }}
+            QFrame#continueCard QLabel {{ background: transparent; }}
             QProgressBar {{ background: #252d39; border: 0; border-radius: 2px; }}
             QProgressBar::chunk {{ background: #f3a6bd; border-radius: 2px; }}
             """
@@ -10735,6 +10755,7 @@ class LibraryPageController:
             difficulty = known.get(os.path.normcase(path))
             if difficulty is not None:
                 title, version = difficulty.display_title(original), difficulty.version
+                background = difficulty.folder / difficulty.background if difficulty.background else None
             else:
                 # Opened here but not in the index (another folder, or not
                 # scanned yet): its own header, rather than the file name.
@@ -10742,12 +10763,25 @@ class LibraryPageController:
                 pair = ("title_unicode", "title") if original else ("title", "title_unicode")
                 title = next((header.get(key) for key in pair if header.get(key)), Path(path).parent.name)
                 version = header.get("version") or Path(path).stem
-            self.continue_cards[shown].show_chart(path, title, version, opened)
+                background = Path(path).parent / header["background"] if header.get("background") else None
+            self.continue_cards[shown].show_chart(path, title, version, self._card_art(background))
             self.continue_cards[shown].show()
             shown += 1
         for card in self.continue_cards[shown:]:
             card.hide()
         self.continue_row.setVisible(shown > 0)
+
+    def _card_art(self, path: Path | None) -> QPixmap | None:
+        """A Continue card's background, decoded once per file: the row is
+        refreshed on every return to this page, and three backgrounds decoded
+        each time is a pause on a tab switch."""
+        if path is None:
+            return None
+        cache = self.__dict__.setdefault("_card_art_cache", {})
+        if path not in cache:
+            # Cards are ~240px wide; twice that keeps the crop sharp.
+            cache[path] = decode_background(path, 480) if path.is_file() else None
+        return cache[path]
 
     def show_recent(self, path: str) -> None:
         """Select a Continue card's song and difficulty, and stop there.
@@ -11149,17 +11183,10 @@ class LibraryPageController:
         if key == self._banner_art_key:
             return
         self._banner_art_key = key
-        art = None
-        if difficulty.background:
-            reader = QImageReader(str(difficulty.folder / difficulty.background))
-            reader.setAutoTransform(True)
-            # Decoded no larger than the pane needs: a 4K background at full
-            # size costs a visible pause on every selection.
-            size = reader.size()
-            if size.isValid() and size.width() > 1280:
-                reader.setScaledSize(size.scaled(1280, 1280, Qt.KeepAspectRatio))
-            image = reader.read()
-            art = QPixmap.fromImage(image) if not image.isNull() else None
+        art = (
+            decode_background(difficulty.folder / difficulty.background, 1280)
+            if difficulty.background else None
+        )
         title, subtitle = self._banner_song
         self.song_banner.set_song(title, subtitle, art)
 

@@ -167,15 +167,28 @@ class PageTests(unittest.TestCase):
         self.assertEqual(Path(recent[0][0]), self.window.state.source_path)
         self.assertFalse(library.continue_row.isHidden())
         self.assertEqual(library.continue_cards[0].path, recent[0][0])
-        # When it was opened here, not when the file was last written.
-        self.assertEqual(library.continue_cards[0].when.text(), "opened just now")
+
+    def test_a_continue_card_shows_its_charts_art_and_no_age(self):
+        """Owner's call: no "opened N min ago", the chart's background
+        very dim behind the title instead."""
+        from PySide6.QtGui import QImage
+        song = next(Path(self.window.song_list.item(0).data(Qt.UserRole)).glob("*.osu"))
+        image = QImage(64, 36, QImage.Format_RGB32)
+        image.fill(Qt.red)
+        image.save(str(song.parent / "bg.jpg"))  # the fixture's own background
+        self.stored["library/recent"] = json.dumps([[str(song), 0.0]])
+        self.window._library.refresh_continue_row()
+        card = self.window._library.continue_cards[0]
+        self.assertIsNotNone(card.art)
+        self.assertFalse(hasattr(card, "when"))
+        card.resize(240, 60)
+        card.grab()  # paints without raising
 
     def test_a_path_saved_before_open_times_still_lists(self):
         song = next(Path(self.window.song_list.item(0).data(Qt.UserRole)).glob("*.osu"))
         self.stored["library/recent"] = json.dumps([str(song)])
         self.window._library.refresh_continue_row()
         self.assertEqual(self.window._library.continue_cards[0].path, str(song))
-        self.assertEqual(self.window._library.continue_cards[0].when.text(), "")
 
     def _last_song_file(self):
         row = self.window.song_list.count() - 1
