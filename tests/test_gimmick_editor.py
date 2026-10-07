@@ -723,6 +723,29 @@ class GimmickLayerTests(_GimmickFixture, unittest.TestCase):
         real = next(n for n in document.hit_objects if n.is_slider and (n.length or 0) > 0)
         self.assertFalse(gui.MainWindow.is_fake_slider(real))
 
+    def test_a_moved_layer_stays_moved_across_visits(self):
+        """The layers are rebuilt on every visit; they used to come back in
+        their fixed order, undoing any move."""
+        self.window._move_view(self.window._gimmick_views[0], 1)
+        self.window._open_gimmick_layers()
+        self.assertEqual(
+            [frame.gimmick_layer for frame in self.window._gimmick_views][:2],
+            ["fake_slider", "chart"])
+
+    def test_an_added_band_survives_the_song_list(self):
+        target = self.window._gimmick_pairing.target
+        self.window._add_editor_view(
+            "gameplay", target, container=self.window.gimmick_views_layout)
+        self.window._move_view(self.window._editor_views[-1], -1)
+        order = [kind if kind == "view" else value
+                 for kind, value in self.window._gimmick_band_order()]
+        self.window._close_all_editor_views()
+        self.window._open_gimmick_layers()
+        self.assertEqual(
+            [kind if kind == "view" else value
+             for kind, value in self.window._gimmick_band_order()],
+            order)
+
     def test_reopening_does_not_stack_a_second_set_of_layers(self):
         self.window._open_gimmick_layers()
         self.assertEqual(

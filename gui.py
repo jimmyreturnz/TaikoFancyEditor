@@ -13246,15 +13246,92 @@ class MainWindow(QMainWindow):
         return True
 
     def _close_all_editor_views(self) -> None:
-        """Going back to the song list ends the session's views.
-
-        Coming back to a difficulty then reopens the default chart + SV pair
-        (_activate_state keys that off _editor_view_groups), so the editor
-        starts clean instead of accumulating every view of every song visited
-        this session.
+        """Going back to the song list ends the page's views -- after writing
+        down what they were, so coming back to the same difficulty restores
+        them (`_ensure_default_editor_views`). The editor still does not
+        accumulate every view of every song visited: a difficulty opened
+        for the first time gets the default pair.
         """
+        if getattr(self, "state", None) is not None:
+            remembered = self._editor_view_layout()
+            if remembered:
+                self._session_views[self.state.source_path] = remembered
+        self._remember_gimmick_order(closing=True)
         for frame in list(self._editor_views):
             self._close_editor_view(frame)
+
+    def _editor_view_layout(self) -> list[tuple[str, Path, bool]]:
+        """Every Editor-page view as it stands, top to bottom: (type as
+        added, difficulty, locked). Gimmick-page bands are not in a
+        difficulty group and are not listed."""
+        views = []
+        for i in range(self.editor_views_layout.count()):
+            group = self.editor_views_layout.itemAt(i).widget()
+            if group is None or group.layout() is None:
+                continue
+            for j in range(group.layout().count()):
+                frame = group.layout().itemAt(j).widget()
+                if isinstance(frame, EditorViewFrame):
+                    views.append((frame.view_type, frame.difficulty_path, frame.locked))
+        return views
+
+    def _gimmick_band_order(self) -> list[tuple[str, object]]:
+        """The gimmick page's bands, top to bottom: ("layer", layer_id) for
+        the six fixed ones, ("view", frame) for one added with "+"."""
+        order = []
+        for i in range(self.gimmick_views_layout.count()):
+            frame = self.gimmick_views_layout.itemAt(i).widget()
+            if not isinstance(frame, EditorViewFrame):
+                continue
+            layer = getattr(frame, "gimmick_layer", None)
+            order.append(("layer", layer) if layer is not None else ("view", frame))
+        return order
+
+    def _remember_gimmick_order(self, closing: bool = False) -> None:
+        """Note the band order under the difficulty the layers were built
+        for. `closing`: the added bands are about to be deleted, so they are
+        written down by type and rebuilt next time."""
+        built_for = getattr(self, "_gimmick_built_for", None)
+        order = self._gimmick_band_order()
+        if built_for is None or not any(kind == "layer" for kind, _ in order):
+            return
+        if closing:
+            order = [(kind, value.view_type if kind == "view" else value) for kind, value in order]
+            # The layers are rebuilt on the next visit, and noting the order
+            # again then would overwrite this with one the closed bands are
+            # already missing from.
+            self._gimmick_built_for = None
+        self._gimmick_orders[built_for] = order
+
+    def _restore_gimmick_order(self, target: Path, layers: dict[str, EditorViewFrame]) -> None:
+        """Put the bands back in the order last seen for `target`.
+
+        The six layers are rebuilt on every visit and placed at the top, so
+        without this a layer moved down came back up each time the tab was
+        left, and a band added with "+" was lost with the song list. Layers
+        the remembered order does not name (none, today) stay where the
+        rebuild put them, after the ones it does."""
+        order = self._gimmick_orders.get(target)
+        if not order:
+            return
+        placed: list[EditorViewFrame] = []
+        for kind, value in order:
+            if kind == "layer":
+                frame = layers.get(value)
+            elif isinstance(value, EditorViewFrame):
+                frame = value if value in self._editor_views else None
+            else:
+                count = len(self._editor_views)
+                self._add_editor_view(value, target, container=self.gimmick_views_layout)
+                frame = self._editor_views[-1] if len(self._editor_views) > count else None
+            if frame is not None and frame not in placed:
+                placed.append(frame)
+        for index, frame in enumerate(placed):
+            self.gimmick_views_layout.removeWidget(frame)
+            self.gimmick_views_layout.insertWidget(index, frame)
+        # "First" is what the tool row and copy/paste follow; keep the list
+        # in the order the screen shows.
+        self._gimmick_views.sort(key=self.gimmick_views_layout.indexOf)
 
     def _confirm_leaving_editor(self) -> bool:
         """Ask about unsaved difficulties. False means "stay where you are".
@@ -13579,6 +13656,16 @@ class MainWindow(QMainWindow):
         # new difficulties get a new group appended at the bottom of the stack.
         self._editor_view_groups: dict[Path, QVBoxLayout] = {}
         self._editor_views: list[EditorViewFrame] = []
+        # What was open when the song list was last visited, per difficulty
+        # opened, for this session only: (type, difficulty, locked), top to
+        # bottom. Going back to the song list ends the page's views, and
+        # coming back used to rebuild a bare chart + SV pair -- every view
+        # opened and ordered by hand was gone.
+        self._session_views: dict[Path, list[tuple[str, Path, bool]]] = {}
+        # The gimmick page's band order per paired difficulty, likewise:
+        # ("layer", layer_id) or ("view", frame-or-type) -- see
+        # `_gimmick_band_order`.
+        self._gimmick_orders: dict[Path, list[tuple[str, object]]] = {}
         return page
 
     # -- Gimmick page ---------------------------------------------------------
@@ -15047,6 +15134,7 @@ class MainWindow(QMainWindow):
         # views themselves keep their playhead, but the *page* forgot which of
         # them you had scrolled down to.
         scrolled_to = self.gimmick_scroll.verticalScrollBar().value()
+        self._remember_gimmick_order()
 
         for frame in list(self._gimmick_views):
             # Unregister before deleting, or the playhead broadcast keeps
@@ -15267,6 +15355,10 @@ class MainWindow(QMainWindow):
             # above, so its length is how many layers are already placed.
             self.gimmick_views_layout.insertWidget(len(self._gimmick_views), frame)
             self._gimmick_views.append(frame)
+
+        self._gimmick_built_for = pairing.target
+        self._restore_gimmick_order(
+            pairing.target, {frame.gimmick_layer: frame for frame in self._gimmick_views})
 
         # Something has to be showing before the first click lands -- and be
         # what copy, paste and the tool digits act on, or they would all be
@@ -16647,9 +16739,15 @@ class MainWindow(QMainWindow):
         for views in (self._editor_views, self._gimmick_views):
             if frame not in views:
                 continue
+            # Only this list's own frames: the gimmick page's stack holds the
+            # six layers (`_gimmick_views`) *and* bands added with "+"
+            # (`_editor_views`), and taking every frame wrote a layer into the
+            # band's slot -- the band then dropped out of the list, and closing
+            # the Editor's views closed the layer instead of it.
             ordered = [
                 layout.itemAt(i).widget() for i in range(layout.count())
                 if isinstance(layout.itemAt(i).widget(), EditorViewFrame)
+                and layout.itemAt(i).widget() in views
             ]
             slots = [i for i, existing in enumerate(views) if existing in ordered]
             for slot, moved in zip(slots, ordered):
@@ -18653,7 +18751,7 @@ class MainWindow(QMainWindow):
         self.chart_title_label.setText("  ·  ".join(part for part in (title, mapper) if part))
 
     def _ensure_default_editor_views(self, state: DifficultyState) -> None:
-        """Give `state` a chart + SV editor view if it has none.
+        """Give `state` the views it had this session, or a chart + SV pair.
 
         Covers both "first time this difficulty is activated" and "views
         were torn down by leaving the editor, then the Editor tab was
@@ -18663,9 +18761,23 @@ class MainWindow(QMainWindow):
         the entry and they come back next time either path runs -- treated
         as "not set up yet" rather than "user doesn't want any views."
         """
-        if state.source_path not in self._editor_view_groups:
-            self._add_editor_view("chart", state.source_path)
-            self._add_editor_view("sv", state.source_path)
+        if state.source_path in self._editor_view_groups:
+            return
+        remembered = self._session_views.get(state.source_path)
+        # Only onto an empty page: switching difficulty with views already
+        # open adds that difficulty's pair, as it always did.
+        if remembered and not self._editor_view_groups:
+            for view_type, path, locked in remembered:
+                if not path.is_file():
+                    continue  # deleted since; nothing to show
+                count = len(self._editor_views)
+                self._add_editor_view(view_type, path)
+                if locked and len(self._editor_views) > count:
+                    self._editor_views[-1].lock_button.setChecked(True)
+            if state.source_path in self._editor_view_groups:
+                return
+        self._add_editor_view("chart", state.source_path)
+        self._add_editor_view("sv", state.source_path)
 
     def open_map(self) -> None:
         filename, _ = QFileDialog.getOpenFileName(

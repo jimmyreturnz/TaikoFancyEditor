@@ -564,6 +564,35 @@ class PlaybackDifficultyTests(_Mapset):
         self.window._show_page(gui.PAGE_GIMMICK)
         self.assertIs(self.window._hitsound_state(), self.state)
 
+class SessionViewsTests(_Mapset):
+    """Views survive a trip to the song list (owner's report, 2026-10-07:
+    "editor view gets wiped once I selected and ordered difficulties and
+    come back to song selection")."""
+
+    def _round_trip(self, path):
+        self.window._back_to_library()
+        self.assertEqual(self.window._editor_views, [])
+        self.window._load_map_path(path, refresh_difficulties=False)
+
+    def test_the_same_views_come_back_in_the_same_order(self):
+        self.window._add_editor_view("chart", self.second)
+        self.window._add_editor_view("gameplay", self.path)
+        self.window._move_view(self.window._editor_views[-1], -1)
+        self.window._editor_views[0].lock_button.setChecked(True)
+        before = self.window._editor_view_layout()
+        self.assertEqual(len(before), 4)
+
+        self._round_trip(self.path)
+        self.assertEqual(self.window._editor_view_layout(), before)
+
+    def test_a_difficulty_opened_for_the_first_time_gets_the_default_pair(self):
+        self.window._add_editor_view("gameplay", self.path)
+        self._round_trip(self.third)
+        self.assertEqual(
+            self.window._editor_view_layout(),
+            [("chart", self.third, False), ("sv", self.third, False)])
+
+
 class MoveAcrossDifficultiesTests(_Mapset):
     """Up/down used to stop dead at a difficulty group's edge.
 
