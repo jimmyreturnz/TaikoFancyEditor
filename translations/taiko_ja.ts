@@ -3143,20 +3143,24 @@ Every beatmap in it is checked once for taiko difficulties, and the result is re
             <translation>テーマ</translation>
         </message>
         <message>
-            <source>Pink</source>
-            <translation>ピンク</translation>
+            <source>osu!</source>
+            <translation>osu!</translation>
         </message>
         <message>
             <source>Taiko</source>
             <translation>太鼓</translation>
         </message>
         <message>
-            <source>Matsuri</source>
-            <translation>祭り</translation>
+            <source>Lantern Rite</source>
+            <translation>海灯祭</translation>
         </message>
         <message>
-            <source>Kiai</source>
-            <translation>キアイ</translation>
+            <source>Gold</source>
+            <translation>ゴールド</translation>
+        </message>
+        <message>
+            <source>Monokai</source>
+            <translation>Monokai</translation>
         </message>
         <message>
             <source>The colours of the window around the chart. Notes, snap ticks and the SV graph keep osu!&apos;s own. Applies after a restart.</source>

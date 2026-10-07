@@ -25,11 +25,23 @@ def setUpModule() -> None:
 
 class ThemeMapTests(unittest.TestCase):
     def tearDown(self) -> None:
-        theme.install("pink")
+        theme.install(theme.AS_WRITTEN)
 
-    def test_tests_run_on_pink(self) -> None:
-        self.assertEqual(theme.active(), "pink")
-        self.assertEqual(theme.css("color: #f3a6bd;"), "color: #f3a6bd;")
+    def test_tests_run_on_the_colours_as_written(self) -> None:
+        self.assertEqual(theme.active(), theme.AS_WRITTEN)
+        self.assertEqual(theme.css("color: #191f29;"), "color: #191f29;")
+
+    def test_the_default_grounds_on_1f1e33_and_keeps_its_pink(self) -> None:
+        table = theme.build_map(theme.DEFAULT)
+        self.assertEqual(table["#191f29"], "#1f1e33")
+        for pink in ("#f3a6bd", "#ff66aa", "#ff9dcc", "#f7bfd0", "#b0587f"):
+            self.assertNotIn(pink, table)
+
+    def test_old_theme_names_still_load(self) -> None:
+        theme.install("kiai")
+        self.assertEqual(theme.active(), "gold")
+        theme.install("pink")
+        self.assertEqual(theme.active(), "osu")
 
     def test_no_theme_output_is_another_key(self) -> None:
         # Or a colour passing through css() twice would move twice.
@@ -66,7 +78,7 @@ class ThemeMapTests(unittest.TestCase):
         self.assertNotIn("#ff66aa", themed)
 
     def test_mockup_grounds_are_used_exactly(self) -> None:
-        self.assertEqual(theme.build_map("matsuri")["#191f29"], "#17120f")
+        self.assertEqual(theme.build_map("lantern")["#191f29"], "#1d1110")
         self.assertEqual(theme.build_map("taiko")["#3a4554"], "#34445a")
 
     def test_settings_dialog_offers_every_theme(self) -> None:
@@ -74,7 +86,7 @@ class ThemeMapTests(unittest.TestCase):
         dialog = SettingsDialog(settings, gui.ShortcutRegistry(settings))
         names = [dialog.theme_combo.itemData(i) for i in range(dialog.theme_combo.count())]
         self.assertEqual(names, list(theme.THEMES))
-        self.assertEqual(dialog.theme_combo.currentData(), "pink")
+        self.assertEqual(dialog.theme_combo.currentData(), theme.DEFAULT)
         dialog.deleteLater()
 
 

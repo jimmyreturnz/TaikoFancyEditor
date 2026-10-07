@@ -298,10 +298,11 @@ class SettingsDialog(QDialog):
         look = sheet.add_section("theme", self.tr("App theme"))
         self.theme_combo = QComboBox()
         for name, label in (
-            ("pink", self.tr("Pink")),
+            ("osu", self.tr("osu!")),
             ("taiko", self.tr("Taiko")),
-            ("matsuri", self.tr("Matsuri")),
-            ("kiai", self.tr("Kiai")),
+            ("lantern", self.tr("Lantern Rite")),
+            ("gold", self.tr("Gold")),
+            ("monokai", self.tr("Monokai")),
         ):
             self.theme_combo.addItem(label, name)
         look.field(self.tr("Theme"), bind_segments(self.theme_combo), span=2)
@@ -544,6 +545,7 @@ class SettingsDialog(QDialog):
             "appearance/note_opacity", NOTE_OPACITY_DEFAULT_PERCENT))
         self.background_opacity.setValue(self.settings.int_value("appearance/background_opacity", 25))
         chosen_theme = self.settings.string_value(theme.SETTING, theme.DEFAULT)
+        chosen_theme = theme.RENAMED.get(chosen_theme, chosen_theme)
         self.theme_combo.setCurrentIndex(max(0, self.theme_combo.findData(chosen_theme)))
         chosen = self.settings.string_value("appearance/skin", "")
         self.skin_combo.setCurrentIndex(max(0, self.skin_combo.findData(chosen)))
@@ -636,7 +638,9 @@ class SettingsDialog(QDialog):
             parent._reload_shortcuts()
         if selected_language != previous_language:
             self._prompt_language_restart()
-        elif selected_theme != theme.active():
+        # The colours-as-written theme is the test suite's and is never
+        # offered, so the box cannot show it: it is not a change to restart for.
+        elif selected_theme != theme.active() and theme.active() != theme.AS_WRITTEN:
             self._prompt_restart(self.tr("Please restart Taiko Fancy Arranger to apply the theme."))
         return True
 

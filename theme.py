@@ -29,7 +29,13 @@ import re
 from PySide6.QtGui import QColor
 
 SETTING = "appearance/theme"
-DEFAULT = "pink"
+DEFAULT = "osu"
+# Not offered to the user: the colours exactly as the code writes them. The
+# test suite runs on this, because what it asserts are those literals -- and
+# the default theme stopped being them when its ground became #1f1e33.
+AS_WRITTEN = "as-written"
+# Saved names from before a rename.
+RENAMED = {"pink": "osu", "matsuri": "lantern", "kiai": "gold"}
 
 # The pink palette's own roles. Each theme names a target for the anchors, and
 # the colours derived from an anchor (its hover, its gradient stops, the dark
@@ -59,16 +65,27 @@ _NEUTRALS = (
 _NEUTRAL_STEPS = ("#11151c", "#151b24", "#191f29", "#222a36", "#2a3341",
                   "#3a4554", "#7d8794", "#aeb8c5", "#e8edf3")
 
+# The default (osu!) theme's ground since 2026-10-07: #1f1e33, a Camellia song title.
+# The rest of the navy follows it, steps in the same order as _NEUTRAL_STEPS.
+_PINK_STEPS = ("#151423", "#1a192d", "#1f1e33", "#282740", "#302e4a",
+               "#403e5c", "#828198", "#b1b0c8", "#e9e8f4")
+
 # name -> (primary, ink, focus, accent text, the nine steps or None)
 THEMES = {
-    "pink": None,
+    "osu": (_PRIMARY, _INK, _FOCUS, _ACCENT_TEXT, _PINK_STEPS),
     "taiko": ("#d4432a", "#ffffff", "#5aa7c7", "#ff8f72",
                ("#0d1118", "#10151d", "#141a24", "#1c2430", "#26313f",
                 "#34445a", "#7b889b", "#a9b6c6", "#e8edf3")),
-    "matsuri": ("#c23b22", "#fff3e6", "#e3b04b", "#e8bc62",
-                ("#0e0a08", "#120e0b", "#17120f", "#221a16", "#2e241e",
-                 "#4a3a2f", "#93806e", "#c4b3a1", "#f3e9dc")),
-    "kiai": ("#ff9f2e", "#1d1406", "#ff9f2e", "#ffc06b", None),
+    # Lantern Rite: lantern red on a night lit warm by them, gold for the glow.
+    "lantern": ("#d9452b", "#fff3e6", "#f0b34a", "#f5c46a",
+                ("#120a0a", "#170d0c", "#1d1110", "#291817", "#352120",
+                 "#523330", "#9a7d72", "#cdb6a6", "#f6ebdd")),
+    "gold": ("#ff9f2e", "#1d1406", "#ff9f2e", "#ffc06b", None),
+    # VS Code's Monokai: its green fills, its pink rims, its yellow strings,
+    # on #272822 with #f8f8f2 text and the #75715e of a comment.
+    "monokai": ("#a6e22e", "#272822", "#f92672", "#e6db74",
+                ("#1e1f1c", "#22231f", "#272822", "#3e3d32", "#49483e",
+                 "#5b5a4c", "#75715e", "#a59f85", "#f8f8f2")),
 }
 
 
@@ -133,11 +150,18 @@ def build_map(name: str) -> dict[str, str]:
     if not spec:
         return {}
     primary, ink, focus, accent, steps = spec
-    mapping = {_PRIMARY: primary, _INK: ink, _FOCUS: focus, _ACCENT_TEXT: accent}
-    for member in _PRIMARY_FAMILY:
-        mapping[member] = _follow(member, _PRIMARY, primary, True)
-    for member in _FOCUS_FAMILY:
-        mapping[member] = _follow(member, _FOCUS, focus, False)
+    mapping = {}
+    # An anchor a theme keeps keeps its family too: `_follow` takes the
+    # target's hue outright, so following pink onto pink would still turn
+    # every tint a few degrees -- which is not "unchanged".
+    if (primary, ink, accent) != (_PRIMARY, _INK, _ACCENT_TEXT):
+        mapping.update({_PRIMARY: primary, _INK: ink, _ACCENT_TEXT: accent})
+        for member in _PRIMARY_FAMILY:
+            mapping[member] = _follow(member, _PRIMARY, primary, True)
+    if focus != _FOCUS:
+        mapping[_FOCUS] = focus
+        for member in _FOCUS_FAMILY:
+            mapping[member] = _follow(member, _FOCUS, focus, False)
     if steps is not None:
         for member in _NEUTRALS:
             mapping[member] = _between_steps(member, steps)
@@ -234,11 +258,11 @@ def active() -> str:
 def install(name: str) -> None:
     """Make `name` the theme for this process. Before any widget is built."""
     global _active, _map, _focus_rgb
-    _active = name if name in THEMES else DEFAULT
+    name = RENAMED.get(name, name)
+    _active = name if name in THEMES or name == AS_WRITTEN else DEFAULT
     _map = build_map(_active)
-    if _map:
-        focus = QColor(_map[_FOCUS])
-        _focus_rgb = f"{focus.red()}, {focus.green()}, {focus.blue()}"
+    focus = QColor(_map.get(_FOCUS, _FOCUS))
+    _focus_rgb = f"{focus.red()}, {focus.green()}, {focus.blue()}"
     from PySide6.QtWidgets import QApplication, QWidget
     for cls in (QWidget, QApplication):
         original = getattr(cls, "_unthemed_setStyleSheet", None) or cls.setStyleSheet
@@ -266,6 +290,6 @@ if __name__ == "__main__":
     install("taiko")
     assert css("a{color:#F3A6BD; b: #ff66aa55; c: rgba(255,102,170,13); d: #e54c2e}") == \
         "a{color:#d4432a; b: #5aa7c755; c: rgba(90, 167, 199,13); d: #e54c2e}", css("a{color:#F3A6BD; b: #ff66aa55; c: rgba(255,102,170,13); d: #e54c2e}")
-    install("pink")
-    assert css("#f3a6bd") == "#f3a6bd"
+    install("osu")
+    assert css("#f3a6bd") == "#f3a6bd" and css("#191f29") == "#1f1e33"
     print("ok", {name: len(build_map(name)) for name in THEMES})
