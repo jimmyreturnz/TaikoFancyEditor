@@ -682,7 +682,7 @@ class PlayfieldTests(unittest.TestCase):
     """
 
     ELEMENTS = (
-        "taiko-slider", "taiko-bar-right", "taiko-bar-right-glow",
+        "taiko-bar-right", "taiko-bar-right-glow",
         "taiko-barline", "approachcircle",
         "taikohitcircle", "taikohitcircleoverlay",
     )
@@ -730,7 +730,7 @@ class PlayfieldTests(unittest.TestCase):
 
     def test_the_playfield_is_drawn_outside_kiai_too(self):
         self._view(kiai=False)
-        for element in ("taiko-slider", "taiko-bar-right", "approachcircle"):
+        for element in ("taiko-bar-right", "approachcircle"):
             with self.subTest(element=element):
                 self.assertIn(element, self.asked)
 

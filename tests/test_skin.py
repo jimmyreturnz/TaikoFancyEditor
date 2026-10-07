@@ -55,11 +55,16 @@ class ElementLookupTests(unittest.TestCase):
         self.assertIn("taikohitcircle", skin.element_paths(self.folder))
 
     def test_an_animated_element_falls_back_to_its_first_frame(self):
-        """A skin that animates its background ships `taiko-slider-0.png` and
-        no `taiko-slider.png`; one frame is a fair still of it."""
-        _write_png(self.folder / "taiko-slider-0.png", QColor("white"))
+        """A skin that animates an element ships `name-0.png` and no
+        `name.png`; one frame is a fair still of it."""
+        _write_png(self.folder / "taiko-bar-right-0.png", QColor("white"))
         found = skin.element_paths(self.folder)
-        self.assertEqual(found["taiko-slider"].name, "taiko-slider-0.png")
+        self.assertEqual(found["taiko-bar-right"].name, "taiko-bar-right-0.png")
+
+    def test_the_scrolling_background_is_not_loaded(self):
+        """Owner's call: the bar is the lane, with nothing scrolling under it."""
+        _write_png(self.folder / "taiko-slider.png", QColor("white"))
+        self.assertNotIn("taiko-slider", skin.element_paths(self.folder))
 
     def test_an_unreadable_folder_does_not_take_the_menu_down(self):
         missing = self.folder / "not-here"

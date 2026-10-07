@@ -785,7 +785,14 @@ KIAI_PULSE_ALPHA = round(0.337 * 255)
 # Deliberately far below KIAI_PULSE_ALPHA: this one washes the *entire* view
 # rect rather than a single note-sized circle, so the same alpha that reads as
 # a glow on a note would read as a floodlight over the whole lane.
-PLAYFIELD_PULSE_ALPHA = 16
+# Halved on 2026-10-07 with KIAI_GLOW_STRENGTH: the owner found the lane's kiai
+# glow too bright, and this is its stand-in when a skin has none.
+PLAYFIELD_PULSE_ALPHA = 8
+# How much of `taiko-bar-right-glow` a kiai beat shows at its peak. The art is
+# drawn at full strength in game too, but there it sits under a playfield the
+# player is looking *through*; here it is most of what the view is, and at
+# full opacity every beat of a chorus flashed the whole preview.
+KIAI_GLOW_STRENGTH = 0.5
 # A circle's share of that, so a note glows without its colour being replaced.
 CIRCLE_KIAI_STRENGTH = 0.55
 # Under this a "beat" is a gimmick, not a pulse: an invisible-note section at
@@ -4921,8 +4928,6 @@ EDITOR_STRONG_SCALE = 1.0 / 0.75
 # over 200 -- which is also what keeps the note at `TAIKO_NOTE_SIZE` of the
 # height without the two systems disagreeing.
 PLAYFIELD_UNIT = 200.0
-# taiko-slider, 776x162: the background that scrolls behind the bar.
-PLAYFIELD_BACKGROUND_HEIGHT = 162.0 / PLAYFIELD_UNIT
 # taiko-barline, 4x175, centred on the bar.
 PLAYFIELD_BARLINE_WIDTH = 4.0 / PLAYFIELD_UNIT
 PLAYFIELD_BARLINE_HEIGHT = 175.0 / PLAYFIELD_UNIT
@@ -5889,10 +5894,9 @@ class GameplayViewerView(QWidget):
     def _draw_playfield(self, painter, center_y, normal_radius, big_radius, pulse) -> None:
         """The skin's playfield, back to front, under everything else.
 
-        Layered the way osu! layers it: the scrolling background, the bar,
-        then the bar's kiai overlay. Every element is optional on its own -- a
-        skin with a bar and no background gets the bar and the built-in lane
-        colour behind it, the same per-element fallback the notes use.
+        The bar, then the bar's kiai overlay, which pulses with the notes. A
+        skin without a bar gets the built-in lane, the same per-element
+        fallback the notes use.
 
         No `taiko-glow` or `lighting`: those are a bloom around the hit target,
         and nothing is being judged there. Kiai shows as the notes pulsing and
@@ -5900,37 +5904,25 @@ class GameplayViewerView(QWidget):
         """
         width, height = self.width(), self.height()
         skin = self.skin
-        background = skin.scaled(
-            "taiko-slider", round(height * PLAYFIELD_BACKGROUND_HEIGHT))
-        if background is not None:
-            # "Scrolls in a seamless loop, from the right side towards the
-            # left." Aspect kept and tiled at the artwork's own width -- the
-            # tile *is* the loop, so stretching it to the view would have made
-            # the seam move with the window instead of with the music.
-            step = max(1.0, float(background.width()))
-            offset = -((self.current_time * self.velocity_at(self.current_time)
-                        * self.px_per_beat) % step)
-            top = center_y - background.height() / 2.0
-            x = offset
-            while x < width:
-                painter.drawPixmap(QPointF(x, top), background)
-                x += step
-        else:
+        # `taiko-slider` (the scrolling background) is not drawn: owner's call,
+        # 2026-10-07 -- the bar is the lane. Without a bar, the built-in lane.
+        bar = skin.stretched("taiko-bar-right", width, height)
+        if bar is None:
             painter.fillRect(
                 QRectF(0, center_y - big_radius * 1.2, width, big_radius * 2.4),
                 self.lane_brush,
             )
+            return
 
-        bar = skin.stretched("taiko-bar-right", width, height)
-        if bar is not None:
-            painter.drawPixmap(QPointF(0.0, 0.0), bar)
-            if pulse > 0.0:
-                glow = skin.stretched("taiko-bar-right-glow", width, height)
-                if glow is not None:
-                    opacity = painter.opacity()
-                    painter.setOpacity(opacity * pulse)
-                    painter.drawPixmap(QPointF(0.0, 0.0), glow)
-                    painter.setOpacity(opacity)
+        painter.drawPixmap(QPointF(0.0, 0.0), bar)
+        if pulse > 0.0:
+            # Pulses with the notes: `pulse` is the same per-beat flash.
+            glow = skin.stretched("taiko-bar-right-glow", width, height)
+            if glow is not None:
+                opacity = painter.opacity()
+                painter.setOpacity(opacity * pulse * KIAI_GLOW_STRENGTH)
+                painter.drawPixmap(QPointF(0.0, 0.0), glow)
+                painter.setOpacity(opacity)
 
 
     def _draw_centred(

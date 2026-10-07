@@ -12,13 +12,15 @@ score. What is loaded is the wiki's *playfield* list and nothing else:
     approachcircle          the hit-target ring, 126x126 to the note's 118x118
     taiko-roll-middle       a 1px-wide strip stretched along a drumroll body
     taiko-roll-end          the drumroll's tail cap, tinted like the body
-    taiko-slider            776x162, the background that scrolls behind the bar
     taiko-bar-right         1024x200, the bar itself, stretched to the width
     taiko-bar-right-glow    the same rect again, laid over it during kiai
     taiko-barline           4x175, the measure marker
 
 Left out on purpose, though the wiki files them under the playfield:
 
+* `taiko-slider`, the background that scrolls behind the bar: owner's call,
+  2026-10-07. The bar is the lane, and the scrolling art under it read as a
+  second lane behind the first;
 * the hit explosions (`taiko-hit300` and friends) and `taiko-slider-fail`: a
   judgement is a thing that happens to a *player*, and nobody is playing this.
   Drawing a 300 burst at the target would be inventing an autoplay run the
@@ -76,7 +78,6 @@ SKIN_ELEMENTS = {
     # yellow too, and osu! tints both from the drumroll's colour. Leaving the
     # cap out of the tint put an untinted end on a tinted body.
     "taiko-roll-end": True,
-    "taiko-slider": False,
     "taiko-bar-right": False,
     "taiko-bar-right-glow": False,
     "taiko-barline": False,
@@ -179,9 +180,8 @@ def element_paths(folder: Path) -> dict[str, Path]:
     inconsistent about it -- this very folder ships `taiko-Slider@2x` beside
     `taiko-slider`. `@2x` wins where present (same artwork at twice the
     resolution, and everything gets scaled to the lane height anyway), and a
-    `-0` suffix is the last resort: a skin that animates its explosions ships
-    `taiko-slider-0.png` and no `taiko-slider.png`, and the first frame is a
-    fair still of it.
+    `-0` suffix is the last resort: a skin that animates an element ships
+    `name-0.png` and no `name.png`, and the first frame is a fair still of it.
     """
     try:
         existing = {entry.name.lower(): entry.path
