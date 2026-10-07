@@ -23,7 +23,7 @@ from PySide6.QtCore import (
     QTimer,
     QUrl, Signal,
 )
-from PySide6.QtGui import QImageReader, QBrush, QColor, QFont, QFontDatabase, QFontMetrics, QKeySequence, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap, QPolygonF, QRadialGradient, QShortcut, QIcon
+from PySide6.QtGui import QImageReader, QRegion, QBrush, QColor, QFont, QFontDatabase, QFontMetrics, QKeySequence, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap, QPolygonF, QRadialGradient, QShortcut, QIcon
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QAbstractItemView, QAbstractSlider, QAbstractSpinBox, QApplication, QButtonGroup, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame,
@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
 )
 
 import osu_db
+from motion import HoverSheen, MorphRect, paint_living_rim, tick_while_shown
 from smooth_scroll import SMOOTH_SCROLL_MS, SmoothScroller, reduced_motion, smooth
 from config_sheet import (
     SEGMENT_STYLE, WARN_COLOR, Diagram, SheetDialog, TrimmedDoubleSpinBox, bind_segments, scrub_label,
@@ -6581,7 +6582,9 @@ class EditorViewFrame(QWidget):
     # The approved mockup's focused lane: a 2px rim in the theme's focus colour
     # rather than a 1px one in a muted shade of it, which beside the other
     # lanes' 1px #303947 read as no difference at all.
-    FOCUSED_FRAME_STYLE = "background: {ground}; border: 2px solid #ff66aa; border-radius: 0;"
+    # The 2px rim itself is painted (paintEvent), so it can carry the same
+    # running lights as the song list's selection.
+    FOCUSED_FRAME_STYLE = "background: {ground}; border: 2px solid transparent; border-radius: 0;"
     HEADER_STYLE = "QWidget#viewHeader { border: 0; border-right: 1px solid #303947; border-radius: 0; }"
     # The song select's selection: a pink rim at the left edge and a tint.
     FOCUSED_HEADER_STYLE = (
@@ -6687,6 +6690,23 @@ class EditorViewFrame(QWidget):
         self._content_layout = QVBoxLayout()
         self._content_layout.setContentsMargins(0, 0, 0, 0)
         layout.addLayout(self._content_layout, 1)
+        tick_while_shown(self, self._repaint_rim)
+
+    def _rim_region(self) -> QRegion:
+        outer = self.rect()
+        return QRegion(outer).subtracted(QRegion(outer.adjusted(2, 2, -2, -2)))
+
+    def _repaint_rim(self) -> None:
+        # The rim only: the lanes inside are repainted by the playhead, and
+        # a frame-wide update here would repaint them all a second time.
+        if self.focused:
+            self.update(self._rim_region())
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        if self.focused:
+            painter = QPainter(self)
+            paint_living_rim(painter, QRectF(self.rect()), 0, 2, True)
 
     def showEvent(self, event) -> None:
         # Measured after polish (and after parenting, which is what makes the
@@ -10027,20 +10047,20 @@ PREVIEW_FADE_MS = 400
 SONG_DOT_RADIUS, SONG_DOT_PITCH = 5.0, 14
 
 
-def _paint_selection(painter: QPainter, rect: QRectF, option, rim: bool) -> None:
-    """The selected tint fades left to right, as in the mockup; the song list
-    marks it with a bar on the left, the difficulty list with a pink rim."""
+def _paint_selection(painter: QPainter, rect: QRectF, option) -> None:
+    """The selected tint fades left to right, as in the mockup, inside a rim
+    with two small lights running round it (motion.paint_living_rim). In the
+    list that has the keys; the other list's selection keeps a dimmer, still
+    rim, so it is clear which one Up/Down will move."""
     if option.state & QStyle.State_Selected:
         tint = QLinearGradient(rect.topLeft(), rect.topRight())
         tint.setColorAt(0.0, theme.rgba(255, 102, 170, 46))
         tint.setColorAt(0.7, theme.rgba(255, 102, 170, 10))
-        painter.setPen(QPen(theme.color(ROW_PINK_ON), 1) if rim else Qt.NoPen)
+        painter.setPen(Qt.NoPen)
         painter.setBrush(tint)
         painter.drawRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), 4, 4)
-        if not rim:
-            painter.setPen(Qt.NoPen)
-            painter.setBrush(theme.color(ROW_PINK_ON))
-            painter.drawRoundedRect(QRectF(rect.left(), rect.top() + 4, 3, rect.height() - 8), 1.5, 1.5)
+        widget = option.widget
+        paint_living_rim(painter, rect, 4, 1.5, widget is not None and widget.hasFocus())
     elif option.state & QStyle.State_MouseOver:
         painter.setPen(Qt.NoPen)
         painter.setBrush(theme.color(ROW_HOVER))
@@ -10073,7 +10093,7 @@ class SongRowDelegate(QStyledItemDelegate):
             painter.drawLine(rect.bottomLeft() + QPointF(4, 0), rect.bottomRight() - QPointF(4, 0))
             painter.restore()
             return
-        _paint_selection(painter, rect.adjusted(2, 1, -2, -1), option, rim=False)
+        _paint_selection(painter, rect.adjusted(2, 1, -2, -1), option)
         stars = row["stars"]
         dots_width = len(stars) * SONG_DOT_PITCH
         text = rect.adjusted(13, 5, -(dots_width + 18), -5)
@@ -10116,7 +10136,7 @@ class DifficultyRowDelegate(QStyledItemDelegate):
         painter.setRenderHint(QPainter.Antialiasing, True)
         rect = QRectF(option.rect).adjusted(2, 2, -2, -2)
         row = index.data(ROW_ROLE) or {}
-        _paint_selection(painter, rect, option, rim=True)
+        _paint_selection(painter, rect, option)
         inner = rect.adjusted(10, 6, -10, -6)
         stats_font = tabular(option.font)
         stats_font.setPointSizeF(stats_font.pointSizeF() * 0.86)
@@ -10460,14 +10480,14 @@ class LibraryKeys(QObject):
                 c.move_song(-1 if key == Qt.Key_Up else 1)
                 return True
             if key == Qt.Key_Right and c.difficulty_list.count():
-                c.difficulty_list.setFocus()
+                c.move_focus(c.difficulty_list)
                 return True
             if key == Qt.Key_Escape and c.library_search.text():
                 c.library_search.clear()
                 return True
         elif watched is c.difficulty_list:
             if key in (Qt.Key_Left, Qt.Key_Escape):
-                c.song_list.setFocus()
+                c.move_focus(c.song_list)
                 return True
             if key in (Qt.Key_Return, Qt.Key_Enter):
                 c.open_selected_difficulty()
@@ -10736,6 +10756,10 @@ class LibraryPageController:
         # A bigger set scrolls.
         self.difficulty_list.setFixedHeight(DIFFICULTY_SLOTS * DIFFICULTY_ROW_HEIGHT + 14)
         detail_layout.addWidget(self.difficulty_list)
+        # The selected row's rim is alive in the list that has the keys:
+        # one rect repainted per frame, only while the list is on screen.
+        for rows in (self.song_list, self.difficulty_list):
+            tick_while_shown(rows, lambda rows=rows: self._repaint_selected_row(rows))
         actions = QFrame()
         actions.setObjectName("detailActions")
         actions_layout = QHBoxLayout(actions)
@@ -11393,6 +11417,28 @@ class LibraryPageController:
                 self._beat_elapsed.restart()
                 now = position
         return now
+
+    def _repaint_selected_row(self, rows: QListWidget) -> None:
+        if rows.hasFocus():
+            rows.viewport().update(rows.visualRect(rows.currentIndex()))
+
+    def move_focus(self, to: QListWidget) -> None:
+        """Hand the keys to the other list, with the morph flying between the
+        two selections so it is visible where they went (Left/Right)."""
+        source = self.difficulty_list if to is self.song_list else self.song_list
+        page = to.window().findChild(QWidget, "libraryPage")
+        if page is not None:
+            if getattr(self, "_morph", None) is None:
+                self._morph = MorphRect(page)
+
+            def mapped(rows: QListWidget) -> QRect:
+                rect = rows.visualRect(rows.currentIndex())
+                return QRect(rows.viewport().mapTo(page, rect.topLeft()), rect.size())
+
+            self._morph.fly(mapped(source), mapped(to))
+        to.setFocus()
+        for rows in (self.song_list, self.difficulty_list):
+            rows.viewport().update()
 
     def difficulty_changed(self) -> None:
         """The preview follows the *difficulty*: one folder can hold several
@@ -12833,6 +12879,12 @@ class MainWindow(QMainWindow):
         self.page_button_group.addButton(self.fancy_arranger_page_button, PAGE_FANCY)
         self.library_page_button.setChecked(True)
         self.page_button_group.idClicked.connect(self._switch_page)
+        # The two pages that are the app's own, rather than osu!'s: a sheen
+        # crosses them on hover (approved mockup, 2026-10-07).
+        self._tab_sheens = [
+            HoverSheen(button)
+            for button in (self.gimmick_page_button, self.fancy_arranger_page_button)
+        ]
         # One segmented control, the same pill group as the speed and mod
         # strips: four solid pink tabs read as four more actions. Wider
         # padding than a segment's, since these are the app's navigation.
