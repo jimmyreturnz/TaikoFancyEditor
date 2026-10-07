@@ -123,6 +123,23 @@ class AddViewRightClickTests(unittest.TestCase):
         container.customContextMenuRequested.emit(QPoint(10, 150))
         self.assertEqual(opened, [1])
 
+    def test_a_gap_between_views_is_not_empty_space(self):
+        """Owner's report: a right click meant for a view opened Add view.
+        Between two views there is no child under the point, and that was
+        the whole test."""
+        container = QWidget()
+        container.resize(200, 200)
+        for top in (0, 60):
+            view = QPushButton("a view", container)
+            view.setGeometry(0, top, 200, 50)
+            view.show()
+        opened = []
+        gui.add_view_on_empty_right_click(container, lambda: opened.append(1))
+        container.customContextMenuRequested.emit(QPoint(10, 55))
+        self.assertEqual(opened, [])
+        container.customContextMenuRequested.emit(QPoint(10, 150))
+        self.assertEqual(opened, [1])
+
 
 class WindowTests(unittest.TestCase):
     def test_both_pages_have_a_backdrop_and_see_through_chrome(self):

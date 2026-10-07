@@ -6905,12 +6905,19 @@ def add_view_on_empty_right_click(container: QWidget, on_click) -> None:
     """Right click on the bare space under a page's views is "Add view" too.
 
     A context menu request a child leaves unhandled travels up to its parent,
-    so a right click on a view arrives here as well: only a point with no
-    child under it is the empty space.
+    so a right click on a view arrives here as well. "No child under the
+    point" was the test, and it held in the 10px gaps *between* views too --
+    a right click meant for a view's edge opened the dialog (owner's report).
+    So: below the last view, and nowhere else.
     """
+    def below_the_views(pos) -> bool:
+        children = container.findChildren(QWidget, options=Qt.FindDirectChildrenOnly)
+        bottom = max((c.geometry().bottom() for c in children if c.isVisibleTo(container)), default=-1)
+        return pos.y() > bottom
+
     container.setContextMenuPolicy(Qt.CustomContextMenu)
     container.customContextMenuRequested.connect(
-        lambda pos: on_click() if container.childAt(pos) is None else None)
+        lambda pos: on_click() if below_the_views(pos) else None)
 
 
 class AddViewDialog(QDialog):
