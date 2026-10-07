@@ -11810,7 +11810,6 @@ class MainWindow(QMainWindow):
         self._editor_zoom_ms = self.DEFAULT_EDITOR_WINDOW_MS
         # Which difficulty's hit objects are sounded. None follows the
         # active one, which is what this did before the choice existed.
-        self._hitsound_source_path: Path | None = None
         # Non-None only inside `_refresh_cycle`; see `_cached`.
         self._doc_cache: dict | None = None
         # Ctrl+C / Ctrl+V payloads, kept as plain data (time offset + the
@@ -13514,27 +13513,13 @@ class MainWindow(QMainWindow):
         self.editor_view_height_spin.setValue(self.settings.int_value(
             "editor/view_height", TimelineGameplay.DEFAULT_VIEW_HEIGHT))
         self.editor_view_height_spin.valueChanged.connect(self._editor_view_height_changed)
-        # Which difficulty is sounded, separate from which one is active: a
-        # mapset is one song, so reading Oni while hearing Muzukashii is a
-        # real thing to want. Only the hit objects follow it -- see
-        # `_hitsound_state` for what deliberately does not.
-        #
-        # Both of these live in the status bar (see _build_status_bar), shown
-        # only while this page is: they are set once per session, and in the
-        # playback strip they crowded the controls used every few seconds.
-        # "Hitsounds from" rather than "Play:", which beside the speed buttons
-        # read as a transport control and out here reads as nothing.
+        # The status bar (see _build_status_bar) shows this only while this
+        # page is. It held a "Hitsounds from" choice as well until 2026-10-07;
+        # the owner dropped it, and hitsounds follow the view being edited.
         self.editor_status_box = QWidget()
         status_row = QHBoxLayout(self.editor_status_box)
         status_row.setContentsMargins(0, 0, 0, 0)
         status_row.setSpacing(4)
-        status_row.addWidget(QLabel(tr("MainWindow", "Hitsounds from:")))
-        self.hitsound_source_combo = QComboBox()
-        self.hitsound_source_combo.addItem(tr("MainWindow", "Active"), "")
-        self.hitsound_source_combo.currentIndexChanged.connect(
-            self._hitsound_source_changed)
-        status_row.addWidget(self.hitsound_source_combo)
-        status_row.addSpacing(12)
 
         # The label is here rather than in the tooltip because a bare number
         # box says nothing about what it is a number of.
@@ -17475,29 +17460,23 @@ class MainWindow(QMainWindow):
     def _hitsound_state(self):
         """The difficulty whose hit objects are sounded.
 
-        Its own choice rather than `self.state`, so a mapper can read one
-        difficulty while hearing another. Everything else -- the timing bars,
+        Not always `self.state`: on the Editor page it is the difficulty of
+        the view last clicked into. Everything else -- the timing bars,
         the kiai bands, the volume graph, both other pages -- stays on the
         active difficulty deliberately: those describe what is being *edited*,
         and following two different difficulties at once is how an overlay
         starts disagreeing with the chart under it.
         """
-        # The Editor page's choice, and only there. That page is where several
+        # The Editor page only. That page is where several
         # difficulties are open side by side; the gimmick page edits exactly
         # one, and sounding some other difficulty's notes over it would be
-        # hearing a chart that is not on screen. The choice survives a visit
-        # to the gimmick page -- `_show_page` re-applies on the way back.
+        # hearing a chart that is not on screen. `_show_page` re-applies on
+        # the way back.
         if (
             hasattr(self, "page_stack")
             and self.page_stack.currentIndex() != PAGE_EDITOR
         ):
             return self.state
-        pinned = (
-            self._states.get(self._hitsound_source_path)
-            if self._hitsound_source_path is not None else None
-        )
-        if pinned is not None:
-            return pinned
         # "Active" here means the view last clicked into, not the window's
         # active difficulty: with several difficulties side by side, the one
         # being edited is the one worth hearing. Editor-page frames only -- a
@@ -17527,60 +17506,6 @@ class MainWindow(QMainWindow):
             return
         self.hitsounds.set_schedule(
             state.document.hit_objects, state.document.timing_points)
-
-    def _hitsound_source_changed(self, index: int) -> None:
-        value = self.hitsound_source_combo.itemData(index)
-        wanted = Path(value) if value else None
-        if wanted is not None:
-            # Parsed here, not left to whatever happens to have been opened:
-            # `_hitsound_state` falls back to the active difficulty when the
-            # chosen one has no state, so without this the combo moved and
-            # nothing changed -- silently, which is the worst version of it.
-            try:
-                self._ensure_state(wanted)
-            except Exception as error:
-                QMessageBox.critical(
-                    self, tr("MainWindow", "Open failed"), str(error))
-                self._refresh_hitsound_source_combo()
-                return
-        self._hitsound_source_path = wanted
-        state = self._hitsound_state()
-        active = self.state
-        # A difficulty naming a different audio file has its notes timed
-        # against a track that is not playing. Said rather than refused: a
-        # mapper pairing a gimmick copy may mean exactly this.
-        if (
-            state is not None and active is not None
-            and state is not active and state.audio_path != active.audio_path
-        ):
-            self.show_toast(tr(
-                "MainWindow",
-                "That difficulty uses a different audio file; its hitsounds "
-                "will not line up with what is playing.",
-            ))
-        self._apply_hitsound_source()
-
-    def _refresh_hitsound_source_combo(self) -> None:
-        """Rebuild the Play list. Keeps the current choice if it survived."""
-        if not hasattr(self, "hitsound_source_combo"):
-            return
-        wanted = self._hitsound_source_path
-        self.hitsound_source_combo.blockSignals(True)
-        self.hitsound_source_combo.clear()
-        self.hitsound_source_combo.addItem(tr("MainWindow", "Active"), "")
-        for label, path in self._taiko_difficulty_entries():
-            self.hitsound_source_combo.addItem(label, str(path))
-        found = (
-            self.hitsound_source_combo.findData(str(wanted))
-            if wanted is not None else 0
-        )
-        if found < 0:
-            # The difficulty it named is gone; fall back rather than keep
-            # sounding a document nothing on screen shows.
-            self._hitsound_source_path = None
-            found = 0
-        self.hitsound_source_combo.setCurrentIndex(found)
-        self.hitsound_source_combo.blockSignals(False)
 
     def _reschedule_hitsounds(self, state) -> None:
         """`self.hitsounds.set_schedule`, once per refresh cycle.
@@ -18760,7 +18685,6 @@ class MainWindow(QMainWindow):
             self.difficulty_combo.setCurrentIndex(selected_index)
             self.difficulty_combo.setEnabled(bool(self.song_difficulties))
             self.difficulty_combo.blockSignals(False)
-            self._refresh_hitsound_source_combo()
 
     def _difficulty_changed(self, index: int) -> None:
         if index < 0:

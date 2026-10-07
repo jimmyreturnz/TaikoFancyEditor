@@ -508,82 +508,13 @@ class OpenChartsForEveryDifficultyTests(_Mapset):
 
 
 class PlaybackDifficultyTests(_Mapset):
+    """The sounded difficulty is the one whose view was last clicked into.
+
+    There was a "Hitsounds from" combo that pinned one; the owner dropped it
+    on 2026-10-07."""
+
     def _times(self):
         return list(self.window.hitsounds.schedule[0])
-
-    def _pick(self, path):
-        combo = self.window.hitsound_source_combo
-        index = combo.findData(str(path)) if path is not None else 0
-        self.assertGreaterEqual(index, 0, f"{path} is not offered")
-        combo.setCurrentIndex(index)
-
-    def test_the_combo_offers_active_plus_every_taiko_difficulty(self):
-        combo = self.window.hitsound_source_combo
-        offered = [combo.itemData(i) for i in range(combo.count())]
-        self.assertEqual(offered[0], "", "the first entry follows the active difficulty")
-        self.assertEqual(
-            set(offered[1:]), {str(self.path), str(self.second), str(self.third)})
-
-    def test_choosing_one_sounds_its_notes(self):
-        other = self.window._ensure_state(self.second)
-        other.document.hit_objects[0].time = 4321
-        self._pick(self.second)
-        self.assertIn(4321, self._times())
-        self.assertNotIn(4321, [n.time for n in self.state.document.hit_objects])
-
-    def test_switching_the_active_difficulty_keeps_the_choice(self):
-        self._pick(self.second)
-        other = self.window._ensure_state(self.second)
-        other.document.hit_objects[0].time = 4321
-        self.window._apply_hitsound_source()
-
-        self.window._load_map_path(self.third, refresh_difficulties=False)
-        self.assertIs(self.window._hitsound_state(), other)
-        self.assertIn(4321, self._times())
-
-    def test_an_edit_in_the_chosen_difficulty_is_rescheduled(self):
-        self._pick(self.second)
-        self.window._place_note(self.second, "don", 9876.0, False)
-        self.assertIn(9876, self._times())
-
-    def test_an_edit_elsewhere_is_not(self):
-        self._pick(self.second)
-        self.window._place_note(self.third, "don", 9876.0, False)
-        self.assertNotIn(9876, self._times())
-
-    def test_the_timing_bars_stay_on_the_active_difficulty(self):
-        """Only the hit objects follow the Play combo -- an overlay describing
-        a difficulty other than the one being edited disagrees with the chart
-        under it."""
-        self._pick(self.second)
-        before = list(self.window.timing_bar.timing_markers)
-        other = self.window._ensure_state(self.second)
-        other.document.timing_points[0].time = 12345.0
-        self.window._refresh_difficulty_sv_views(self.second)
-        self.assertEqual(list(self.window.timing_bar.timing_markers), before)
-
-    def test_the_choice_is_the_editor_pages_only(self):
-        """The gimmick page edits one difficulty; sounding another over it is
-        hearing a chart that is not on screen. The choice survives the visit."""
-        other = self.window._ensure_state(self.second)
-        other.document.hit_objects[0].time = 4321
-        self._pick(self.second)
-        self.assertIn(4321, self._times())
-
-        self.window._show_page(gui.PAGE_GIMMICK)
-        self.assertIs(self.window._hitsound_state(), self.state)
-        self.assertNotIn(4321, self._times())
-
-        self.window._show_page(gui.PAGE_EDITOR)
-        self.assertIs(self.window._hitsound_state(), other)
-        self.assertIn(4321, self._times())
-
-    def test_active_is_the_default_and_can_be_returned_to(self):
-        self._pick(self.second)
-        self._pick(None)
-        self.assertIsNone(self.window._hitsound_source_path)
-        self.assertIs(self.window._hitsound_state(), self.state)
-
 
     def _focus_chart_of(self, path):
         """Open a chart view of `path` and focus it the way Qt would."""
@@ -592,6 +523,30 @@ class PlaybackDifficultyTests(_Mapset):
                     if f.difficulty_path == path and f.view_type == "chart")
         self.window._editor_view_focus_changed(None, view)
         return view
+
+    def test_there_is_no_choice_to_pin(self):
+        self.assertFalse(hasattr(self.window, "hitsound_source_combo"))
+
+    def test_an_edit_in_the_focused_difficulty_is_rescheduled(self):
+        self._focus_chart_of(self.second)
+        self.window._place_note(self.second, "don", 9876.0, False)
+        self.assertIn(9876, self._times())
+
+    def test_an_edit_elsewhere_is_not(self):
+        self._focus_chart_of(self.second)
+        self.window._place_note(self.third, "don", 9876.0, False)
+        self.assertNotIn(9876, self._times())
+
+    def test_the_timing_bars_stay_on_the_active_difficulty(self):
+        """Only the hit objects follow focus -- an overlay describing a
+        difficulty other than the one being edited disagrees with the chart
+        under it."""
+        self._focus_chart_of(self.second)
+        before = list(self.window.timing_bar.timing_markers)
+        other = self.window._ensure_state(self.second)
+        other.document.timing_points[0].time = 12345.0
+        self.window._refresh_difficulty_sv_views(self.second)
+        self.assertEqual(list(self.window.timing_bar.timing_markers), before)
 
     def test_active_follows_the_focused_views_difficulty(self):
         other = self.window._ensure_state(self.second)
@@ -603,12 +558,6 @@ class PlaybackDifficultyTests(_Mapset):
         self._focus_chart_of(self.path)
         self.assertIs(self.window._hitsound_state(), self.state)
         self.assertNotIn(4321, self._times())
-
-    def test_a_pinned_choice_outranks_focus(self):
-        third = self.window._ensure_state(self.third)
-        self._pick(self.third)
-        self._focus_chart_of(self.second)
-        self.assertIs(self.window._hitsound_state(), third)
 
     def test_focus_does_not_reach_the_gimmick_page(self):
         self._focus_chart_of(self.second)
