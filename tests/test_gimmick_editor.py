@@ -350,6 +350,49 @@ class ViewReorderTests(_GimmickFixture, unittest.TestCase):
         last = layout.itemAt(layout.count() - 1)
         self.assertIsNone(last.widget())
 
+    def _drag(self, frame, rows: float, cancel: bool = False):
+        """Press on `frame`'s header and carry it `rows` of its own height,
+        through the real header events, then let go and wait for the glide."""
+        from PySide6.QtTest import QTest
+
+        header = frame.header
+        start = header.mapToGlobal(QPoint(header.width() // 2, 10))
+
+        def send(kind, at, buttons):
+            QApplication.sendEvent(header, QMouseEvent(
+                kind, QPointF(header.mapFromGlobal(at)), QPointF(at),
+                Qt.LeftButton, buttons, Qt.NoModifier))
+
+        send(QEvent.MouseButtonPress, start, Qt.LeftButton)
+        send(QEvent.MouseMove, start + QPoint(0, 20), Qt.LeftButton)
+        drag = self.window._view_drag
+        drag.follow(start.y() + round(frame.height() * rows))
+        if cancel:
+            QApplication.sendEvent(drag, QKeyEvent(QEvent.KeyPress, Qt.Key_Escape, Qt.NoModifier))
+        else:
+            drag.drop()
+        from shiboken6 import isValid
+
+        def landed():
+            return not isValid(drag) or drag.isHidden()
+
+        for _ in range(100):
+            if landed():
+                break
+            QTest.qWait(10)
+        self.assertTrue(landed(), "the glide never settled")
+
+    def test_dragging_a_header_moves_the_view(self):
+        before = self._order()
+        self._drag(self._frame(before[0]), 1.6)
+        self.assertEqual(self._order(), [before[1], before[0], *before[2:]])
+        self.assertEqual([f.gimmick_layer for f in self.window._gimmick_views], self._order())
+
+    def test_escape_puts_the_view_back(self):
+        before = self._order()
+        self._drag(self._frame(before[0]), 2.5, cancel=True)
+        self.assertEqual(self._order(), before)
+
 
 class EditorPageReorderTests(_GimmickFixture, unittest.TestCase):
     """The same buttons on the Editor page, whose frames go into a layout per

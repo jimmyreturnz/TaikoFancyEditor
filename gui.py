@@ -34,7 +34,7 @@ from PySide6.QtWidgets import (
 )
 
 import osu_db
-from motion import HoverSheen, MorphRect, paint_living_rim, tick_while_shown
+from motion import HoverSheen, MorphRect, ReorderDrag, paint_living_rim, tick_while_shown
 from smooth_scroll import SMOOTH_SCROLL_MS, SmoothScroller, reduced_motion, smooth
 from config_sheet import (
     SEGMENT_STYLE, WARN_COLOR, Diagram, SheetDialog, TrimmedDoubleSpinBox, bind_segments, scrub_label,
@@ -6586,6 +6586,10 @@ class EditorViewFrame(QWidget):
     # glyph cannot say which way -- and a drag handle would have to fight the
     # views underneath it, every one of which already drags.
     move_requested = Signal(object, int)
+    # (frame, where the pointer is, global). The header *is* a handle after
+    # all: it is the one part of a view that does not drag notes. Pressed and
+    # carried past the system's drag distance, the owner starts a ReorderDrag.
+    drag_started = Signal(object, object)
 
     HEADER_WIDTH = 148
     # The frame's own sheet is selector-less, so it reaches every descendant:
@@ -6707,6 +6711,29 @@ class EditorViewFrame(QWidget):
         self._content_layout.setContentsMargins(0, 0, 0, 0)
         layout.addLayout(self._content_layout, 1)
         tick_while_shown(self, self._repaint_rim)
+        # The labels take no clicks, so a press on them reaches the header.
+        # The buttons take theirs, and keep the arrow.
+        self.header.setCursor(Qt.OpenHandCursor)
+        for button in self.controls.findChildren(QPushButton):
+            button.setCursor(Qt.ArrowCursor)
+        self._drag_from: QPoint | None = None
+        self.header.installEventFilter(self)
+
+    def eventFilter(self, watched, event) -> bool:
+        if watched is not self.header:
+            return False
+        kind = event.type()
+        if kind == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
+            self._drag_from = event.globalPosition().toPoint()
+        elif kind == QEvent.MouseMove and self._drag_from is not None:
+            here = event.globalPosition().toPoint()
+            if (here - self._drag_from).manhattanLength() >= QApplication.startDragDistance():
+                self._drag_from = None
+                self.drag_started.emit(self, here)
+                return True
+        elif kind == QEvent.MouseButtonRelease:
+            self._drag_from = None
+        return False
 
     def _rim_region(self) -> QRegion:
         outer = self.rect()
@@ -15811,6 +15838,7 @@ class MainWindow(QMainWindow):
 
             frame.closed.connect(self._close_gimmick_view)
             frame.move_requested.connect(self._move_view)
+            frame.drag_started.connect(self._begin_view_drag)
             # Above anything added with "+", not merely above the trailing
             # stretch: a band added to this page outlives the rebuild that
             # happens on every visit, so appending put the six layers *under*
@@ -17125,6 +17153,7 @@ class MainWindow(QMainWindow):
             self._density_views.append(view)
 
         frame.move_requested.connect(self._move_view)
+        frame.drag_started.connect(self._begin_view_drag)
         self._editor_views.append(frame)
         if container is not None:
             content = frame.content
@@ -17195,11 +17224,17 @@ class MainWindow(QMainWindow):
         # already the slot on the far side of the neighbour when moving down,
         # and is untouched when moving up.
         layout.insertWidget(target, frame)
-        # The lists decide which layer the tool row and copy/paste follow
-        # (`_gimmick_views[0]`), so leaving them in the old order would make
-        # "first" mean something the screen disagrees with. Only the slots this
-        # layout owns are rewritten -- the Editor page interleaves several
-        # difficulty groups in one list, and the others have not moved.
+        self._sync_view_lists(layout, frame)
+
+    def _sync_view_lists(self, layout, frame: EditorViewFrame) -> None:
+        """Put the view lists back in the order `layout` now shows.
+
+        The lists decide which layer the tool row and copy/paste follow
+        (`_gimmick_views[0]`), so leaving them in the old order would make
+        "first" mean something the screen disagrees with. Only the slots this
+        layout owns are rewritten -- the Editor page interleaves several
+        difficulty groups in one list, and the others have not moved.
+        """
         for views in (self._editor_views, self._gimmick_views):
             if frame not in views:
                 continue
@@ -17217,6 +17252,58 @@ class MainWindow(QMainWindow):
             for slot, moved in zip(slots, ordered):
                 views[slot] = moved
             break
+
+    def _view_drag_items(self, frame: EditorViewFrame):
+        """(layout, the widgets a drag of `frame` reorders, the one it moves).
+
+        A view moves among the views of its own stack -- its difficulty's on
+        the Editor page, the one column on the gimmick page -- never into
+        another difficulty's, as for the arrows. A difficulty with nothing to
+        reorder it against (one view, which "tick all difficulties" makes)
+        moves as a whole group among the others, as `_move_difficulty_group`
+        does at the edge.
+        """
+        layout = self._frame_layout(frame)
+        if layout is None:
+            return None
+        frames = [
+            widget for widget in (layout.itemAt(i).widget() for i in range(layout.count()))
+            if isinstance(widget, EditorViewFrame)
+        ]
+        if len(frames) > 1:
+            return layout, frames, frame
+        group = layout.parentWidget()
+        page = self.editor_views_layout
+        if layout is self.gimmick_views_layout or group is None or page.indexOf(group) < 0:
+            return None
+        groups = [page.itemAt(i).widget() for i in range(page.count()) if page.itemAt(i).widget() is not None]
+        return (page, groups, group) if len(groups) > 1 else None
+
+    def _begin_view_drag(self, frame: EditorViewFrame, global_pos) -> None:
+        """Lift `frame` (or its difficulty's group) and let the pointer carry
+        it; the layout changes once, on drop. See motion.ReorderDrag."""
+        found = self._view_drag_items(frame)
+        if found is None:
+            return
+        layout, items, moving = found
+        # The page's own column, even for a difficulty group's views: the
+        # overlay is drawn there so it is not clipped to the group.
+        page = self.gimmick_views_layout if layout is self.gimmick_views_layout else self.editor_views_layout
+        container = page.parentWidget()
+
+        def drop(new_index: int) -> None:
+            if new_index == items.index(moving):
+                return  # put back where it was
+            others = [item for item in items if item is not moving]
+            layout.removeWidget(moving)
+            if new_index < len(others):
+                layout.insertWidget(layout.indexOf(others[new_index]), moving)
+            else:
+                layout.insertWidget(layout.indexOf(others[-1]) + 1, moving)
+            if isinstance(moving, EditorViewFrame):
+                self._sync_view_lists(layout, moving)
+
+        self._view_drag = ReorderDrag(container, items, moving, global_pos, drop)
 
     def _move_difficulty_group(self, group_layout, delta: int) -> None:
         """Move a whole difficulty group past its neighbour on the Editor page.

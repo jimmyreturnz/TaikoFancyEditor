@@ -172,6 +172,58 @@ for name in ("_chart_views", "_sv_views", "_gameplay_views", "_density_views", "
     print(f"     {name}: {len(group)} ({sum(1 for v in group if v.isVisible())} visible)")
 
 
+if "--drag" in sys.argv:
+    # A view carried by its header (motion.ReorderDrag), down the stack and
+    # back for `frames` frames: the gaps between the overlay's own paints and
+    # what each costs. The owner asked for this one to be "sooooo smooth".
+    from PySide6.QtCore import QEventLoop, QPoint, QTimer
+    frames_on_page = [f for f in (*window._gimmick_views, *window._editor_views) if f.isVisible()]
+    frame = frames_on_page[0]
+    start = frame.header.mapToGlobal(QPoint(10, 10))
+    window._begin_view_drag(frame, start)
+    drag = window._view_drag
+    paints, stamps = [], []
+    original_paint = type(drag).paintEvent
+
+    def timed_paint(event, drag=drag):
+        began = perf_counter()
+        original_paint(drag, event)
+        paints.append((perf_counter() - began) * 1000.0)
+        stamps.append(began)
+
+    drag.paintEvent = timed_paint
+    span = drag.bounds.height()
+    step = [0]
+
+    def carry() -> None:
+        # A triangle wave over the whole stack, one pass each way.
+        t = step[0] / max(1, frames - 1)
+        drag.follow(start.y() + round(span * (1 - abs(1 - 2 * t)) * 0.9))
+        step[0] += 1
+        if step[0] >= frames:
+            pointer.stop()
+            loop.quit()
+
+    pointer = QTimer()
+    pointer.setTimerType(gui.Qt.PreciseTimer)
+    pointer.setInterval(8)
+    pointer.timeout.connect(carry)
+    loop = QEventLoop()
+    pointer.start()
+    loop.exec()
+    drag.order = list(range(len(drag.items)))  # nothing moved for real
+    drag.drop()
+    gaps = sorted((b - a) * 1000.0 for a, b in zip(stamps, stamps[1:]))
+    costs = sorted(paints)
+
+    def q(values, p): return values[min(len(values) - 1, int(len(values) * p))]
+    print(f"\ndrag over {len(drag.items)} views ({drag.bounds.width()}x{span}) for {frames} pointer moves:")
+    print(f"  paint       median {q(costs, .5):6.2f}ms   p95 {q(costs, .95):6.2f}ms   max {costs[-1]:6.2f}ms")
+    print(f"  frame gap   median {q(gaps, .5):6.2f}ms   p95 {q(gaps, .95):6.2f}ms   max {gaps[-1]:6.2f}ms")
+    window.close()
+    sys.exit(0)
+
+
 if "--playing" in sys.argv:
     # Every run below this block renders with the song *stopped*, so the
     # audio thread's time-stretch -- pure Python, holding the GIL -- has never

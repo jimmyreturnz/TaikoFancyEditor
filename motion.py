@@ -1,7 +1,7 @@
 """The approved mockup's motion (2026-10-07): a light running round whatever
 is selected, a sheen across the Gimmick and Fancy Arranger tabs on hover, and
 a rectangle that flies between the song list and the difficulty list on
-Left/Right.
+Left/Right, and a view carried by its header to a new place in the stack.
 
 Every piece is off under `reduced_motion()` -- Windows' "Animation effects",
 the switch the eased scrolling already obeys -- and costs nothing while the
@@ -11,9 +11,9 @@ from __future__ import annotations
 
 import math
 
-from PySide6.QtCore import QElapsedTimer, QEvent, QObject, QPointF, QRect, QRectF, Qt, QTimer, QVariantAnimation, QEasingCurve
-from PySide6.QtGui import QColor, QConicalGradient, QLinearGradient, QPainter, QPainterPath, QPen
-from PySide6.QtWidgets import QWidget
+from PySide6.QtCore import QElapsedTimer, QEvent, QObject, QPoint, QPointF, QRect, QRectF, Qt, QTimer, QVariantAnimation, QEasingCurve
+from PySide6.QtGui import QColor, QConicalGradient, QCursor, QLinearGradient, QPainter, QPainterPath, QPen
+from PySide6.QtWidgets import QAbstractScrollArea, QWidget
 
 import theme
 from smooth_scroll import reduced_motion
@@ -334,3 +334,194 @@ class MorphRect(QWidget):
         painter.setPen(QPen(focus, 2))
         painter.setBrush(fill)
         painter.drawRoundedRect(rect, radius, radius)
+
+
+class ReorderDrag(QWidget):
+    """A view lifted by its header and carried to a new place in its stack.
+
+    Drawn, not laid out: each item is snapshotted once and the snapshots move
+    on an overlay, so nothing relays out while the pointer moves and a lane
+    mid-playback is not repainted into a moving widget every frame. The real
+    layout changes once, on drop (`on_drop(new index)`).
+
+    Every snapshot *follows* its slot rather than animating to it: each frame
+    it closes a fixed share of the distance left (FOLLOW_MS), so a pointer
+    that changes its mind mid-glide retargets the glide without a restart --
+    the owner's "sooooo smooth". The lifted one sits a little larger with a
+    shadow under it. Esc puts everything back.
+
+    `items` are siblings stacked top to bottom with no gap between them, which
+    is what both pages' edge-to-edge views are.
+    """
+
+    FOLLOW_MS = 45.0
+    LIFT_SCALE = 1.02
+    FRAME_MS = 8
+    # Within this far of the scroll area's top or bottom, the stack scrolls,
+    # faster the nearer the edge.
+    EDGE_PX = 48
+
+    def __init__(self, container: QWidget, items: list, dragged: QWidget, global_pos: QPoint, on_drop) -> None:
+        super().__init__(container)
+        self.items = list(items)
+        self.index = self.items.index(dragged)
+        self.on_drop = on_drop
+        self.rects = [QRect(item.mapTo(container, QPoint(0, 0)), item.size()) for item in self.items]
+        self.pixmaps = [item.grab() for item in self.items]
+        self.top = min(rect.top() for rect in self.rects)
+        self.bounds = QRect(self.rects[0])
+        for rect in self.rects[1:]:
+            self.bounds = self.bounds.united(rect)
+        self.order = list(range(len(self.items)))
+        self.ys = [float(rect.top()) for rect in self.rects]
+        self.grab_offset = container.mapFromGlobal(global_pos).y() - self.rects[self.index].top()
+        self.drag_y = float(self.rects[self.index].top())
+        self.lift = 0.0
+        self.dropping = False
+        parent = container.parentWidget()
+        while parent is not None and not isinstance(parent, QAbstractScrollArea):
+            parent = parent.parentWidget()
+        self.scroll_area = parent
+        self.setGeometry(container.rect())
+        self.setCursor(Qt.ClosedHandCursor)
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.show()
+        self.raise_()
+        self.grabMouse()
+        self.grabKeyboard()
+        self._clock = QElapsedTimer()
+        self._clock.start()
+        self._timer = QTimer(self)
+        self._timer.setTimerType(Qt.PreciseTimer)
+        self._timer.setInterval(self.FRAME_MS)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start()
+
+    # -- where everything wants to be -------------------------------------------
+
+    def slots(self) -> dict[int, float]:
+        y, slots = float(self.top), {}
+        for index in self.order:
+            slots[index] = y
+            y += self.rects[index].height()
+        return slots
+
+    def follow(self, global_y: int) -> None:
+        """Carry the lifted view to the pointer at `global_y`, and work out
+        which slot that puts it in."""
+        y = self.parentWidget().mapFromGlobal(QPoint(0, global_y)).y() - self.grab_offset
+        height = self.rects[self.index].height()
+        # Held inside the stack, give or take half a view, so it cannot be
+        # carried off into the empty page below the last one.
+        self.drag_y = max(self.bounds.top() - height / 2, min(self.bounds.bottom() - height / 2, y))
+        centre = self.drag_y + height / 2
+        others = [index for index in self.order if index != self.index]
+        y, place = float(self.top), len(others)
+        for position, index in enumerate(others):
+            if centre < y + self.rects[index].height() / 2:
+                place = position
+                break
+            y += self.rects[index].height()
+        others.insert(place, self.index)
+        self.order = others
+
+    def new_index(self) -> int:
+        return self.order.index(self.index)
+
+    # -- input --------------------------------------------------------------------
+
+    def mouseMoveEvent(self, event) -> None:
+        if not self.dropping:
+            self.follow(round(event.globalPosition().y()))
+
+    def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton:
+            self.drop()
+
+    def keyPressEvent(self, event) -> None:
+        if event.key() == Qt.Key_Escape:
+            self.order = list(range(len(self.items)))
+            self.drop()
+
+    def drop(self) -> None:
+        if self.dropping:
+            return
+        self.dropping = True
+        self.releaseMouse()
+        self.releaseKeyboard()
+
+    # -- frames -------------------------------------------------------------------
+
+    def _autoscroll(self) -> None:
+        area = self.scroll_area
+        if area is None:
+            return
+        viewport = area.viewport()
+        y = viewport.mapFromGlobal(QCursor.pos()).y()
+        if y < self.EDGE_PX:
+            step = -(self.EDGE_PX - y)
+        elif y > viewport.height() - self.EDGE_PX:
+            step = y - (viewport.height() - self.EDGE_PX)
+        else:
+            return
+        bar = area.verticalScrollBar()
+        before = bar.value()
+        bar.setValue(before + round(step * 0.4))
+        if bar.value() != before:
+            self.follow(QCursor.pos().y())
+
+    def _tick(self) -> None:
+        elapsed = self._clock.restart()
+        share = 1.0 if reduced_motion() else 1.0 - math.exp(-elapsed / self.FOLLOW_MS)
+        if not self.dropping:
+            self._autoscroll()
+        slots = self.slots()
+        settled = True
+        for index in range(len(self.items)):
+            if index == self.index and not self.dropping:
+                self.ys[index] = self.drag_y
+                continue
+            gap = slots[index] - self.ys[index]
+            self.ys[index] += gap * share
+            if abs(gap) > 0.5:
+                settled = False
+        lift_to = 0.0 if self.dropping else 1.0
+        self.lift += (lift_to - self.lift) * share
+        if abs(lift_to - self.lift) > 0.02:
+            settled = False
+        self.update()
+        if self.dropping and settled:
+            self._finish()
+
+    def _finish(self) -> None:
+        self._timer.stop()
+        self.hide()
+        try:
+            self.on_drop(self.new_index())
+        finally:
+            self.deleteLater()
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.fillRect(self.bounds, theme.color("#191f29"))
+        for index in self.order:
+            if index != self.index:
+                painter.drawPixmap(QPointF(self.rects[index].left(), self.ys[index]), self.pixmaps[index])
+        rect = QRectF(self.rects[self.index])
+        rect.moveTop(self.ys[self.index])
+        # The shadow under the lifted view: a few soft steps of black.
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(0, 0, 0, round(22 * self.lift)))
+        for step in range(1, 7):
+            painter.drawRect(rect.adjusted(-step, -step + 3, step, step + 3))
+        scale = 1.0 + (self.LIFT_SCALE - 1.0) * self.lift
+        painter.setRenderHint(QPainter.SmoothPixmapTransform, self.lift > 0.01)
+        painter.translate(rect.center())
+        painter.scale(scale, scale)
+        painter.translate(-rect.center())
+        painter.drawPixmap(rect.topLeft(), self.pixmaps[self.index])
+        rim = QColor(theme.color(FOCUS))
+        rim.setAlphaF(0.8 * self.lift)
+        painter.setPen(QPen(rim, 2))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRect(rect.adjusted(1, 1, -1, -1))
