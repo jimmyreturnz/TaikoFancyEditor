@@ -166,6 +166,11 @@ class WindowTests(unittest.TestCase):
             for scroll in (window.gimmick_scroll,):
                 self.assertTrue(scroll.viewport().property("seeThrough"))
             self.assertTrue(window.editor_views_layout.parentWidget().property("seeThrough"))
+            # A difficulty's group sits between its views and the backdrop:
+            # painted navy, View opacity uncovered it rather than the map.
+            from pathlib import Path
+            group = window._difficulty_group_layout(Path("x.osu"), "x").parentWidget()
+            self.assertTrue(group.property("seeThrough"))
         finally:
             window.close()
 

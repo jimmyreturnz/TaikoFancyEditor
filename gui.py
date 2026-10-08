@@ -16914,6 +16914,10 @@ class MainWindow(QMainWindow):
         # signature whether or not the group already exists.
         del label
         group = QWidget()
+        # Chrome, not a view: without this the window's QWidget rule painted
+        # every difficulty's group navy, so View opacity uncovered the group
+        # instead of the map behind it (owner, 2026-10-08).
+        see_through(group)
         group_layout = QVBoxLayout(group)
         group_layout.setContentsMargins(0, 0, 0, 0)
         group_layout.setSpacing(0)
