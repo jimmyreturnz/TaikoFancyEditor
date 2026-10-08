@@ -110,6 +110,12 @@ def shoot(widget, name: str) -> None:
 # shows the app, and a personal skin is theirs. Private copy, so theirs stays.
 import settings as _settings  # noqa: E402
 _settings.SettingsManager().set_value("appearance/skin", "")
+# And the defaults for what the screenshots are of, whatever the copy holds.
+_settings.SettingsManager().set_value("appearance/view_opacity", 100)
+# The default theme, which is what a new user sees: the test settings pin the
+# colours as written, which stopped being the default when it moved to #1f1e33.
+import theme  # noqa: E402
+theme.install(theme.DEFAULT)
 
 window = gui.MainWindow()
 window.resize(1920, 1080)

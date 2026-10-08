@@ -754,6 +754,20 @@ Gimmick pages, and the BPM stripe is a hidden seek bar.
   left, no gray strip.
 - Drag a view by its header to reorder it.
 
+### After v3.5.0 -- recorded, not started
+
+- **Left/Right steps the playhead one snap; Up/Down focuses the next view**,
+  on the Editor and Gimmick pages (owner, 2026-10-08).
+- **Theme switching faster.** Measured 2026-10-08 (BREAKTHROUGH, Editor page,
+  517 widgets): ~180ms in theme.switch -- the window's sheet 71ms, then nested
+  sheets re-polish their subtrees again: the docks' QMainWindow 24ms, two shape
+  tile grids 17+13ms, the song select page 11ms, a scroll area 5ms -- plus
+  ~45ms retheme and paint. Folding those nested sheets into the window's (by
+  object name) would take the second pass away.
+- **test_playback_timing's paused-seek test is flaky** (3 runs in 4 fail,
+  already at d56b51e); and test_gimmick_editor holds ~5.7GB and takes ~40s
+  to exit after printing OK.
+
 ### Can be built now, no guidance needed
 
 1. **Mod pills regrouped** as `[HR EZ] [HD FL] [DT NC HT DC]` (`_build_mod_strip`).
