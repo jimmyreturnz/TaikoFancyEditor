@@ -9982,11 +9982,17 @@ def format_length(ms: int) -> str:
 
 
 def format_bpm(low: float, high: float) -> str:
+    # A gimmick's beat length can be subnormal (EGTS 2022's
+    # `1.14514535393084E-319`), and 60000 over that is inf: round() raised,
+    # and the song's difficulty list stopped filling at its first chart.
+    def text(bpm: float) -> str:
+        return str(round(bpm)) if math.isfinite(bpm) else "∞"
+
     if not high:
         return "–"
-    if round(low) == round(high):
-        return f"{round(high)}"
-    return f"{round(low)}–{round(high)}"
+    if text(low) == text(high):
+        return text(high)
+    return f"{text(low)}–{text(high)}"
 
 
 def decode_background(path: Path, max_width: int) -> QPixmap | None:

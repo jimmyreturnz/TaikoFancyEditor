@@ -98,6 +98,18 @@ class StarColourTests(unittest.TestCase):
         self.assertEqual(gui.star_text_colour(9.9).name(), "#ff8068")
 
 
+class BpmTextTests(unittest.TestCase):
+    def test_a_subnormal_beat_length_is_infinite_bpm_not_a_crash(self):
+        # EGTS 2022 writes `1.14514535393084E-319`: 60000 over it is inf, and
+        # round(inf) used to stop the difficulty list at its first chart.
+        import gui
+
+        bpm = 60000.0 / 1.14514535393084e-319
+        self.assertEqual(gui.format_bpm(180.0, bpm), "180–∞")
+        self.assertEqual(gui.format_bpm(bpm, bpm), "∞")
+        self.assertEqual(gui.format_bpm(150.2, 149.8), "150")
+
+
 class ScanFieldTests(unittest.TestCase):
     def test_a_taiko_file_gives_background_bpm_notes_and_length(self):
         with tempfile.TemporaryDirectory() as temp:
