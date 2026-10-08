@@ -432,5 +432,16 @@ class NewComboDoesNotLatchTests(unittest.TestCase):
         self.assertTrue(self._place(32000))
 
 
+class GhostRepaintTests(unittest.TestCase):
+    def test_changing_the_tool_redraws_the_ghost_under_a_still_cursor(self):
+        """Owner, 2026-10-08: picking another object to place over a still
+        cursor showed the old one until the mouse moved."""
+        for view in (gui.TimelineGameplay(), gui.SVEditorView()):
+            repaints = []
+            view.update = lambda *args, repaints=repaints: repaints.append(args)
+            view.set_tool("kat" if isinstance(view, gui.TimelineGameplay) else "green_line")
+            self.assertTrue(repaints, type(view).__name__)
+
+
 if __name__ == "__main__":
     unittest.main()

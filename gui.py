@@ -2451,9 +2451,14 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
 
     def set_tool(self, tool: str) -> None:
         self.tool = tool
+        # The placement ghost is drawn from the tool, and a view repaints on
+        # mouse move: picking Kat over a still cursor kept showing a Don until
+        # the mouse twitched (owner, 2026-10-08). Same reason as Shift.
+        self.update()
 
     def set_new_combo(self, value: bool) -> None:
         self.new_combo = bool(value)
+        self.update()
 
     def set_snap_divisor(self, divisor: int) -> None:
         """Change the grid, not the playhead.
@@ -4194,6 +4199,7 @@ class SVEditorView(TimeAxisMixin, QWidget):
 
     def set_tool(self, tool: str) -> None:
         self.tool = tool
+        self.update()  # the green line ghost; see TimelineGameplay.set_tool
 
     def line_kinds(self) -> dict[float, str]:
         """{millisecond: "red" | "green" | "yellow"} for the vertical lines, cached per edit.
