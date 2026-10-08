@@ -12882,11 +12882,12 @@ class MainWindow(QMainWindow):
         self.page_button_group.addButton(self.fancy_arranger_page_button, PAGE_FANCY)
         self.library_page_button.setChecked(True)
         self.page_button_group.idClicked.connect(self._switch_page)
-        # The two pages that are the app's own, rather than osu!'s: a sheen
-        # crosses them on hover (approved mockup, 2026-10-07).
+        # A sheen crosses the page tabs on hover: the app's own pages in the
+        # approved mockup (2026-10-07), the Editor too since 2026-10-08.
         self._tab_sheens = [
             HoverSheen(button)
-            for button in (self.gimmick_page_button, self.fancy_arranger_page_button)
+            for button in (self.editor_page_button, self.gimmick_page_button,
+                           self.fancy_arranger_page_button)
         ]
         # One segmented control, the same pill group as the speed and mod
         # strips: four solid pink tabs read as four more actions. Wider

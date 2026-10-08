@@ -20,6 +20,10 @@ from smooth_scroll import reduced_motion
 
 # The pink theme's focus colour; theme.color() moves it to the active theme's.
 FOCUS = "#ff66aa"
+# The pink theme's filled-button colour. A sheen lights a *button*, so it is
+# the button's own hue: in pink both are pink, but Monokai's tabs fill green
+# and its rims are #f92672, and a pink glow on a green tab read as wrong.
+PRIMARY = "#f3a6bd"
 
 # One lap of the two lights round a rim, and one breath of its glow. Slow on
 # purpose: the owner's verdict on the first, faster version was "more subtle".
@@ -227,7 +231,7 @@ class _SheenOverlay(QWidget):
         clip = QPainterPath()
         clip.addRoundedRect(rect, 5, 5)
         painter.setClipPath(clip)
-        focus = theme.color(FOCUS)
+        focus = theme.color(PRIMARY)
         if sheen.glow > 0.0:
             # The glow rises from the button's foot, as in the mockup.
             rise = QLinearGradient(rect.bottomLeft(), rect.topLeft())
