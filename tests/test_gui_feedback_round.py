@@ -70,7 +70,7 @@ class ClickToSeekTests(unittest.TestCase):
         view.resize(800, 200)
         view.window_ms = 2000.0
         view.current_time = 5000.0
-        self.assertTrue(view.symmetric)
+        self.assertTrue(view.editor_view)
 
         seeks: list[int] = []
         view.seek_requested.connect(seeks.append)
@@ -84,7 +84,9 @@ class ClickToSeekTests(unittest.TestCase):
         timeline.resize(800, 200)
         timeline.window_ms = 2000.0
         timeline.current_time = 5000.0
-        self.assertFalse(timeline.symmetric)
+        # Drawn centred like the Editor's since 2026-10-08, but still the
+        # arranger's surface, not an Editor view.
+        self.assertFalse(timeline.editor_view)
 
         seeks: list[int] = []
         timeline.seek_requested.connect(seeks.append)

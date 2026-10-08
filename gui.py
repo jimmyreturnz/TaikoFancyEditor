@@ -2171,6 +2171,12 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
         # Editor-page chart/gimmick views turn this on: snap ticks radiate
         # both above and below the baseline and notes sit centered on it.
         self.symmetric = False
+        # What the view is *for*, apart from how it is drawn: an Editor-page
+        # view (no click-to-seek, Delete deletes, a tool target) rather than
+        # the Fancy Arranger's transform-selection surface. It used to be read
+        # off `symmetric`, which stopped working once the Fancy timeline was
+        # drawn centred too (2026-10-08). set_symmetric sets both.
+        self.editor_view = False
         # "select" preserves today's drag-select-by-time-range behavior
         # (used by the shared Fancy Arranger timeline). Editor-page chart
         # views switch this via their own tool row; nothing else ever
@@ -2465,8 +2471,9 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
         self.snap_divisor = divisor
         self.update()
 
-    def set_symmetric(self, symmetric: bool) -> None:
+    def set_symmetric(self, symmetric: bool, editor_view: bool | None = None) -> None:
         self.symmetric = symmetric
+        self.editor_view = symmetric if editor_view is None else editor_view
         self.update()
 
     def note_radii(self) -> tuple[float, float]:
@@ -2985,7 +2992,7 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
         # Click-to-seek is a Fancy-Arranger-timeline convenience; Editor-page
         # views (symmetric) must not jump the shared playhead just because
         # someone clicked inside them to select/place/inspect a note.
-        if not self.symmetric and abs(event.position().x()-(self.drag_start_x or 0.0))<5:
+        if not self.editor_view and abs(event.position().x()-(self.drag_start_x or 0.0))<5:
             self.current_time=self.snap_ms(self.time_for_x(event.position().x())); self.seek_requested.emit(self.current_time)
         self.drag_start_x=None; self.drag_anchor_time=None; self.update()
         # Previewing on every mouse-move would be far too expensive, so the
@@ -3018,9 +3025,9 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
             # Editor-page views only. The shared Fancy Arranger timeline
             # (symmetric=False) is a transform-selection surface, where
             # Delete would destroy notes someone was only trying to arrange.
-            if self.symmetric and self.selected:
+            if self.editor_view and self.selected:
                 self.notes_delete_requested.emit([note.uid for note in self.selected_notes()])
-            if self.symmetric and self.selected_timing_uids:
+            if self.editor_view and self.selected_timing_uids:
                 self.timing_lines_delete_requested.emit(sorted(self.selected_timing_uids))
             event.accept()
             return
@@ -12154,7 +12161,7 @@ class ToolStateController:
         moved = new is not self.last_focused_editor_view
 
         if (getattr(new, "gimmick_layer", None) is not None or isinstance(new, SVEditorView)
-                or (isinstance(new, TimelineGameplay) and new.symmetric)):
+                or (isinstance(new, TimelineGameplay) and new.editor_view)):
             self.window._mark_focused_view(new)
 
         if getattr(new, "gimmick_layer", None) is not None:
@@ -12168,7 +12175,7 @@ class ToolStateController:
                 self.window.gimmick_tool_buttons[new.gimmick_layer]["select"].setChecked(True)
             return
 
-        if isinstance(new, TimelineGameplay) and new.symmetric:
+        if isinstance(new, TimelineGameplay) and new.editor_view:
             self.active_chart_view = new
             if moved:
                 new.set_tool("select")
@@ -13545,7 +13552,7 @@ class MainWindow(QMainWindow):
         # Drawn as the Editor's chart views are -- notes on a centred row, the
         # ticks either side (owner, 2026-10-08): it was the one chart view
         # still on the old bottom baseline.
-        self.timeline.set_symmetric(True)
+        self.timeline.set_symmetric(True, editor_view=False)
         self.timeline.selection_changed.connect(self._selection_changed)
         self.timeline.selection_finalized.connect(self._selection_finalized)
         self.timeline.seek_requested.connect(self.seek_audio)
