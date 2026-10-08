@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView, QAbstractSlider, QAbstractSpinBox, QApplication, QButtonGroup, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame,
     QBoxLayout, QGraphicsOpacityEffect, QGridLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QMainWindow, QMessageBox,
-    QProgressBar, QPushButton, QScrollArea,
+    QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QTextEdit,
     QSlider, QSpacerItem, QSpinBox, QSplitter, QStackedWidget, QStyle, QStyleOptionButton, QStyledItemDelegate, QTabWidget, QToolButton, QVBoxLayout, QWidget, QDockWidget, QMenu, QDialog, QDialogButtonBox, QFontComboBox, QSizePolicy
 )
 
@@ -7112,6 +7112,12 @@ def add_view_row(on_click) -> QPushButton:
     return button
 
 
+def is_text_entry(widget) -> bool:
+    """A box the keyboard types into: what Esc leaves before anything else."""
+    return isinstance(widget, (QLineEdit, QAbstractSpinBox, QTextEdit, QPlainTextEdit)) or (
+        isinstance(widget, QComboBox) and widget.isEditable())
+
+
 def add_view_on_empty_right_click(container: QWidget, on_click) -> None:
     """Right click on the bare space under a page's views is "Add view" too.
 
@@ -10222,9 +10228,25 @@ def steady_readout(label: QLabel, widest: str = READOUT_WIDEST) -> None:
 ROW_ROLE = Qt.UserRole + 1
 ROW_INK, ROW_INK_2, ROW_INK_3 = "#e8edf3", "#aeb8c5", "#7d8794"
 ROW_HOVER, ROW_PINK_ON = "#2a3341", "#ff66aa"
-# The detail pane always has room for this many difficulties; the banner
-# takes the height up to 16:9 first, and the list whatever is past that.
+# The detail pane keeps room for DIFFICULTY_RESERVED_SLOTS difficulties when
+# it can (owner, 2026-10-08), the banner having the rest up to 16:9; a window
+# too short for both gives the list up to its floor of DIFFICULTY_SLOTS.
 DIFFICULTY_SLOTS, DIFFICULTY_ROW_HEIGHT = 2, 48
+DIFFICULTY_RESERVED_SLOTS = 5
+
+
+class ResizeHook(QObject):
+    """Call `callback` whenever `widget` is resized."""
+
+    def __init__(self, widget: QWidget, callback) -> None:
+        super().__init__(widget)
+        self.callback = callback
+        widget.installEventFilter(self)
+
+    def eventFilter(self, watched, event) -> bool:
+        if event.type() == QEvent.Resize:
+            self.callback()
+        return False
 # The song list's wheel and arrow scrolling glide over this long.
 
 
@@ -10547,9 +10569,6 @@ class SongBanner(QWidget):
 
     def resizeEvent(self, event) -> None:
         self._scaled = {}
-        # Never taller than 16:9 of its width, a background's own shape
-        # (owner, 2026-10-08); the width is the splitter's, so this settles.
-        self.setMaximumHeight(max(self.MIN_HEIGHT, round(self.width() * 9 / 16)))
         super().resizeEvent(event)
 
     def paintEvent(self, event) -> None:
@@ -10602,7 +10621,7 @@ class ContinueCard(QFrame):
 
     # How much of the chart's art shows through. Enough to tell two cards
     # apart at a glance, not so much that it competes with the title.
-    ART_OPACITY = 0.16
+    ART_OPACITY = 0.12  # 0.16 until 2026-10-08: the owner wanted it fainter
 
     clicked = Signal(str)
 
@@ -11037,6 +11056,8 @@ class LibraryPageController:
         actions_layout.addWidget(self.open_difficulty_button)
         detail_layout.addWidget(actions)
         right_layout.addWidget(detail, 1)
+        self._detail, self._detail_actions = detail, actions
+        ResizeHook(detail, self._fit_banner)
         split.addWidget(right)
         split.setStretchFactor(0, 145)
         split.setStretchFactor(1, 100)
@@ -11569,6 +11590,7 @@ class LibraryPageController:
             self.update_open_button()
             # No song, no chart: the preview goes with the difficulties.
             self.chart_preview.hide()
+            self._fit_banner()
             self.chart_frame.stop()
             self._chart_shown = self._chart_pending = None
             return  # a group header
@@ -11761,6 +11783,21 @@ class LibraryPageController:
         114px (836 -> 950), past a 1366x768 screen's. At any ordinary window
         size the banner is far taller than its minimum anyway."""
         self.song_banner.setMinimumHeight(max(0, SongBanner.MIN_HEIGHT - preview_height))
+        self._fit_banner()
+
+    def _fit_banner(self) -> None:
+        """The banner's ceiling: 16:9 of its width, a background's own shape,
+        and never so tall that the difficulty list has less than
+        DIFFICULTY_RESERVED_SLOTS rows -- which is room it keeps until the
+        window is too short for both, when the list gives way first."""
+        detail = getattr(self, "_detail", None)
+        if detail is None:
+            return
+        preview = self.chart_preview.height() if self.chart_preview.isVisibleTo(detail) else 0
+        reserved = DIFFICULTY_RESERVED_SLOTS * DIFFICULTY_ROW_HEIGHT + 14
+        room = detail.height() - preview - self._detail_actions.sizeHint().height() - reserved
+        ceiling = min(round(detail.width() * 9 / 16), room)
+        self.song_banner.setMaximumHeight(max(self.song_banner.minimumHeight(), ceiling))
 
     def _load_chart_preview(self) -> None:
         path = self._chart_pending
@@ -11779,6 +11816,7 @@ class LibraryPageController:
         self._chart_shown = path
         self.chart_preview.refresh_notes(document)
         self.chart_preview.show()
+        self._fit_banner()
         self._tick_chart_preview(force=True)
         self.chart_frame.start()
 
@@ -12759,6 +12797,16 @@ class MainWindow(QMainWindow):
         kind=event.type()
         if kind not in self._FILTERED_EVENT_TYPES:
             return super().eventFilter(watched,event)
+        # Esc in a text box leaves the box, and does nothing else (owner,
+        # 2026-10-08): the next Esc closes the dialog or leaves the chart as
+        # it always did. Before the window check below, because a dialog's
+        # boxes are the ones this is most for. Only on the box itself, which
+        # sees the key first, so it happens once.
+        if (kind == QEvent.KeyPress and event.key() == Qt.Key_Escape
+                and not event.modifiers() and watched is QApplication.focusWidget()
+                and is_text_entry(watched)):
+            watched.clearFocus()
+            return True
         # Nothing outside this window is ours. The filter is installed on the
         # *application*, so every event in the process runs through it --
         # including the ones inside a dialog, whose own top-level window this
@@ -12834,6 +12882,12 @@ class MainWindow(QMainWindow):
         # dropped the selection the slider was about to act on. The one
         # deliberate deselect here is a press on the canvas that misses every
         # note; the timeline clears its own on an empty click, and Esc too.
+        # A press on the empty space under the views lets go of the focused
+        # one (owner, 2026-10-08), as Esc does.
+        if kind == QEvent.MouseButtonPress and event.button() == Qt.LeftButton and watched in (
+                getattr(self, "editor_views_layout", None) and self.editor_views_layout.parentWidget(),
+                getattr(self, "gimmick_views_layout", None) and self.gimmick_views_layout.parentWidget()):
+            self._unfocus_views()
         on_fancy_arranger_page = hasattr(self, "page_stack") and self.page_stack.currentWidget() is self.fancy_arranger_page
         if kind==QEvent.MouseButtonPress and on_fancy_arranger_page and hasattr(self,"timeline") and self.selected:
             global_pos = event.globalPosition().toPoint()
@@ -13836,6 +13890,12 @@ class MainWindow(QMainWindow):
         """
         back = QKeySequence(self.shortcuts.sequence("back_to_songs"))
         if not back.isEmpty() and QKeySequence(event.keyCombination()) == back:
+            # A focused view is let go of first, and the next Esc goes back
+            # (owner, 2026-10-08) -- the same one-step-at-a-time order as a
+            # selection, which the view itself clears before this.
+            if self._unfocus_views():
+                event.accept()
+                return
             if self.page_stack.currentIndex() != PAGE_LIBRARY:
                 self._back_to_library()
             else:
@@ -14548,6 +14608,21 @@ class MainWindow(QMainWindow):
         # set -- Config included, or it alone stays narrower than the tools.
         self._gimmick_row_buttons.extend([*buttons.values(), config_button])
         return row
+
+    def _unfocus_views(self) -> bool:
+        """Let go of the focused view on the current page: no rim, nothing
+        faded, keyboard focus back on the window. Whether there was one."""
+        frames = [frame for frame in (*self._editor_views, *self._gimmick_views)
+                  if frame.focused and frame.isVisible()]
+        if not frames:
+            return False
+        for frame in (*self._editor_views, *self._gimmick_views):
+            frame.set_focused(False)
+            frame.set_dimmed(False)
+        focus = QApplication.focusWidget()
+        if focus is not None and any(frame.isAncestorOf(focus) for frame in frames):
+            self.setFocus(Qt.OtherFocusReason)
+        return True
 
     def _mark_focused_view(self, view) -> None:
         """Rim the frame holding `view`, the one the tool row now acts on."""

@@ -404,6 +404,42 @@ class ViewReorderTests(_GimmickFixture, unittest.TestCase):
         self.assertTrue(frames[0].dimmed)
         self.assertFalse(frames[1].dimmed)
 
+    def test_escape_or_a_blank_click_lets_go_of_the_focused_view(self):
+        """Owner, 2026-10-08: Esc lets go of the focused view first, and the
+        next Esc goes back as before; so does a press under the views."""
+        self.window._show_page(gui.PAGE_GIMMICK)
+        QApplication.processEvents()
+        frames = self.window._gimmick_views
+        self.window._mark_focused_view(frames[0].content)
+        QApplication.sendEvent(self.window, QKeyEvent(QEvent.KeyPress, Qt.Key_Escape, Qt.NoModifier))
+        self.assertFalse(any(frame.focused or frame.dimmed for frame in frames))
+        self.assertNotEqual(self.window.page_stack.currentIndex(), gui.PAGE_LIBRARY,
+                            "the first Esc only let go of the view")
+
+        self.window._mark_focused_view(frames[1].content)
+        container = self.window.gimmick_views_layout.parentWidget()
+        below = QPointF(10, container.height() - 2)
+        QApplication.sendEvent(container, QMouseEvent(
+            QEvent.MouseButtonPress, below, container.mapToGlobal(below),
+            Qt.LeftButton, Qt.LeftButton, Qt.NoModifier))
+        self.assertFalse(frames[1].focused)
+
+    def test_escape_in_a_text_box_only_leaves_the_box(self):
+        from PySide6.QtWidgets import QDialog, QLineEdit, QVBoxLayout
+        dialog = QDialog(self.window)
+        box = QLineEdit(dialog)
+        QVBoxLayout(dialog).addWidget(box)
+        dialog.show()
+        dialog.activateWindow()
+        box.setFocus()
+        QApplication.processEvents()
+        if QApplication.focusWidget() is not box:
+            self.skipTest("the platform gave the box no focus")
+        QApplication.sendEvent(box, QKeyEvent(QEvent.KeyPress, Qt.Key_Escape, Qt.NoModifier))
+        self.assertTrue(dialog.isVisible(), "the first Esc does not close the dialog")
+        self.assertFalse(box.hasFocus())
+        dialog.close()
+
     def test_escape_puts_the_view_back(self):
         before = self._order()
         self._drag(self._frame(before[0]), 2.5, cancel=True)
