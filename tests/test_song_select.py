@@ -110,6 +110,20 @@ class BpmTextTests(unittest.TestCase):
         self.assertEqual(gui.format_bpm(150.2, 149.8), "150")
 
 
+class SongDotTests(unittest.TestCase):
+    def test_a_pack_shows_a_count_of_the_rest(self):
+        import gui
+
+        self.assertEqual(gui.song_dots_shown(6, 1000), (6, 0))
+        # 1000px allows 20 dots at most, so 40 charts are 18 dots and "+22".
+        self.assertEqual(gui.song_dots_shown(40, 1000), (18, 22))
+        self.assertEqual(gui.song_dots_shown(20, 1000), (20, 0))
+        # A narrow list gives the dots 40% of it: 300px is 8 slots.
+        shown, more = gui.song_dots_shown(12, 300)
+        self.assertEqual(shown + more, 12)
+        self.assertLessEqual(shown, 8)
+
+
 class ScanFieldTests(unittest.TestCase):
     def test_a_taiko_file_gives_background_bpm_notes_and_length(self):
         with tempfile.TemporaryDirectory() as temp:

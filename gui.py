@@ -10054,6 +10054,21 @@ PREVIEW_SETTLE_MS = 250
 PREVIEW_FADE_MS = 400
 # The song list's difficulty dots, one per chart in its star colour.
 SONG_DOT_RADIUS, SONG_DOT_PITCH = 5.0, 14
+# A pack lists dozens of charts, and a dot each pushed the title off its own
+# row. Past this many, or past the share of the row they may take, the rest
+# are a "+n" (owner, 2026-10-08).
+SONG_DOTS_MAX = 20
+SONG_DOTS_SHARE = 0.4
+
+
+def song_dots_shown(count: int, row_width: float) -> tuple[int, int]:
+    """(dots drawn, how many the "+n" stands for) for a row this wide."""
+    room = min(SONG_DOTS_MAX, int(row_width * SONG_DOTS_SHARE // SONG_DOT_PITCH))
+    if count <= room:
+        return count, 0
+    # One slot (and a bit) gives way to the "+n" itself.
+    shown = max(0, room - 2)
+    return shown, count - shown
 
 
 def _paint_selection(painter: QPainter, rect: QRectF, option) -> None:
@@ -10104,22 +10119,28 @@ class SongRowDelegate(QStyledItemDelegate):
             return
         _paint_selection(painter, rect.adjusted(2, 1, -2, -1), option)
         stars = row["stars"]
-        dots_width = len(stars) * SONG_DOT_PITCH
+        small = QFont(option.font)
+        small.setPointSizeF(small.pointSizeF() * 0.86)
+        shown, more = song_dots_shown(len(stars), rect.width())
+        more_text = f"+{more}" if more else ""
+        more_width = QFontMetrics(small).horizontalAdvance(more_text) + 4 if more else 0
+        dots_width = shown * SONG_DOT_PITCH + more_width
         text = rect.adjusted(13, 5, -(dots_width + 18), -5)
         font.setWeight(QFont.DemiBold)
         painter.setFont(font)
         painter.setPen(theme.color(ROW_INK))
         metrics = QFontMetrics(font)
         painter.drawText(text, Qt.AlignLeft | Qt.AlignTop, metrics.elidedText(row["title"], Qt.ElideRight, int(text.width())))
-        small = QFont(option.font)
-        small.setPointSizeF(small.pointSizeF() * 0.86)
         painter.setFont(small)
         painter.setPen(theme.color(ROW_INK_2))
         painter.drawText(text, Qt.AlignLeft | Qt.AlignBottom,
                          QFontMetrics(small).elidedText(row["subtitle"], Qt.ElideRight, int(text.width())))
         x = rect.right() - dots_width - 8
         y = rect.center().y()
-        for value in stars:
+        if more:
+            painter.drawText(QRectF(rect.right() - 8 - more_width, rect.top(), more_width, rect.height()),
+                             Qt.AlignRight | Qt.AlignVCenter, more_text)
+        for value in stars[:shown]:
             if value is None:
                 painter.setPen(QPen(QColor(STAR_UNRATED), 1.5))
                 painter.setBrush(Qt.NoBrush)
