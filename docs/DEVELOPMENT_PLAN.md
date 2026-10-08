@@ -731,6 +731,107 @@ started.
 
 ---
 
+## Owner requests, 2026-10-06 -- DONE 2026-10-08 (ec8dd1f..0480513)
+
+Sent after v3.4.3, talked through on 2026-10-07 against an approved mockup;
+everything below is built except osu!'s keybinds and the full-chart barline
+converter, both deferred by the owner. The calls under "needs the owner's
+call" were answered in that round: mod colours as the mockup, HT lights 75%,
+Space plays the song list's song, the scroll is global inside the Editor and
+Gimmick pages, and the BPM stripe is a hidden seek bar.
+
+### Second round, 2026-10-08 -- DONE
+
+- Kiai flash on a don or kat at 0.3 of the pulse (was 0.55); shinies unchanged.
+- The living rim measured: inside the noise (5713ecf).
+- Tab sheen on the Editor tab too, in the theme's button colour.
+- EGTS 2022 loads: a subnormal beat length is an infinite BPM, shown as ∞.
+- Song rows show at most 20 difficulty dots, then "+n".
+- Song select chart preview at 125fps with no clock jumps (was 62, with 40ms
+  snaps back five times a second).
+- Song select in two columns, the art at 16:9, four equal Continue cards, and
+  a bare black chart preview that appears with the song, hit target further
+  left, no gray strip.
+- Drag a view by its header to reorder it.
+
+### Can be built now, no guidance needed
+
+1. **Mod pills regrouped** as `[HR EZ] [HD FL] [DT NC HT DC]` (`_build_mod_strip`).
+   Layout only: mod *strings* (`mod_string`, `playback/mods`, header chips) keep
+   osu!'s order HD·NC/DT/DC/HT·HR/EZ·FL, which is how players read a mod string.
+2. **Remove "Hitsounds from"** from the Editor status bar (`gui.py` ~13488). The
+   hitsound source stays the active difficulty.
+3. **Right click opens Add view only on blank space**, not on the timing bar.
+   `add_view_on_empty_right_click` tests `childAt(pos) is None`; find which path
+   lets a right click on the bar through, fix it there, regression test.
+4. **Continue cards**: drop "opened N min ago" and the inner dark box, and show
+   the chart's background very dim instead. Reuse the song banner's cached
+   cover rather than a second image loader.
+5. **Views remembered per difficulty for the session**: opening a difficulty
+   again restores the Editor and Gimmick views that were open for it. In memory
+   only, cleared when the app exits, keyed by difficulty path.
+6. **Drag a view to reorder it**, keeping the up/down buttons. The drag starts on
+   the view header only: the lanes already drag notes.
+7. **Smaller gameplay preview, as a trial**: default ~62% of an editor view's
+   height, adjustable, so the owner can pick a size between 50% and 75% by eye.
+
+### Needs the owner's call first
+
+- **osu!'s keybinds as the defaults** (W/E/R for whistle/finish/clap, so kat and
+  finisher): which actions, and what the current 1-6 tool keys and any Q/W/E/R
+  conflicts become.
+- **Mod colours from osu!**, on fill, border and text, the same in every
+  theme. A port of `OsuColour.ForModType` from current `ppy/osu` is the
+  starting point (DifficultyReduction: EZ, HT, DC; DifficultyIncrease: HR, DT,
+  NC, HD, FL), but which scheme and how strong is the owner's call.
+- **The Space bar bug**: repro steps. Also whether switching tab should pause
+  playback -- written with a question mark.
+- **"The blinking BPM bar" as a seek bar**: which bar is meant.
+- **The gameplay preview's background uses the wrong elements**: which ones, or
+  a screenshot, against the playfield list in CLAUDE.md.
+- **75% and HT highlight each other**: HT *is* 0.75x (`RATE_MODS`), so the speed
+  buttons light 75% while HT is on. Should they be one choice, or never both lit?
+- **"Make scrolling global again (except vertical)"**: global across the views
+  on a page, across pages, or the wheel anywhere outside the lanes.
+- **A full-chart barline converter** (very low priority): which SV it follows
+  (the current difficulty's, or a chosen one), and how the difficulty is picked.
+
+## Tidy the repo -- owner, 2026-10-08, not started
+
+The root has 21 flat `.py` modules plus build scripts, and `gui.py` is 20,280
+lines (CLAUDE.md still says ~12k). Pure moves, no behaviour change, after the
+drag-reorder item is done so neither fights the other over `gui.py`.
+
+1. **Package the root modules** with `git mv`, one commit, tests green:
+   - `ui/`: `gui`, `motion`, `smooth_scroll`, `theme`, `settings_dialog`,
+     `config_sheet`, `image_trace_dialog`
+   - `audio/`: `audio_engine`, `offset_calibration`
+   - `chart/`: `gimmick_session`, `time_axis`, `transformer`, `parameters`,
+     `image_to_drawing`, alongside the existing `osu_io/`, `model/`, `patterns/`
+   - `library/`: `osu_db`, `song_library`, `skin`
+   - `app/`: `settings`, `i18n`, `updater`, `security_utils`
+   - `scripts/`: `build_windows.bat`, `run_from_source.bat`
+   - The root keeps README/LICENSE/VERSION/CLAUDE.md, the requirements, the
+     `.spec` and one entry point.
+2. **Split `gui.py` along the classes it already has**, one move per commit:
+   song select (`LibraryPageController`, the row delegates, `SongBanner`,
+   `ContinueCard`), the gameplay viewer, the timelines, the SV editor, the
+   dialogs, then `MainWindow` on its own. No renames in the same commit as a
+   move, so `git log --follow` and blame survive.
+3. **Things the moves can break**, checked per step:
+   - paths built from `__file__` (assets, translations, `updater`'s trusted
+     roots) -- they resolve one directory deeper after a move;
+   - `TaikoFancyArranger.spec` (`datas`, entry script) and the two `.bat`s;
+   - `tools/` and `tests/` imports, and `tests/__init__.py`'s theme pin;
+   - `lupdate`'s source list for `taiko_ja.ts` (`tr()` contexts are class
+     names, so the catalog itself survives).
+   The in-place updater swaps the whole frozen build, so a source move does
+   not strand old files in an installed copy.
+4. Untracked root clutter (`build/`, `dist/`, the `.zip`, the release
+   scripts) is the owner's to keep or delete; ignored already, so not part of
+   the commits. Update CLAUDE.md's file map and the stale-copy note
+   (`taiko_arranger/taiko_arranger/` is gone) at the end.
+
 ## Owner requests, 2026-09-17
 
 ### Editor shell: one pink thing per job -- DONE 2026-09-26 (f338a9c, bb38676, and the view-header commit)
