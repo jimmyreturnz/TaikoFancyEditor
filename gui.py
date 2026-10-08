@@ -795,7 +795,10 @@ PLAYFIELD_PULSE_ALPHA = 8
 # full opacity every beat of a chorus flashed the whole preview.
 KIAI_GLOW_STRENGTH = 0.5
 # A circle's share of that, so a note glows without its colour being replaced.
-CIRCLE_KIAI_STRENGTH = 0.55
+# 0.55 until 2026-10-08, when the owner found the kiai flash too bright. Only
+# the circle's share moved: a fake slider stamps at full KIAI_PULSE_ALPHA, so
+# the shiny stack readings above are unchanged.
+CIRCLE_KIAI_STRENGTH = 0.3
 # Under this a "beat" is a gimmick, not a pulse: an invisible-note section at
 # 0.0001ms per beat would strobe once per frame.
 KIAI_PULSE_MIN_BEAT_MS = 50.0
