@@ -308,7 +308,7 @@ class SettingsDialog(QDialog):
         look.field(self.tr("Theme"), bind_segments(self.theme_combo), span=2)
         theme_note = QLabel(self.tr(
             "The colours of the window around the chart. Notes, snap ticks and "
-            "the SV graph keep osu!'s own. Applies after a restart."
+            "the SV graph keep osu!'s own."
         ))
         theme_note.setObjectName("fieldNote")
         theme_note.setWordWrap(True)
@@ -654,8 +654,7 @@ class SettingsDialog(QDialog):
             return False
         previous_language = self.settings.string_value("language/current", "en")
         selected_language = str(self.language_combo.currentData())
-        # Against the theme this process is drawn in, not the stored one: a
-        # change saved with "Restart Later" still needs the restart next time.
+        # Already showing: the main window switches it live as it is picked.
         selected_theme = str(self.theme_combo.currentData())
         self.settings.set_value(theme.SETTING, selected_theme)
         self.settings.set_value("general/confirm_overwrite", self.confirm_overwrite.isChecked())
@@ -682,10 +681,6 @@ class SettingsDialog(QDialog):
             parent._reload_shortcuts()
         if selected_language != previous_language:
             self._prompt_language_restart()
-        # The colours-as-written theme is the test suite's and is never
-        # offered, so the box cannot show it: it is not a change to restart for.
-        elif selected_theme != theme.active() and theme.active() != theme.AS_WRITTEN:
-            self._prompt_restart(self.tr("Please restart Taiko Fancy Arranger to apply the theme."))
         return True
 
     def _prompt_language_restart(self) -> None:

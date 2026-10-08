@@ -44,7 +44,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-import theme
 
 from smooth_scroll import SmoothScroller
 
@@ -66,8 +65,9 @@ def ui_asset(name: str) -> str:
     for root in roots:
         path = root / "assets" / "ui" / name
         if str(root) and path.is_file():
-            # The art carries pink-theme colours; see theme.svg_asset.
-            return theme.svg_asset(path.as_posix())
+            # As written: the art carries pink-theme colours, and theme.css()
+            # swaps in the active theme's copy as the sheet is set.
+            return path.as_posix()
     return (roots[-1] / "assets" / "ui" / name).as_posix()
 
 

@@ -43,15 +43,15 @@ class BackdropTests(unittest.TestCase):
         return self.backdrop.grab().toImage().pixelColor(50, 50)
 
     def test_no_map_is_plain_navy(self):
-        self.assertEqual(self.pixel(), gui.MapBackdrop.NAVY)
+        self.assertEqual(self.pixel(), gui.MapBackdrop.ground())
 
     def test_the_picture_is_faded_by_the_opacity(self):
         self.backdrop.set_background(self.picture)
         self.backdrop.set_opacity(0)
-        self.assertEqual(self.pixel(), gui.MapBackdrop.NAVY)
+        self.assertEqual(self.pixel(), gui.MapBackdrop.ground())
         self.backdrop.set_opacity(50)
         faded = self.pixel()
-        navy = gui.MapBackdrop.NAVY
+        navy = gui.MapBackdrop.ground()
         self.assertAlmostEqual(faded.red(), (navy.red() + 255) / 2, delta=2)
 
     def test_a_paint_is_one_blit_until_something_changes(self):
@@ -136,6 +136,23 @@ class AddViewRightClickTests(unittest.TestCase):
         opened = []
         gui.add_view_on_empty_right_click(container, lambda: opened.append(1))
         container.customContextMenuRequested.emit(QPoint(10, 55))
+        self.assertEqual(opened, [])
+        container.customContextMenuRequested.emit(QPoint(10, 150))
+        self.assertEqual(opened, [1])
+
+    def test_a_right_click_mid_drag_is_not_a_request(self):
+        """Owner, 2026-10-08: a selection box dragged below the last view
+        put the pointer on the empty space with the left button down, and a
+        right click there opened Add view in the middle of the drag."""
+        from unittest.mock import patch
+        from PySide6.QtCore import Qt
+
+        container = QWidget()
+        container.resize(200, 200)
+        opened = []
+        gui.add_view_on_empty_right_click(container, lambda: opened.append(1))
+        with patch.object(gui.QApplication, "mouseButtons", lambda: Qt.LeftButton):
+            container.customContextMenuRequested.emit(QPoint(10, 150))
         self.assertEqual(opened, [])
         container.customContextMenuRequested.emit(QPoint(10, 150))
         self.assertEqual(opened, [1])

@@ -149,7 +149,12 @@ class ModToggleTests(_Window):
         """Hard-coded, so no theme moves them: none is a pink-palette key."""
         button = self.window._mod_buttons[0]["HD"]
         self.assertIn("#ffc801", button.styleSheet())
-        self.assertIn("#2c2c30", self.window._mod_buttons[0]["FL"].styleSheet())
+        flashlight = self.window._mod_buttons[0]["FL"].styleSheet()
+        self.assertIn("#85858f", flashlight)
+        self.assertIn("QPushButton:hover { background: #2c2c30", flashlight)
+        # A lit EZ fills with a green white text can be read on.
+        self.assertIn("QPushButton:checked { background: #4a8413",
+                      self.window._mod_buttons[0]["EZ"].styleSheet())
 
     def test_every_strip_and_the_chip_agree(self):
         self.window._toggle_mod("HR")

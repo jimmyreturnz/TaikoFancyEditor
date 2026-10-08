@@ -69,11 +69,16 @@ class ThemeMapTests(unittest.TestCase):
         self.assertEqual((tint.name(), tint.alpha()), ("#5aa7c7", 46))
 
     def test_switch_art_follows_the_theme(self) -> None:
+        # The sheet names the art as written; css() swaps in the theme's copy,
+        # so the kept source can be translated again for the next theme.
+        import re
         from pathlib import Path
         import config_sheet
-        self.assertTrue(config_sheet.ui_asset("switch-on.svg").endswith("assets/ui/switch-on.svg"))
+        written = config_sheet.ui_asset("switch-on.svg")
+        self.assertTrue(written.endswith("assets/ui/switch-on.svg"))
         theme.install("taiko")
-        themed = Path(config_sheet.ui_asset("switch-on.svg")).read_text(encoding="utf-8")
+        path = re.search(r"url\((.+?)\)", theme.css(f"image: url({written});")).group(1)
+        themed = Path(path).read_text(encoding="utf-8")
         self.assertIn("#5aa7c7", themed)
         self.assertNotIn("#ff66aa", themed)
 
@@ -88,6 +93,49 @@ class ThemeMapTests(unittest.TestCase):
         self.assertEqual(names, list(theme.THEMES))
         self.assertEqual(dialog.theme_combo.currentData(), theme.DEFAULT)
         dialog.deleteLater()
+
+
+class LiveSwitchTests(unittest.TestCase):
+    """A theme changes with the window built (owner, 2026-10-08: no restart)."""
+
+    def tearDown(self) -> None:
+        theme.switch(theme.AS_WRITTEN)
+
+    def test_every_sheet_follows_a_switch(self) -> None:
+        # Built in one theme and switched to another, as a real session is:
+        # built as written, a sheet re-set from its own translated text
+        # (`_apply_selected_toggle_style`) looked like a source and passed.
+        theme.switch("osu")
+        window = gui.MainWindow()
+        window._show_page(gui.PAGE_EDITOR)
+        window._apply_selected_toggle_style()
+        pill = window._mod_buttons[0]["HD"]
+        osu_pill = pill.styleSheet()
+        theme.switch("taiko")
+        window.retheme()
+        osu, taiko = theme.build_map("osu"), theme.build_map("taiko")
+        # A colour only the osu! theme produces, anywhere, is a leak.
+        stale = {value for value in osu.values() if value not in taiko.values()}
+        leaks = []
+        for widget in [QApplication.instance(), *QApplication.allWidgets()]:
+            sheet = widget.styleSheet().lower()
+            leaks += [(type(widget).__name__, colour) for colour in stale if colour in sheet]
+        self.assertEqual(leaks, [])
+        # The switch art, swapped for the new theme's copy.
+        self.assertIn("/taiko/switch-on.svg", window.styleSheet().replace("\\", "/"))
+        # Built from a computed colour, so retheme() has to redo it.
+        self.assertNotEqual(pill.styleSheet(), osu_pill)
+        self.assertEqual(pill.styleSheet(), theme.css(gui.mod_pill_style("HD")))
+        window.close()
+        window.deleteLater()
+
+    def test_a_switch_back_restores_the_sheet_as_written(self) -> None:
+        button = QPushButton()
+        button.setStyleSheet("QPushButton { background: #f3a6bd; }")
+        theme.switch("taiko")
+        self.assertEqual(button.styleSheet(), "QPushButton { background: #d4432a; }")
+        theme.switch(theme.AS_WRITTEN)
+        self.assertEqual(button.styleSheet(), "QPushButton { background: #f3a6bd; }")
 
 
 class ChromeTests(unittest.TestCase):

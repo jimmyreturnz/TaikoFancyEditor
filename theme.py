@@ -12,9 +12,12 @@ two places a colour reaches Qt from Python:
 So a new widget written in the pink literals is themed for free, and the pink
 theme is the code exactly as written: `install` does nothing for it.
 
-The theme is read once, when this module is first imported, because class
-bodies in gui.py build QColors at import. Changing it needs a restart, as the
-language does.
+A theme changes live (`switch`, owner 2026-10-08: no restart). The wrapper
+keeps each sheet as it was written (the `themeSource` property), so a switch
+re-translates every sheet from that rather than from the last theme's output;
+paint code reads `color()` as it paints. The few things that compute a colour
+once and keep it -- a sheet built from a mixed colour, a cached layer -- are
+the window's to redo after a switch (`MainWindow.retheme`).
 
 What a theme leaves alone, deliberately: the note colours (don, kat,
 drumroll), osu!'s snap tick colours, the SV layer's green, star-rating colours
@@ -170,6 +173,12 @@ def build_map(name: str) -> dict[str, str]:
 
 _HEX = re.compile(r"#([0-9a-fA-F]{6})(?=[0-9a-fA-F]{2}\b|\b)")
 _FOCUS_RGBA = re.compile(r"rgba\(\s*255\s*,\s*102\s*,\s*170\s*,")
+# An SVG a sheet draws: its colours are in the file, so the file is swapped
+# for the theme's copy (svg_asset) as the sheet is translated. Done here, not
+# by whoever builds the sheet, so the kept source names the as-written file
+# and every later theme gets its own copy.
+_SVG_URL = re.compile(r"url\(\s*([\"']?)([^)\"']+\.svg)\1\s*\)", re.IGNORECASE)
+_svg_copies: dict[tuple[str, str], str] = {}
 
 _active = DEFAULT
 _map: dict[str, str] = {}
@@ -180,6 +189,7 @@ def css(text: str) -> str:
     """`text` with every pink-theme colour in it swapped for the active theme's."""
     if not _map or not text:
         return text
+    text = _SVG_URL.sub(lambda m: f"url({m.group(1)}{svg_asset(m.group(2))}{m.group(1)})", text)
     text = _HEX.sub(lambda m: _map.get("#" + m.group(1).lower(), m.group(0)), text)
     return _FOCUS_RGBA.sub(f"rgba({_focus_rgb},", text)
 
@@ -214,6 +224,13 @@ def svg_asset(path: str) -> str:
     """
     if not _map or not path.lower().endswith(".svg"):
         return path
+    key = (_active, path)
+    if key not in _svg_copies:
+        _svg_copies[key] = _themed_svg(path)
+    return _svg_copies[key]
+
+
+def _themed_svg(path: str) -> str:
     import tempfile
     from pathlib import Path
     source = Path(path)
@@ -267,7 +284,46 @@ def install(name: str) -> None:
     for cls in (QWidget, QApplication):
         original = getattr(cls, "_unthemed_setStyleSheet", None) or cls.setStyleSheet
         cls._unthemed_setStyleSheet = original
-        cls.setStyleSheet = (lambda original: lambda self, text: original(self, css(text)))(original)
+        cls.setStyleSheet = _keeping_source(original)
+
+
+def _keeping_source(original):
+    def set_style_sheet(self, text):
+        # The sheet as written, for `switch` to translate again.
+        self.setProperty(SOURCE_PROPERTY, text)
+        original(self, css(text))
+    return set_style_sheet
+
+
+SOURCE_PROPERTY = "themeSource"
+
+
+def switch(name: str) -> None:
+    """Make `name` the theme now, with the window already built: every sheet
+    is translated again from what was written, and the palette follows.
+
+    What paints itself reads `color()` as it paints and needs only a repaint;
+    what computed a colour once and kept it is the caller's to redo
+    (`MainWindow.retheme`).
+    """
+    install(name)
+    from PySide6.QtWidgets import QApplication, QWidget
+    app = QApplication.instance()
+    if app is None:
+        return
+    source = app.property(SOURCE_PROPERTY)
+    if source is not None:
+        QApplication._unthemed_setStyleSheet(app, css(source))
+    for widget in app.allWidgets():
+        source = widget.property(SOURCE_PROPERTY)
+        if source is None:
+            continue
+        # Most sheets name no themed colour; setting one anyway re-polishes
+        # the widget and everything under it for nothing.
+        themed = css(source)
+        if themed != widget.styleSheet():
+            QWidget._unthemed_setStyleSheet(widget, themed)
+    apply_palette(app)
 
 
 def _load() -> None:

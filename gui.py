@@ -5016,16 +5016,25 @@ MOD_PILL_GROUPS = (("HR", "EZ"), ("HD", "FL"), ("DT", "NC", "HT", "DC"))
 # and none of these is a pink-palette key `theme` would move. Red and green
 # are osu!'s own mod-select colours (DifficultyIncrease / Reduction).
 MOD_COLORS = {
-    "HD": "#ffc801", "FL": "#2c2c30", "HR": "#fe6465",
+    "HD": "#ffc801", "FL": "#85858f", "HR": "#fe6465",
     "DT": "#8c65ff", "NC": "#5b5fe0",
     "EZ": "#b0ff65", "HT": "#b0ff65", "DC": "#b0ff65",
 }
+# A mod switched on fills with its colour, except where white on that colour
+# cannot be read (owner, 2026-10-08): osu!'s green is 1.2:1 against white, so
+# a lit EZ/HT/DC fills with the same green darkened to 4.6:1. Off, the pill
+# keeps osu!'s own green tint.
+MOD_FILLS = {"EZ": "#4a8413", "HT": "#4a8413", "DC": "#4a8413"}
+# FL was #2c2c30, which against the ground is no colour at all: it is light
+# gray now, and that old gray is what a hover shows (owner, 2026-10-08).
+MOD_HOVERS = {"FL": "#2c2c30"}
 
 
-def mod_pill_style(colour: str) -> str:
+def mod_pill_style(mod: str) -> str:
     """One mod pill: tinted with its colour while off, filled with it while on.
     White text both ways (owner's call). Set on the button itself, so it wins
     over the segment's shared pink `:checked`."""
+    colour = MOD_COLORS[mod]
     # The segment's own ground, as the active theme draws it, so the tint
     # sits on the same colour in every theme.
     base = theme.color("#252d39")
@@ -5039,8 +5048,8 @@ def mod_pill_style(colour: str) -> str:
     return (
         f"QPushButton {{ background: {mix(0.16)}; color: #ffffff;"
         f" border-bottom: 2px solid {mix(0.7)}; }}"
-        f"QPushButton:hover {{ background: {mix(0.32)}; color: #ffffff; }}"
-        f"QPushButton:checked {{ background: {colour}; color: #ffffff; font-weight: 700;"
+        f"QPushButton:hover {{ background: {MOD_HOVERS.get(mod) or mix(0.32)}; color: #ffffff; }}"
+        f"QPushButton:checked {{ background: {MOD_FILLS.get(mod, colour)}; color: #ffffff; font-weight: 700;"
         " border-bottom: 2px solid #ffffff; }"
     )
 
@@ -6872,7 +6881,10 @@ class MapBackdrop(QWidget):
     it at all.
     """
 
-    NAVY = theme.color("#191f29")
+    @staticmethod
+    def ground() -> QColor:
+        # Read as it paints, so a theme switch reaches it (theme.switch).
+        return theme.color("#191f29")
 
     def __init__(self) -> None:
         super().__init__()
@@ -6901,7 +6913,7 @@ class MapBackdrop(QWidget):
     def _bake(self) -> QPixmap:
         size = self.size()
         baked = QPixmap(size)
-        baked.fill(self.NAVY)
+        baked.fill(self.ground())
         if self._source is not None and self._percent > 0:
             cover = self._source.scaled(size, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
             painter = QPainter(baked)
@@ -6912,7 +6924,7 @@ class MapBackdrop(QWidget):
 
     def paintEvent(self, event) -> None:
         if self._source is None or self._percent == 0:
-            QPainter(self).fillRect(event.rect(), self.NAVY)
+            QPainter(self).fillRect(event.rect(), self.ground())
             return
         if self._baked is None or self._baked.size() != self.size():
             self._baked = self._bake()
@@ -6999,6 +7011,11 @@ def add_view_on_empty_right_click(container: QWidget, on_click) -> None:
     So: below the last view, and nowhere else.
     """
     def below_the_views(pos) -> bool:
+        # Never mid-drag (owner, 2026-10-08): a selection box dragged down
+        # past the last view puts the pointer here with the left button held,
+        # and a right click then is part of that gesture, not a request.
+        if QApplication.mouseButtons() & Qt.LeftButton:
+            return False
         children = container.findChildren(QWidget, options=Qt.FindDirectChildrenOnly)
         bottom = max((c.geometry().bottom() for c in children if c.isVisibleTo(container)), default=-1)
         return pos.y() > bottom
@@ -7306,8 +7323,14 @@ class GimmickEntryDialog(QDialog):
 # same offsets gimmick_session writes, so the picture is the structure and not
 # an illustration of it.
 
-_DIAGRAM_INK = theme.color("#e8edf3")
-_DIAGRAM_MUTED = theme.color("#7d8794")
+# Read as each diagram is drawn, so a theme switch reaches them.
+def _diagram_ink() -> QColor:
+    return theme.color("#e8edf3")
+
+
+def _diagram_muted() -> QColor:
+    return theme.color("#7d8794")
+
 _DIAGRAM_RULE = QColor(255, 255, 255, 20)
 
 
@@ -7316,10 +7339,12 @@ _DIAGRAM_RULE = QColor(255, 255, 255, 20)
 _diagram_labels = True
 
 
-def _diagram_text(painter: QPainter, x: float, y: float, text: str, color: QColor = _DIAGRAM_MUTED,
+def _diagram_text(painter: QPainter, x: float, y: float, text: str, color: QColor | None = None,
                   align=Qt.AlignLeft, bold: bool = False) -> None:
     if not _diagram_labels:
         return
+    if color is None:
+        color = _diagram_muted()
     font = painter.font()
     font.setPixelSize(10)
     font.setBold(bold)
@@ -7347,7 +7372,7 @@ def paint_barline_notes(painter: QPainter, rect: QRect, config: GimmickConfig) -
         painter.setPen(QPen(_DIAGRAM_RULE, 1))
         painter.drawLine(QPointF(rect.left() + 8, y), QPointF(rect.right() - 8, y))
         offsets = [-value for value in spacings] + list(spacings) if mirrored else list(spacings)
-        painter.setPen(QPen(_DIAGRAM_INK, 2.5))
+        painter.setPen(QPen(_diagram_ink(), 2.5))
         for offset in offsets:
             x = mid + offset * px_per_ms
             painter.drawLine(QPointF(x, y - 15), QPointF(x, y + 15))
@@ -7371,7 +7396,7 @@ def paint_anti_barline(painter: QPainter, rect: QRect, config: GimmickConfig) ->
     top, bottom = rect.top() + 18, rect.bottom() - 40
     don = (rect.left() + rect.width() * 0.30, config.anti_don_ticks)
     kat = (rect.left() + rect.width() * 0.66, config.anti_kat_ticks)
-    painter.setPen(QPen(_DIAGRAM_INK, 1.2))
+    painter.setPen(QPen(_diagram_ink(), 1.2))
     x = rect.left() + 8.0
     while x < rect.right() - 8:
         in_slit = any(start < x < start + ticks * gap + 0.01 for start, ticks in (don, kat))
@@ -7432,7 +7457,7 @@ def paint_hidden_anti_barline(painter: QPainter, rect: QRect, config: GimmickCon
     target = rect.left() + 24
     slit_right = rect.right() - rect.width() * 0.18
     excess = max(0.0, config.hidden_don_sv / max(config.hidden_base_sv, 1e-9) - 1.0)
-    painter.setPen(QPen(_DIAGRAM_INK, 1))
+    painter.setPen(QPen(_diagram_ink(), 1))
     x = rect.left() + 8.0
     gap = 3.2
     while x < rect.right() - 8:
@@ -12901,6 +12926,16 @@ class MainWindow(QMainWindow):
         dialog.background_opacity.valueChanged.connect(self._sync_backdrops)
         dialog.view_opacity.valueChanged.connect(self._apply_view_opacity)
         dialog.song_select_preview.valueChanged.connect(self._library.set_chart_preview_share)
+        # The theme too, live as it is picked (owner, 2026-10-08: no restart);
+        # Cancel puts back the one the dialog opened on.
+        opened_on = theme.active()
+
+        def preview_theme(_index=None):
+            name = str(dialog.theme_combo.currentData())
+            if name != theme.active():
+                theme.switch(name)
+                self.retheme()
+        dialog.theme_combo.currentIndexChanged.connect(preview_theme)
         # The opacity preview draws with the timeline's own note code, in
         # whichever skin the combo shows. Loaded once per name so dragging the
         # slider repaints without touching disk.
@@ -12913,7 +12948,10 @@ class MainWindow(QMainWindow):
                 previews[name] = TaikoSkin(folder)
             paint_note_preview(painter, rect, previews[name], percent)
         dialog.note_opacity_preview.paint_notes = paint_notes
-        dialog.exec()
+        accepted = dialog.exec()
+        if not accepted and theme.active() != opened_on:
+            theme.switch(opened_on)
+            self.retheme()
         self._apply_audio_settings()
         self._sync_backdrops()
         self._apply_view_opacity()
@@ -14028,6 +14066,21 @@ class MainWindow(QMainWindow):
             for kind in (EditorViewFrame, TimelineGameplay, SVEditorView, GameplayViewerView)
             for widget in self.findChildren(kind)
         ])
+
+    def retheme(self) -> None:
+        """Redo what a theme switch does not reach on its own (theme.switch
+        re-translates every stylesheet; paint code reads theme.color as it
+        paints): sheets built from a computed colour, and cached layers."""
+        for buttons in getattr(self, "_mod_buttons", ()):
+            for mod, button in buttons.items():
+                button.setStyleSheet(mod_pill_style(mod))
+        self._apply_view_opacity()  # the frames' grounds are computed colours
+        for bar in (*self.findChildren(TimingOverviewBar), *self.findChildren(DensityOverview)):
+            bar.static_layer_dirty = True
+        for backdrop in getattr(self, "_backdrops", ()):
+            backdrop._baked = None
+        for widget in QApplication.allWidgets():
+            widget.update()
 
     def _sync_backdrops(self, percent: int | None = None) -> None:
         """Hand every page's backdrop the active map's picture and the
@@ -18876,8 +18929,11 @@ class MainWindow(QMainWindow):
         if getattr(self, "_selected_toggle_style_applied", False):
             return
         self._selected_toggle_style_applied = True
+        # Appended to the sheet as written, not to styleSheet(): that is the
+        # active theme's translation, and kept as the source it pinned the
+        # window's navy to whichever theme the app started in.
         self.setStyleSheet(
-            self.styleSheet()
+            (self.property(theme.SOURCE_PROPERTY) or self.styleSheet())
             + """
             QPushButton:checked {
                 background-color: #ff66aa;
@@ -19792,7 +19848,7 @@ class MainWindow(QMainWindow):
         for group in MOD_PILL_GROUPS:
             strip.addWidget(segmented([buttons[mod] for mod in group]))
             for mod in group:
-                buttons[mod].setStyleSheet(mod_pill_style(MOD_COLORS[mod]))
+                buttons[mod].setStyleSheet(mod_pill_style(mod))
         self._mod_buttons.append(buttons)
 
     def _rate_mod(self) -> str | None:
