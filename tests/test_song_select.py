@@ -188,7 +188,6 @@ class PageTests(unittest.TestCase):
             def position(self): return 10000 + int(wall[0] // 52) * 52
 
         lib.preview_player = Player()
-        self.addCleanup(setattr, lib, "preview_player", None)
         lib._preview_audio = lib._beat_audio = Path("audio.mp3")
         lib._beat_elapsed = Elapsed()
         lib._beat_anchor_ms = 10000.0
@@ -196,6 +195,7 @@ class PageTests(unittest.TestCase):
         for frame in range(500):  # four seconds at 8ms
             wall[0] = frame * 8.0
             readings.append(lib._beat_clock())
+        lib.preview_player = None  # tearDown's close() would stop the fake
         steps = [b - a for a, b in zip(readings, readings[1:])]
         self.assertGreaterEqual(min(steps), 0.0)
         self.assertLess(abs(readings[-1] - (10000 + wall[0])), 15.0)
