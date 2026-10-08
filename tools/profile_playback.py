@@ -3,6 +3,7 @@
     python tools/profile_playback.py <a real .osu> [frames] [--gimmick]
                                      [--gameplay] [--skin NAME] [--profile]
                                      [--at MS] [--playing RATE] [--view-opacity N]
+                                     [--focused] [--no-motion]
 
 --playing plays the song for real at RATE and reports the gaps between the
 app's own rendered frames instead of timing synthetic ones.
@@ -104,6 +105,21 @@ if "--skin" in sys.argv:
     window._apply_appearance_settings()
     print(f"     skin: {window.skin.name or '(built-in)'}")
     app.processEvents()
+
+if "--focused" in sys.argv:
+    # The focused view carries the living rim (motion.paint_living_rim), the
+    # only per-frame motion on these pages; nothing is focused until a click.
+    frames_on_page = [*window._editor_views, *window._gimmick_views]
+    window._mark_focused_view(frames_on_page[0].content)
+    print("     focused: first view (living rim on)")
+    app.processEvents()
+
+if "--no-motion" in sys.argv:
+    # What "Animation effects" off does: the rim stands still, its clock stops.
+    import motion
+    motion.reduced_motion = lambda: True
+    motion.RimClock.shared()._timer.stop()
+    print("     motion: off")
 
 if "--view-opacity" in sys.argv:
     # Under 100% every lane gives up WA_OpaquePaintEvent, so each frame also
