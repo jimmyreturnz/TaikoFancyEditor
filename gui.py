@@ -13542,6 +13542,10 @@ class MainWindow(QMainWindow):
         layout.addLayout(timeline_controls)
 
         self.timeline = TimelineGameplay()
+        # Drawn as the Editor's chart views are -- notes on a centred row, the
+        # ticks either side (owner, 2026-10-08): it was the one chart view
+        # still on the old bottom baseline.
+        self.timeline.set_symmetric(True)
         self.timeline.selection_changed.connect(self._selection_changed)
         self.timeline.selection_finalized.connect(self._selection_finalized)
         self.timeline.seek_requested.connect(self.seek_audio)
