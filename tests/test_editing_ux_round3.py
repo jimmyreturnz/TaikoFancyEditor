@@ -511,6 +511,29 @@ class ClipboardTests(WindowTestCase):
         self.assertIn(30000, times)
         self.assertIn(30500, times, "relative spacing must be preserved")
 
+    def test_a_spinner_keeps_its_length_when_pasted_or_dragged(self):
+        """Its end is an absolute millisecond in its extras: pasted, it ended
+        where the original did (owner, 2026-10-08), and a drag did the same."""
+        from model.hit_object import HitObject, TYPE_SPINNER
+        spinner = HitObject(x=256, y=192, time=20000, type=TYPE_SPINNER, hit_sound=0,
+                            extras=("21500",), original_index=self.window._next_original_index(self.state))
+        self.state.document.hit_objects.append(spinner)
+        self.state.document.hit_objects.sort(key=lambda note: note.time)
+        view = self._chart_view()
+        view.load_document(self.state.document)
+        self.window._editor_view_focus_changed(None, view)
+        view.selected = {spinner.original_index}
+        self.window.copy_selection()
+        view.current_time = 40000.0
+        self.window.paste_clipboard()
+        pasted = next(n for n in self.state.document.hit_objects if n.is_spinner and n.time == 40000)
+        self.assertEqual(pasted.end_time - pasted.time, 1500)
+
+        self.window._move_objects(self.state.source_path, [spinner.uid], [], 1000)
+        self.assertEqual((spinner.time, spinner.end_time), (21000, 22500))
+        self.window.undo()
+        self.assertEqual((spinner.time, spinner.end_time), (20000, 21500))
+
     def test_the_paste_anchor_truncates_the_snap_like_every_other_placement(self):
         """A snapped position goes *down* (`osu_snap_ms`), and the paste anchor
         rounded to nearest instead -- so on a beat whose fractional part was at

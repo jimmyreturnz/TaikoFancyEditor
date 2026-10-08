@@ -556,6 +556,20 @@ HITSOUND_SAMPLES = {
     "whistle": "taiko-normal-hitwhistle.wav", # big kat
 }
 
+def extras_at(note, new_time: float) -> tuple[str, ...]:
+    """`note.extras` for the same object moved to `new_time`.
+
+    A spinner keeps its *end* as an absolute millisecond in its extras, so
+    retiming only `time` kept the old end: a dragged or pasted spinner came out
+    longer or shorter by however far it moved (owner, 2026-10-08: "its length
+    is not being copied"). Everything else's extras are relative already.
+    """
+    end = note.end_time if note.is_spinner else None
+    if end is None:
+        return tuple(note.extras)
+    return (str(round(new_time + (end - note.time))), *note.extras[1:])
+
+
 def hitsound_keys(note) -> tuple[str, ...]:
     """The samples `note` plays, together; empty when it is silent.
 
@@ -15274,7 +15288,10 @@ class MainWindow(QMainWindow):
             return
         notes, points = self._expand_move(state, set(note_uids), set(point_uids))
         commands = [
-            SetNoteFields(note.uid, {"time": (note.time, int(note.time) + delta)})
+            SetNoteFields(note.uid, {
+                "time": (note.time, int(note.time) + delta),
+                "extras": (note.extras, extras_at(note, int(note.time) + delta)),
+            })
             for note in notes
         ] + [
             EditTimingPoint(point.uid, {"time": (point.time, point.time + delta)})
@@ -17749,6 +17766,9 @@ class MainWindow(QMainWindow):
                 "residual": residual(note.time),
                 "x": note.x, "y": note.y, "type": note.type, "hit_sound": note.hit_sound,
                 "extras": tuple(note.extras), "hit_sample": note.hit_sample,
+                # A spinner's length, taken now: its extras hold an absolute
+                # end, which the paste moves with it (extras_at).
+                "length": (note.end_time - note.time) if note.is_spinner and note.end_time is not None else None,
             }
             for note in notes
         ]
@@ -17796,10 +17816,13 @@ class MainWindow(QMainWindow):
         next_index = self._next_original_index(state)
         pasted = []
         for entry in self._note_clipboard:
+            time_ms = landing(entry)
             pasted.append(HitObject(
-                x=entry["x"], y=entry["y"], time=landing(entry),
+                x=entry["x"], y=entry["y"], time=time_ms,
                 type=entry["type"], hit_sound=entry["hit_sound"],
-                extras=entry["extras"], hit_sample=entry["hit_sample"],
+                extras=(entry["extras"] if entry["length"] is None
+                        else (str(round(time_ms + entry["length"])), *entry["extras"][1:])),
+                hit_sample=entry["hit_sample"],
                 original_index=next_index,
             ))
             next_index += 1
