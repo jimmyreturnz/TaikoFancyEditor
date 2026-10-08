@@ -6328,10 +6328,61 @@ class TimingOverviewBar(QWidget):
         x=round(self.current_time/self.duration_ms*self.width());painter.setPen(QPen(QColor("#ffffff"),1));painter.drawLine(x,0,x,self.height())
 
 
-# Upper bound on the density heatmap's aggregation windows. The widget is a few
-# hundred pixels wide, so anything finer is invisible -- and unbounded on a map
-# whose timing points carry a near-zero beat length.
-DENSITY_MAX_WINDOWS = 2000
+# The density histogram (owner, 2026-10-08): one bar per 1% of the song, each
+# as tall as its note rate against a fixed ceiling -- DENSITY_FULL_NOTES in
+# DENSITY_FULL_BEATS beats of the chart's most common BPM, a 1/4 stream. Read
+# against the chart's own tempo rather than against its busiest bar, so a
+# chart with one dense burst no longer draws everything else as nothing, and
+# a gimmick's 60000 BPM line cannot set the scale.
+DENSITY_BARS = 100
+DENSITY_FULL_NOTES = 16
+DENSITY_FULL_BEATS = 4
+
+
+def most_common_beat_length(points, last_time: float) -> float | None:
+    """The beat length of the red line in force for the most time up to
+    `last_time` (the last object): osu!lazer's
+    `BeatmapExtensions.GetMostCommonBeatLength`, which its song select shows as
+    "BPM a-b (mostly c)". aleph-0 switches between 250, 400 and 140, and is
+    "mostly 250".
+
+    As lazer counts it: the first line from 0, each until the next, the last
+    until `last_time`, and a line after the last object counts for nothing.
+    Beat lengths are compared to a thousandth so float noise does not split
+    one tempo in two.
+    """
+    points = [point for point in points if point.uninherited and point.beat_length > 0]
+    if not points:
+        return None
+    spans: dict[float, float] = {}
+    for index, point in enumerate(points):
+        if point.time > last_time:
+            continue
+        start = 0.0 if index == 0 else point.time
+        end = last_time if index == len(points) - 1 else min(points[index + 1].time, last_time)
+        key = round(point.beat_length, 3)
+        spans[key] = spans.get(key, 0.0) + max(0.0, end - start)
+    if not spans:
+        return points[0].beat_length
+    return max(spans.items(), key=lambda item: item[1])[0]
+
+
+def density_bars(times, duration_ms: float, beat_length: float | None) -> list[tuple[float, float, float]]:
+    """[(start, end, level 0..1)], one bar per DENSITY_BARS-th of the song.
+    `times` sorted. Level 1 is DENSITY_FULL_NOTES notes per DENSITY_FULL_BEATS
+    beats of `beat_length` or more; without a tempo, against the busiest bar."""
+    duration_ms = max(1.0, float(duration_ms))
+    step = duration_ms / DENSITY_BARS
+    counts = []
+    for index in range(DENSITY_BARS):
+        start, end = index * step, (index + 1) * step
+        counts.append((start, end, bisect_left(times, end) - bisect_left(times, start)))
+    if beat_length:
+        full = DENSITY_FULL_NOTES * step / (DENSITY_FULL_BEATS * beat_length)
+    else:
+        full = max((count for _start, _end, count in counts), default=1)
+    full = max(full, 1e-9)
+    return [(start, end, min(1.0, count / full)) for start, end, count in counts]
 
 
 class DensityOverview(QWidget):
@@ -6344,21 +6395,9 @@ class DensityOverview(QWidget):
         self.setFixedHeight(58); self.setCursor(Qt.PointingHandCursor)
     def load_document(self,document,duration_ms:int)->None:
         self.duration_ms=max(duration_ms,document.hit_objects[-1].time if document.hit_objects else 1,1)
-        points=extract_timing_points(document); times=[n.time for n in document.hit_objects]
-        self.windows=[]
-        # One bar per 4 beats, but never finer than the widget can show: a
-        # gimmick map's beat_length = 0.0001 points would otherwise ask for
-        # hundreds of millions of sub-pixel windows and hang the load.
-        min_window_ms=self.duration_ms/DENSITY_MAX_WINDOWS
-        if points:
-            for i,point in enumerate(points):
-                section_end=points[i+1].time if i+1<len(points) else self.duration_ms
-                cursor=point.time
-                step=max(point.beat_length*4,min_window_ms)
-                while cursor<section_end:
-                    end=min(section_end,cursor+step)
-                    count=bisect_left(times,end)-bisect_left(times,cursor)
-                    self.windows.append((max(0,cursor),end,count)); cursor=end
+        times=[n.time for n in document.hit_objects]
+        beat=most_common_beat_length(extract_timing_points(document), times[-1] if times else 0)
+        self.windows=density_bars(times, self.duration_ms, beat)
         self.static_layer_dirty=True; self.update()
     def set_duration(self,value:int)->None:
         if value>0 and value!=self.duration_ms:
@@ -6387,11 +6426,10 @@ class DensityOverview(QWidget):
     def _rebuild_static_layer(self)->None:
         if self.width()<=0 or self.height()<=0:return
         layer=QPixmap(self.size()); layer.fill(QColor("#000000")); painter=QPainter(layer); painter.setPen(Qt.NoPen)
-        maximum=max((c for _,_,c in self.windows),default=1) or 1
-        for start,end,count in self.windows:
-            if not count:continue
-            x=start/self.duration_ms*self.width();w=max(1.0,(end-start)/self.duration_ms*self.width());h=max(1.0,(count/maximum)**.55*(self.height()-8))
-            intensity=min(1.0,count/16.0); green=round(255+(216-255)*intensity); blue=round(255+(77-255)*intensity)
+        for start,end,level in self.windows:
+            if not level:continue
+            x=start/self.duration_ms*self.width();w=max(1.0,(end-start)/self.duration_ms*self.width());h=max(1.0,level*(self.height()-8))
+            intensity=level; green=round(255+(216-255)*intensity); blue=round(255+(77-255)*intensity)
             painter.fillRect(QRectF(x,self.height()-h,w,h),QColor(255,green,blue))
         painter.end(); self.static_layer=layer; self.static_layer_dirty=False
     def paintEvent(self,event)->None:
