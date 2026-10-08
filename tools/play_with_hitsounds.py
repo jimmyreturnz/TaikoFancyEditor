@@ -48,14 +48,16 @@ HITSOUND_CLAP = 8
 HITSOUND_FINISH = 4
 
 
-def key_for(note) -> str | None:
-    """gui.hitsound_key, for circles only."""
+def keys_for(note) -> tuple[str, ...]:
+    """gui.hitsound_keys, for circles only: a finisher is its small note's
+    sample with the big one over it."""
     if not note.is_circle:
-        return None
+        return ()
     kat = bool(note.hit_sound & HITSOUND_CLAP)
+    small = "clap" if kat else "normal"
     if note.hit_sound & HITSOUND_FINISH:
-        return "whistle" if kat else "finish"
-    return "clap" if kat else "normal"
+        return (small, "whistle" if kat else "finish")
+    return (small,)
 
 
 def main() -> None:
@@ -72,8 +74,8 @@ def main() -> None:
     times, keys, volumes = [], [], []
     ordered = sorted(
         (float(note.time), key)
-        for note, key in ((note, key_for(note)) for note in document.hit_objects)
-        if key is not None
+        for note in document.hit_objects
+        for key in keys_for(note)
     )
     points = sorted(document.timing_points, key=lambda p: p.time)
     index, current = 0, 1.0

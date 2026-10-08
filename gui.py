@@ -556,13 +556,19 @@ HITSOUND_SAMPLES = {
     "whistle": "taiko-normal-hitwhistle.wav", # big kat
 }
 
-def hitsound_key(note) -> str | None:
-    """Which sample `note` asks for, or None when it is silent."""
+def hitsound_keys(note) -> tuple[str, ...]:
+    """The samples `note` plays, together; empty when it is silent.
+
+    A finisher is its small note's sound with the big one over it, as in game
+    (owner, 2026-10-08): a big don is hitnormal + hitfinish, a big kat hitclap
+    + hitwhistle. Alone, the finish was a cymbal with no drum under it.
+    """
     if not note.is_circle:
-        return None
+        return ()
+    small = "clap" if note.is_kat else "normal"
     if note.is_finisher:
-        return "whistle" if note.is_kat else "finish"
-    return "clap" if note.is_kat else "normal"
+        return (small, "whistle" if note.is_kat else "finish")
+    return (small,)
 
 
 def hitsound_schedule(
@@ -584,8 +590,8 @@ def hitsound_schedule(
     """
     scheduled = sorted(
         (float(note.time), key)
-        for note, key in ((note, hitsound_key(note)) for note in hit_objects)
-        if key is not None
+        for note in hit_objects
+        for key in hitsound_keys(note)
     )
     times = [time_ms for time_ms, _key in scheduled]
     keys = [key for _time, key in scheduled]

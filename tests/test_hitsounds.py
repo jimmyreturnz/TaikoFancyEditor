@@ -49,32 +49,33 @@ def fake_slider(time_ms: int, hit_sound: int = 0) -> HitObject:
 
 class SampleChoiceTests(unittest.TestCase):
     def test_each_kind_of_circle_asks_for_its_own_sample(self):
-        self.assertEqual(gui.hitsound_key(circle(0)), "normal")
-        self.assertEqual(gui.hitsound_key(circle(0, HITSOUND_CLAP)), "clap")
-        self.assertEqual(gui.hitsound_key(circle(0, HITSOUND_FINISH)), "finish")
+        self.assertEqual(gui.hitsound_keys(circle(0)), ("normal",))
+        self.assertEqual(gui.hitsound_keys(circle(0, HITSOUND_CLAP)), ("clap",))
+        # A finisher is its small note's sound with the big one over it.
+        self.assertEqual(gui.hitsound_keys(circle(0, HITSOUND_FINISH)), ("normal", "finish"))
         self.assertEqual(
-            gui.hitsound_key(circle(0, HITSOUND_FINISH | HITSOUND_CLAP)), "whistle"
+            gui.hitsound_keys(circle(0, HITSOUND_FINISH | HITSOUND_CLAP)), ("clap", "whistle")
         )
 
     def test_nothing_that_is_not_a_circle_makes_a_sound(self):
         """Circles only is the whole rule: it silences every fake slider and
         every shiny (both are drumrolls) with no gimmick-specific special
         case, and it silences real drumrolls and spinners too."""
-        self.assertIsNone(gui.hitsound_key(fake_slider(0)))
-        self.assertIsNone(gui.hitsound_key(fake_slider(0, HITSOUND_FINISH)))
-        self.assertIsNone(gui.hitsound_key(
+        self.assertFalse(gui.hitsound_keys(fake_slider(0)))
+        self.assertFalse(gui.hitsound_keys(fake_slider(0, HITSOUND_FINISH)))
+        self.assertFalse(gui.hitsound_keys(
             HitObject(x=256, y=192, time=0, type=TYPE_SPINNER, hit_sound=0)
         ))
         real_drumroll = HitObject(
             x=256, y=192, time=0, type=TYPE_SLIDER, hit_sound=0,
             extras=("L|356:192", "1", "120"),
         )
-        self.assertIsNone(gui.hitsound_key(real_drumroll))
+        self.assertFalse(gui.hitsound_keys(real_drumroll))
 
     def test_a_gimmick_structures_own_note_still_sounds(self):
         """A Don fake slider and a barline note each write a real circle the
         player actually hits -- silencing those would make playback lie."""
-        self.assertEqual(gui.hitsound_key(circle(10000)), "normal")
+        self.assertEqual(gui.hitsound_keys(circle(10000)), ("normal",))
 
     def test_the_schedule_is_sorted_and_drops_the_silent_objects(self):
         times, keys, volumes = gui.hitsound_schedule([
@@ -87,6 +88,15 @@ class SampleChoiceTests(unittest.TestCase):
         self.assertEqual(keys, ["normal", "clap"])
         # No timing points given, so nothing is quieter than as authored.
         self.assertEqual(volumes, [1.0, 1.0])
+
+    def test_a_finisher_schedules_both_its_samples_on_one_millisecond(self):
+        times, keys, _volumes = gui.hitsound_schedule([
+            circle(100, HITSOUND_FINISH),
+            circle(200, HITSOUND_FINISH | HITSOUND_CLAP),
+        ])
+        self.assertEqual(times, [100.0, 100.0, 200.0, 200.0])
+        self.assertEqual(sorted(keys[:2]), ["finish", "normal"])
+        self.assertEqual(sorted(keys[2:]), ["clap", "whistle"])
 
 
 class SectionVolumeTests(unittest.TestCase):
