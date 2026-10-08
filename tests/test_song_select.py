@@ -167,6 +167,39 @@ class PageTests(unittest.TestCase):
         # sendEvent, not widget.event(): only the former passes the filters.
         QApplication.sendEvent(widget, QKeyEvent(QKeyEvent.KeyPress, key, Qt.NoModifier, text))
 
+    def test_the_preview_clock_never_steps_back_between_coarse_positions(self):
+        # The player reports its position in ~52ms steps. Checked every frame
+        # against a 40ms bound, the stale value snapped the clock back 40ms
+        # five times a second: the chart preview's "a bit laggy".
+        from PySide6.QtMultimedia import QMediaPlayer
+
+        lib = self.window._library
+        wall = [0.0]
+
+        class Elapsed:
+            def __init__(self): self.base = 0.0
+            def elapsed(self): return wall[0] - self.base
+            def start(self): self.base = wall[0]
+            restart = start
+
+        class Player:
+            def playbackRate(self): return 1.0
+            def playbackState(self): return QMediaPlayer.PlayingState
+            def position(self): return 10000 + int(wall[0] // 52) * 52
+
+        lib.preview_player = Player()
+        self.addCleanup(setattr, lib, "preview_player", None)
+        lib._preview_audio = lib._beat_audio = Path("audio.mp3")
+        lib._beat_elapsed = Elapsed()
+        lib._beat_anchor_ms = 10000.0
+        readings = []
+        for frame in range(500):  # four seconds at 8ms
+            wall[0] = frame * 8.0
+            readings.append(lib._beat_clock())
+        steps = [b - a for a, b in zip(readings, readings[1:])]
+        self.assertGreaterEqual(min(steps), 0.0)
+        self.assertLess(abs(readings[-1] - (10000 + wall[0])), 15.0)
+
     def test_typing_on_the_list_goes_to_the_search(self):
         self.key(self.window.song_list, Qt.Key_Z, "z")
         self.assertEqual(self.window.library_search.text(), "z")

@@ -10768,9 +10768,14 @@ class LibraryPageController:
         self.chart_timer.setSingleShot(True)
         self.chart_timer.setInterval(PREVIEW_SETTLE_MS)
         self.chart_timer.timeout.connect(self._load_chart_preview)
-        # A frame for the preview, only while this page shows it.
+        # A frame for the preview, only while this page shows it. Precise and
+        # 4ms, like the editor's render timer: a coarse 16ms timer held it to
+        # 62.5 frames a second against the editor's 120 (owner: "a bit laggy").
+        # 8ms, not the editor's 4: this view has no hitsounds to schedule, and
+        # at 4 it painted 250 times a second for a 120Hz screen.
         self.chart_frame = QTimer(self.window)
-        self.chart_frame.setInterval(16)
+        self.chart_frame.setTimerType(Qt.PreciseTimer)
+        self.chart_frame.setInterval(8)
         self.chart_frame.timeout.connect(self._tick_chart_preview)
         self.difficulty_list = QListWidget()
         self.difficulty_list.setObjectName("difficultyList")
@@ -11432,8 +11437,15 @@ class LibraryPageController:
 
         Wall time between re-anchors, because the player reports its position
         in coarse steps (CLAUDE.md, the FFmpeg backend): read directly, the
-        flash would step with it. Re-anchored when the two drift apart by more
-        than a frame or two -- a seek, the loop back to the preview point.
+        flash would step with it.
+
+        Compared only on the frame a *new* step arrives. The steps are ~52ms
+        apart, so between them the reported value is up to 52ms stale, and
+        checking it every frame against a 40ms bound snapped the clock back
+        40ms about five times a second -- measured, the chart preview's
+        "a bit laggy". A fresh step is the true position to within a frame:
+        a small error is eased out, a large one (a seek, the loop back to
+        the preview point) is taken at once.
         """
         player = self.preview_player
         # Wall time runs at 1x; the song runs at the rate mod's rate.
@@ -11442,10 +11454,16 @@ class LibraryPageController:
         if (player is not None and self._preview_audio == self._beat_audio
                 and player.playbackState() == QMediaPlayer.PlayingState):
             position = float(player.position())
-            if abs(position - now) > 40:
-                self._beat_anchor_ms = position
-                self._beat_elapsed.restart()
-                now = position
+            if position != getattr(self, "_beat_seen_position", None):
+                self._beat_seen_position = position
+                error = position - now
+                if abs(error) > 100:
+                    self._beat_anchor_ms = position
+                    self._beat_elapsed.restart()
+                    now = position
+                else:
+                    self._beat_anchor_ms += error * 0.2
+                    now += error * 0.2
         return now
 
     def _repaint_selected_row(self, rows: QListWidget) -> None:
