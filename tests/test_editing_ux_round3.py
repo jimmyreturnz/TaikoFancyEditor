@@ -948,8 +948,9 @@ class NoteSizeTests(WindowTestCase):
             view.setFixedHeight(height)
             normal, finisher = view.note_radii()
             self.assertLessEqual(normal, gui.TimelineGameplay.NOTE_RADIUS_MAX)
-            self.assertAlmostEqual(normal / finisher, 0.75, places=3)
-            self.assertAlmostEqual(finisher, normal * gui.EDITOR_STRONG_SCALE)
+            # 75%, then the finisher a third bigger again (owner, 2026-10-08).
+            self.assertAlmostEqual(
+                finisher, normal * gui.EDITOR_STRONG_SCALE * gui.TimelineGameplay.FINISHER_ENLARGE)
 
     def test_the_floor_is_eighty_and_a_note_still_fits_in_it(self):
         view = self._chart_view()
@@ -968,7 +969,8 @@ class NoteSizeTests(WindowTestCase):
         normal, finisher = view.note_radii()
         self.assertNotAlmostEqual(finisher, before[1])
         self.assertAlmostEqual(normal, 88 * 0.22)
-        self.assertAlmostEqual(finisher, normal * gui.TAIKO_STRONG_SCALE)
+        self.assertAlmostEqual(
+            finisher, normal * gui.TAIKO_STRONG_SCALE * gui.TimelineGameplay.FINISHER_ENLARGE)
 
 
 class TimingBarMarkerTests(WindowTestCase):

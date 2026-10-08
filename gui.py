@@ -2060,6 +2060,11 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
     # drawn beside it.
     GIMMICK_NOTE_HEIGHT_FRACTIONS = (0.22, 0.15)
     GIMMICK_NOTE_RADIUS_MAX = 31.0
+    # A finisher a third bigger again than its scale below makes it, on both
+    # pages (owner, 2026-10-08): at the old size a big note in a dense row
+    # did not stand out from the small ones around it. The hit test reads
+    # the same radius, so the grab grows with it.
+    FINISHER_ENLARGE = 1.33
 
     def __init__(self) -> None:
         super().__init__()
@@ -2499,7 +2504,7 @@ class TimelineGameplay(TimeAxisMixin, QWidget):
             if getattr(self, "gimmick_layer", None) is not None
             else EDITOR_STRONG_SCALE
         )
-        return normal, normal * strong
+        return normal, normal * strong * self.FINISHER_ENLARGE
 
     def _note_near_x(self, x: float, radius_px: float | None = None, y: float | None = None):
         """Nearest note whose drawn circle covers `x`, for grabbing and deleting.
