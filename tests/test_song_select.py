@@ -517,6 +517,35 @@ class PageTests(unittest.TestCase):
         self.assertEqual(library.chart_preview.height(), round(natural * 0.67))
         self.assertFalse(library.chart_preview.follows_view_opacity)
 
+    def test_the_chart_preview_comes_and_goes_with_the_song(self):
+        # Like the difficulties (owner, 2026-10-08): an empty black band
+        # before anything was picked read as broken.
+        library = self.window._library
+        self.window.show()
+        self.window.song_list.setCurrentRow(-1)
+        self.assertFalse(library.chart_preview.isVisible())
+        self.window.song_list.setCurrentRow(0)
+        library.difficulty_changed()
+        library._load_chart_preview()
+        self.assertTrue(library.chart_preview.isVisible())
+        self.window.song_list.setCurrentRow(-1)
+        self.assertFalse(library.chart_preview.isVisible())
+
+    def test_the_song_select_stage_is_bare(self):
+        # Black, no skin bar, no cover past osu!'s edge (the gray strip on
+        # the right), and the hit target nearer the left than in game.
+        import gui
+
+        preview = self.window._library.chart_preview
+        preview.resize(900, 114)
+        self.assertTrue(preview.plain_stage)
+        self.assertEqual(preview.osu_edge_x(), 900.0)
+        editor_view = gui.GameplayViewerView()
+        editor_view.resize(900, 114)
+        self.assertLess(preview._hit_x(), editor_view._hit_x())
+        image = preview.grab().toImage()
+        self.assertEqual(image.pixelColor(899, 2).name(), "#000000")
+
     def test_stop_with_nothing_playing_is_harmless(self):
         self.window._library.rewind_preview()
 

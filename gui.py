@@ -181,9 +181,11 @@ PAGE_LIBRARY, PAGE_EDITOR, PAGE_GIMMICK, PAGE_FANCY = 0, 1, 2, 3
 # The app's accent, used by the global button style and anywhere a widget has
 # to reproduce it in code rather than in a stylesheet.
 ACCENT_PINK = "#f3a6bd"
-# The song select's Continue row: cards shown, paths remembered.
-RECENT_CHARTS_SHOWN = 3
-RECENT_CHARTS_KEPT = 8
+# The song select's Continue row: cards shown, paths remembered. The same
+# number since 2026-10-08 (owner): four cards of one size, and nothing kept
+# that no card will ever show.
+RECENT_CHARTS_SHOWN = 4
+RECENT_CHARTS_KEPT = RECENT_CHARTS_SHOWN
 
 # Points added to the system UI font. Applied to the QApplication font so it
 # reaches dialogs and honours DPI scaling, unlike a stylesheet pixel size.
@@ -5141,6 +5143,11 @@ class GameplayViewerView(QWidget):
         # The song select's preview sits on the detail pane, not on a page
         # backdrop, so Settings > View opacity is not about it.
         self.follows_view_opacity = True
+        # The song select's bare stage (owner, 2026-10-08): black, no skin
+        # playfield, no cover past osu!'s screen edge, and the hit target
+        # nearer the left -- a glance at the chart, not a picture of the game.
+        self.plain_stage = False
+        self.hit_x_units = GAMEPLAY_HIT_X_UNITS
 
     def resizeEvent(self, event) -> None:
         """Take the height that makes this view exactly an osu! screen.
@@ -5411,12 +5418,12 @@ class GameplayViewerView(QWidget):
         return self.height() * STABLE_UNIT_PER_PLAYFIELD * GAMEPLAY_STABLE_UNITS_PER_BEAT
 
     def _hit_x(self) -> float:
-        return self.height() * GAMEPLAY_HIT_X_UNITS / PLAYFIELD_UNIT
+        return self.height() * self.hit_x_units / PLAYFIELD_UNIT
 
     def osu_edge_x(self) -> float:
         """Where osu!'s screen ends: 16:9 of a screen whose playfield is this
         tall (see GAMEPLAY_LOCK_ASPECT). Beyond the view's width, the view."""
-        if not GAMEPLAY_LOCK_ASPECT:
+        if not GAMEPLAY_LOCK_ASPECT or self.plain_stage:
             return float(self.width())
         edge = self.height() * STABLE_UNIT_PER_PLAYFIELD * 480.0 * GAMEPLAY_MAX_ASPECT
         return min(float(self.width()), edge)
@@ -5641,9 +5648,13 @@ class GameplayViewerView(QWidget):
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
-        painter.fillRect(
-            self.rect(),
-            view_ground("#12161d") if self.follows_view_opacity else theme.color("#12161d"))
+        if self.plain_stage:
+            ground = QColor(0, 0, 0)
+        elif self.follows_view_opacity:
+            ground = view_ground("#12161d")
+        else:
+            ground = theme.color("#12161d")
+        painter.fillRect(self.rect(), ground)
 
         center_y = self.height() / 2
         normal_radius = self.height() * TAIKO_NOTE_SIZE / 2.0
@@ -5735,7 +5746,7 @@ class GameplayViewerView(QWidget):
             # The built-in stand-in for `taiko-bar-right-glow`: only drawn
             # when the skin has no kiai state of its own for the lane, or the
             # lane would be washed twice over.
-            if not self.skin.has("taiko-bar-right-glow"):
+            if self.plain_stage or not self.skin.has("taiko-bar-right-glow"):
                 playfield_alpha = round(PLAYFIELD_PULSE_ALPHA * pulse)
                 if playfield_alpha > 0:
                     painter.fillRect(self.rect(), QColor(255, 255, 255, playfield_alpha))
@@ -5923,6 +5934,8 @@ class GameplayViewerView(QWidget):
         and nothing is being judged there. Kiai shows as the notes pulsing and
         the lane taking its kiai state, both of which say something.
         """
+        if self.plain_stage:
+            return
         width, height = self.width(), self.height()
         skin = self.skin
         # `taiko-slider` (the scrolling background) is not drawn: owner's call,
@@ -6782,6 +6795,10 @@ BACKDROP_OPACITY_DEFAULT_PERCENT = 25
 SONG_SELECT_PREVIEW_DEFAULT_PERCENT = 67
 SONG_SELECT_PREVIEW_MIN_PERCENT = 50
 SONG_SELECT_PREVIEW_MAX_PERCENT = 75
+# Its hit target, in playfield units from the left: osu!'s is 256, which
+# leaves the input drum's width empty in a view that draws no drum. 120 still
+# clears a finisher's radius (73) with room for the target's rim.
+SONG_SELECT_HIT_X_UNITS = 120.0
 
 # Settings > View opacity: how much of each editor view's own ground covers
 # the page's map backdrop. 100 is the old look and the cheap path -- the lanes
@@ -10042,9 +10059,9 @@ def steady_readout(label: QLabel, widest: str = READOUT_WIDEST) -> None:
 ROW_ROLE = Qt.UserRole + 1
 ROW_INK, ROW_INK_2, ROW_INK_3 = "#e8edf3", "#aeb8c5", "#7d8794"
 ROW_HOVER, ROW_PINK_ON = "#2a3341", "#ff66aa"
-# The detail pane lists this many difficulties before it scrolls; the banner
-# takes the rest of the height.
-DIFFICULTY_SLOTS, DIFFICULTY_ROW_HEIGHT = 8, 48
+# The detail pane always has room for this many difficulties; the banner
+# takes the height up to 16:9 first, and the list whatever is past that.
+DIFFICULTY_SLOTS, DIFFICULTY_ROW_HEIGHT = 2, 48
 # The song list's wheel and arrow scrolling glide over this long.
 
 
@@ -10367,6 +10384,9 @@ class SongBanner(QWidget):
 
     def resizeEvent(self, event) -> None:
         self._scaled = {}
+        # Never taller than 16:9 of its width, a background's own shape
+        # (owner, 2026-10-08); the width is the splitter's, so this settles.
+        self.setMaximumHeight(max(self.MIN_HEIGHT, round(self.width() * 9 / 16)))
         super().resizeEvent(event)
 
     def paintEvent(self, event) -> None:
@@ -10436,18 +10456,31 @@ class ContinueCard(QFrame):
         self.version = QLabel()
         self.version.setStyleSheet(f"color: {ACCENT_PINK};")
         for label in (self.title, self.version):
-            label.setMaximumWidth(220)
+            # Ignored: the card's width is a share of the row, not its text's.
+            label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
             layout.addWidget(label)
         self.art: QPixmap | None = None
+        self._texts = ("", "")
 
     def show_chart(self, path: str, title: str, version: str, art: QPixmap | None = None) -> None:
         self.path = path
-        metrics = self.title.fontMetrics()
-        self.title.setText(metrics.elidedText(title, Qt.ElideRight, 220))
-        self.version.setText(self.version.fontMetrics().elidedText(version, Qt.ElideRight, 220))
+        self._texts = (title, version)
+        self._elide()
         self.art = art
         self.setToolTip(path)
         self.update()
+
+    def _elide(self) -> None:
+        room = max(0, self.contentsRect().width() - 20)
+        for label, text in zip((self.title, self.version), self._texts):
+            # The title is bold by stylesheet, which font() does not report.
+            font = QFont(label.font())
+            font.setBold(label is self.title)
+            label.setText(QFontMetrics(font).elidedText(text, Qt.ElideRight, room))
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._elide()
 
     def paintEvent(self, event) -> None:
         super().paintEvent(event)  # the sheet's fill and rim
@@ -10601,7 +10634,6 @@ class LibraryPageController:
         self.library_search.setClearButtonEnabled(True)
         self.library_search.setMinimumWidth(240)
         self.library_search.textChanged.connect(lambda _text: self.rebuild_song_list())
-        top.addWidget(self.library_search, 1)
 
         # The combos are the model the pills drive: everything that reads the
         # grouping or the sort (and the tests) reads them.
@@ -10690,8 +10722,23 @@ class LibraryPageController:
         folder_menu.setToolTipsVisible(True)
         self.library_folder_label.setMenu(folder_menu)
         self.set_folder_text("")
+        top.addStretch(1)
         top.addWidget(self.library_folder_label)
-        layout.addLayout(top)
+
+        # Two columns (owner, 2026-10-08): the search, Continue and the song
+        # list share one width on the left, so the list is exactly as wide as
+        # the box that filters it; the pills head the right, and the detail
+        # pane rises to sit right under them.
+        left = QWidget()
+        left_layout = QVBoxLayout(left)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(8)
+        left_layout.addWidget(self.library_search)
+        right = QWidget()
+        right_layout = QVBoxLayout(right)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(8)
+        right_layout.addLayout(top)
 
         # Continue: the last charts opened here, one click from reopening.
         self.continue_row = QWidget()
@@ -10706,9 +10753,14 @@ class LibraryPageController:
         self.continue_cards = [ContinueCard() for _ in range(RECENT_CHARTS_SHOWN)]
         for card in self.continue_cards:
             card.clicked.connect(self.show_recent)
-            continue_layout.addWidget(card)
-        continue_layout.addStretch(1)
-        layout.addWidget(self.continue_row)
+            # One size each, the column's width shared out, and the same size
+            # with fewer recent charts than cards: a hidden card keeps its slot.
+            policy = card.sizePolicy()
+            policy.setHorizontalPolicy(QSizePolicy.Ignored)
+            policy.setRetainSizeWhenHidden(True)
+            card.setSizePolicy(policy)
+            continue_layout.addWidget(card, 1)
+        left_layout.addWidget(self.continue_row)
 
         split = QSplitter(Qt.Horizontal)
         split.setChildrenCollapsible(False)
@@ -10732,7 +10784,8 @@ class LibraryPageController:
         self._beat_elapsed.start()
         self.song_list.currentRowChanged.connect(self.song_selected)
         self.song_list.itemActivated.connect(lambda _item: self.difficulty_list.setFocus())
-        split.addWidget(self.song_list)
+        left_layout.addWidget(self.song_list, 1)
+        split.addWidget(left)
 
         detail = QFrame()
         detail.setObjectName("songDetail")
@@ -10740,13 +10793,21 @@ class LibraryPageController:
         detail_layout.setContentsMargins(0, 0, 0, 0)
         detail_layout.setSpacing(0)
         self.song_banner = SongBanner()
-        detail_layout.addWidget(self.song_banner, 1)
+        # Far the larger stretch: the banner takes the height first, up to
+        # 16:9 of its width (SongBanner.resizeEvent), and the difficulty list
+        # has what is left past that.
+        detail_layout.addWidget(self.song_banner, 100)
         # The selected difficulty, scrolling as it does in game -- SV, BPM and
         # SliderMultiplier, the editor's own preview -- at a share of its
         # usual height (owner's call, 2026-10-07: 67% by default, 50-75%).
         # It follows this page's song, not the editor's.
         self.chart_preview = GameplayViewerView()
         self.chart_preview.follows_view_opacity = False
+        self.chart_preview.plain_stage = True
+        self.chart_preview.hit_x_units = SONG_SELECT_HIT_X_UNITS
+        # Shown with the first chart it has to show, like the difficulties:
+        # before a song is picked it was an empty black band.
+        self.chart_preview.hide()
         self.chart_preview.setAttribute(Qt.WA_OpaquePaintEvent, True)
         self.chart_preview.setFocusPolicy(Qt.NoFocus)  # the arrows are the lists'
         self.chart_preview.setMinimumHeight(0)
@@ -10786,11 +10847,10 @@ class LibraryPageController:
         self.difficulty_list.currentItemChanged.connect(lambda *_: self.difficulty_changed())
         # Eased like the song list: every vertical scroll in the program is.
         self.difficulty_scroller = SmoothScroller(self.difficulty_list)
-        # Room for DIFFICULTY_SLOTS rows and no more: a set is 5-7
-        # difficulties at most, and every pixel past that is the banner's.
-        # A bigger set scrolls.
-        self.difficulty_list.setFixedHeight(DIFFICULTY_SLOTS * DIFFICULTY_ROW_HEIGHT + 14)
-        detail_layout.addWidget(self.difficulty_list)
+        # Whatever the 16:9 banner leaves, and never fewer than
+        # DIFFICULTY_SLOTS rows: a bigger set scrolls.
+        self.difficulty_list.setMinimumHeight(DIFFICULTY_SLOTS * DIFFICULTY_ROW_HEIGHT + 14)
+        detail_layout.addWidget(self.difficulty_list, 1)
         # The selected row's rim is alive in the list that has the keys:
         # one rect repainted per frame, only while the list is on screen.
         for rows in (self.song_list, self.difficulty_list):
@@ -10804,7 +10864,8 @@ class LibraryPageController:
         self.open_difficulty_button.clicked.connect(self.open_selected_difficulty)
         actions_layout.addWidget(self.open_difficulty_button)
         detail_layout.addWidget(actions)
-        split.addWidget(detail)
+        right_layout.addWidget(detail, 1)
+        split.addWidget(right)
         split.setStretchFactor(0, 145)
         split.setStretchFactor(1, 100)
         split.setSizes([740, 510])
@@ -10863,7 +10924,9 @@ class LibraryPageController:
 
     def set_folder_text(self, folder: str) -> None:
         metrics = self.library_folder_label.fontMetrics()
-        shown = metrics.elidedText(folder, Qt.ElideMiddle, 260) if folder else tr("MainWindow", "Songs folder")
+        # 160, not 260: this row heads the right column now, and its width is
+        # that column's minimum -- at 1366 wide the song list had 360px.
+        shown = metrics.elidedText(folder, Qt.ElideMiddle, 160) if folder else tr("MainWindow", "Songs folder")
         self.library_folder_label.setText(f"{shown}  ▾")
         self.library_folder_label.setToolTip(folder)
 
@@ -11332,6 +11395,10 @@ class LibraryPageController:
         item = self.song_list.item(row)
         if item is None or item.data(Qt.UserRole) is None:
             self.update_open_button()
+            # No song, no chart: the preview goes with the difficulties.
+            self.chart_preview.hide()
+            self.chart_frame.stop()
+            self._chart_shown = self._chart_pending = None
             return  # a group header
         folder = Path(item.data(Qt.UserRole))
         # A different song, not the same one re-listed by a search keystroke.
@@ -11539,6 +11606,7 @@ class LibraryPageController:
             self._chart_documents[path] = document
         self._chart_shown = path
         self.chart_preview.refresh_notes(document)
+        self.chart_preview.show()
         self._tick_chart_preview(force=True)
         self.chart_frame.start()
 
