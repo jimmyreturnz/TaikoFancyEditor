@@ -388,6 +388,22 @@ class ViewReorderTests(_GimmickFixture, unittest.TestCase):
         self.assertEqual(self._order(), [before[1], before[0], *before[2:]])
         self.assertEqual([f.gimmick_layer for f in self.window._gimmick_views], self._order())
 
+    def test_focusing_a_view_leaves_its_lane_where_it_was(self):
+        """The rim used to inset the lane 2px a side, which narrowed it and
+        moved every snap tick off-centre (owner, 2026-10-08). The others fade
+        while one is focused, on that page only."""
+        frames = self.window._gimmick_views
+        before = frames[0].content.geometry()
+        self.window._mark_focused_view(frames[0].content)
+        QApplication.processEvents()
+        self.assertTrue(frames[0].focused)
+        self.assertEqual(frames[0].content.geometry(), before)
+        self.assertFalse(frames[0].dimmed)
+        self.assertTrue(all(frame.dimmed for frame in frames[1:]))
+        self.window._mark_focused_view(frames[1].content)
+        self.assertTrue(frames[0].dimmed)
+        self.assertFalse(frames[1].dimmed)
+
     def test_escape_puts_the_view_back(self):
         before = self._order()
         self._drag(self._frame(before[0]), 2.5, cancel=True)

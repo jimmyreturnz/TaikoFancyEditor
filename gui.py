@@ -6629,9 +6629,14 @@ class EditorViewFrame(QWidget):
     # The approved mockup's focused lane: a 2px rim in the theme's focus colour
     # rather than a 1px one in a muted shade of it, which beside the other
     # lanes' 1px #303947 read as no difference at all.
-    # The 2px rim itself is painted (paintEvent), so it can carry the same
-    # running lights as the song list's selection.
-    FOCUSED_FRAME_STYLE = "background: {ground}; border: 2px solid transparent; border-radius: 0;"
+    # The 2px rim is drawn *over* the view by `_FrameOverlay`, so it can carry
+    # the song list's running lights -- and so focusing a view changes nothing
+    # about its box. It used to inset the lane by 2px a side, which narrowed
+    # it by 4px and slid every snap tick off-centre (owner, 2026-10-08).
+    # How far the other views fade while one is focused (owner, 2026-10-08):
+    # a wash of the page's own ground over them, not View opacity, which is
+    # how much of the map shows through and stays as set.
+    UNFOCUSED_WASH = 0.45
     HEADER_STYLE = "QWidget#viewHeader { border: 0; border-right: 1px solid #303947; border-radius: 0; }"
     # The song select's selection: a pink rim at the left edge and a tint.
     FOCUSED_HEADER_STYLE = (
@@ -6745,6 +6750,8 @@ class EditorViewFrame(QWidget):
             button.setCursor(Qt.ArrowCursor)
         self._drag_from: QPoint | None = None
         self.header.installEventFilter(self)
+        self.dimmed = False
+        self._overlay = _FrameOverlay(self)
 
     def eventFilter(self, watched, event) -> bool:
         if watched is not self.header:
@@ -6767,16 +6774,26 @@ class EditorViewFrame(QWidget):
         return QRegion(outer).subtracted(QRegion(outer.adjusted(2, 2, -2, -2)))
 
     def _repaint_rim(self) -> None:
-        # The rim only: the lanes inside are repainted by the playhead, and
+        # The rim only: the lanes under it are repainted by the playhead, and
         # a frame-wide update here would repaint them all a second time.
         if self.focused:
-            self.update(self._rim_region())
+            self._overlay.update(self._rim_region())
 
-    def paintEvent(self, event) -> None:
-        super().paintEvent(event)
-        if self.focused:
-            painter = QPainter(self)
-            paint_living_rim(painter, QRectF(self.rect()), 0, 2, True)
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._overlay.setGeometry(self.rect())
+
+    def _show_overlay(self) -> None:
+        # Hidden when it has nothing to draw, so an ordinary view pays nothing.
+        self._overlay.setVisible(self.focused or self.dimmed)
+        self._overlay.raise_()
+        self._overlay.update()
+
+    def set_dimmed(self, dimmed: bool) -> None:
+        """Fade this view while another one on its page is focused."""
+        if dimmed != self.dimmed:
+            self.dimmed = dimmed
+            self._show_overlay()
 
     def showEvent(self, event) -> None:
         # Measured after polish (and after parenting, which is what makes the
@@ -6802,14 +6819,8 @@ class EditorViewFrame(QWidget):
         if focused == self.focused:
             return
         self.focused = focused
-        self.setStyleSheet(self._frame_style())
         self.header.setStyleSheet(self.FOCUSED_HEADER_STYLE if focused else self.HEADER_STYLE)
-        # Inset by the rim's width, or the 2px border is half under the view;
-        # unfocused, only the divider underneath.
-        if focused:
-            self.layout().setContentsMargins(2, 2, 2, 2)
-        else:
-            self.layout().setContentsMargins(0, 0, 0, 1)
+        self._show_overlay()
         # The caption names what is focused, in the accent, as in the mockup.
         self.kind_label.setStyleSheet(self._caption_style(focused))
         self.difficulty_name_label.setStyleSheet(self._name_style(focused))
@@ -6817,7 +6828,7 @@ class EditorViewFrame(QWidget):
     def _frame_style(self) -> str:
         ground = view_ground("#1b212b")
         rgba = f"rgba({ground.red()}, {ground.green()}, {ground.blue()}, {ground.alpha()})"
-        return (self.FOCUSED_FRAME_STYLE if self.focused else self.FRAME_STYLE).format(ground=rgba)
+        return self.FRAME_STYLE.format(ground=rgba)
 
     def refresh_ground(self) -> None:
         """Re-read View opacity (`set_view_opacity`)."""
@@ -6835,12 +6846,36 @@ class EditorViewFrame(QWidget):
     def set_content(self, widget: QWidget) -> None:
         self.content = widget
         self._content_layout.addWidget(widget)
+        self._overlay.raise_()  # a child added later stacks above it
 
     def _set_locked(self, locked: bool) -> None:
         self.locked = locked
         if self.content is not None:
             self.content.setEnabled(not locked)
         self.controls.setVisible(locked or self.underMouse())
+
+
+class _FrameOverlay(QWidget):
+    """What lies over a view without being part of it: the focused view's
+    living rim, or the wash that fades the others. Takes no input and has no
+    layout space, so neither changes where anything in the view is."""
+
+    def __init__(self, frame: EditorViewFrame) -> None:
+        super().__init__(frame)
+        self.frame = frame
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.setAttribute(Qt.WA_NoSystemBackground, True)
+        self.hide()
+
+    def paintEvent(self, event) -> None:
+        frame = self.frame
+        painter = QPainter(self)
+        if frame.focused:
+            paint_living_rim(painter, QRectF(self.rect()), 0, 2, True)
+        elif frame.dimmed:
+            wash = theme.color("#11151c")
+            wash.setAlphaF(EditorViewFrame.UNFOCUSED_WASH)
+            painter.fillRect(event.rect(), wash)
 
 
 BACKDROP_OPACITY_DEFAULT_PERCENT = 25
@@ -14458,8 +14493,16 @@ class MainWindow(QMainWindow):
 
     def _mark_focused_view(self, view) -> None:
         """Rim the frame holding `view`, the one the tool row now acts on."""
-        for frame in (*self._editor_views, *self._gimmick_views):
+        frames = (*self._editor_views, *self._gimmick_views)
+        for frame in frames:
             frame.set_focused(frame.isAncestorOf(view))
+        # The rest fade, on the focused view's own page only -- the other
+        # page's views are not the ones being looked at.
+        focused = next((f for f in frames if f.focused), None)
+        page = next((column.parentWidget() for column in (self.editor_views_layout, self.gimmick_views_layout)
+                     if focused is not None and column.parentWidget().isAncestorOf(focused)), None)
+        for frame in frames:
+            frame.set_dimmed(not frame.focused and page is not None and page.isAncestorOf(frame))
 
     def _show_gimmick_row_for(self, view) -> None:
         """Bring up the toolbox belonging to the layer that just got focus."""
