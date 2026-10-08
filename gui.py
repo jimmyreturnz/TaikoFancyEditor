@@ -10478,6 +10478,9 @@ class ContinueCard(QFrame):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 5, 10, 5)
         layout.setSpacing(0)
+        # The words at the foot, as on the banner: the card is as tall as its
+        # art's 16:9 now, and the art is what fills the top of it.
+        layout.addStretch(1)
         self.title = QLabel()
         self.title.setStyleSheet(f"font-weight: 700; color: {ROW_INK};")
         self.version = QLabel()
@@ -10507,6 +10510,12 @@ class ContinueCard(QFrame):
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
+        # 16:9 of its width, a background's own shape (owner, 2026-10-08),
+        # and never too short for its two lines. Height follows width only,
+        # so this settles in one pass.
+        height = max(self.layout().minimumSize().height(), round(self.width() * 9 / 16))
+        if height != self.height():
+            self.setFixedHeight(height)
         self._elide()
 
     def paintEvent(self, event) -> None:
