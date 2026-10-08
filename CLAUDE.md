@@ -539,8 +539,14 @@ there -- `timing_delete_enabled`, not `timing_edit_enabled`.
   `QWidget.setStyleSheet` and by `theme.color()` in paint code -- so a new
   stylesheet is themed for free, but a new `QColor("#...")` of a chrome
   colour must be `theme.color("#...")`. Chart colours (notes, snap ticks, SV
-  green) are deliberately not keys. Read once at import, so a change needs a
-  restart; the test suite is pinned to pink in `tests/__init__.py`.
+  green) are deliberately not keys. A theme switches live (`theme.switch` +
+  `MainWindow.retheme`): every sheet is re-translated from the source the
+  wrapper keeps (`themeSource`), so **never re-set a sheet from
+  `styleSheet()`** -- that is the translation, and it pins the colours to
+  whichever theme was active. Append to `property(theme.SOURCE_PROPERTY)`.
+  A colour computed once and kept (a mixed colour in a sheet, a cached
+  layer) must be redone in `retheme`. The test suite is pinned to pink in
+  `tests/__init__.py`.
 - **SV is typed to 8 decimals and shown at 2.** `SV_DECIMALS` is the spin-box
   precision, not the label's: under a 60000 BPM red line the SV that moves a
   note a visible distance differs from its neighbour in the seventh decimal, so
@@ -559,14 +565,13 @@ there -- `timing_delete_enabled`, not `timing_edit_enabled`.
   wheel seek, placement. `osu_round` (nearest, halves up) is left for the one
   thing that is not a beat position: the millisecond under the cursor for Ctrl
   placement.
-- **`taiko_arranger/taiko_arranger/` is a stale untracked copy.** It will
-  pollute any repo-wide search.
 - **Tests: run per file in parallel**, not `unittest discover`. Discover in one
-  process still runs for tens of minutes; per file finishes in about 70s:
+  process still runs for tens of minutes. Three at a time, not six: six made
+  the owner's machine lag while he was using it (2026-10-08).
 
   ```
   ls tests/test_*.py | sed 's#/#.#;s#\.py$##' \
-    | QT_QPA_PLATFORM=offscreen xargs -P 6 -I{} .venv/Scripts/python.exe -m unittest {}
+    | QT_QPA_PLATFORM=offscreen xargs -P 3 -I{} .venv/Scripts/python.exe -m unittest {}
   ```
 
 - **A test that passes can still prove nothing.** `QObject.receivers()` reports
