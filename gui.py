@@ -7,6 +7,7 @@ import csv
 import shutil
 import sys
 from bisect import bisect_left, bisect_right
+from concurrent.futures import ThreadPoolExecutor, wait as futures_wait
 from dataclasses import replace
 from functools import lru_cache
 from contextlib import contextmanager
@@ -16,25 +17,30 @@ from pathlib import Path
 import struct
 import json
 from time import perf_counter, time as wall_clock
+from types import SimpleNamespace
 from typing import Any
 
 from PySide6.QtCore import (
-    QByteArray, QElapsedTimer, QEvent, QLine, QObject, QVariantAnimation, QPointF, QPropertyAnimation, QRect, QRectF, QSize, QStandardPaths, Qt, QEasingCurve,
+    QByteArray, QCoreApplication, QElapsedTimer, QEvent, QLine, QObject, QVariantAnimation, QPoint, QPointF, QPropertyAnimation, QRect, QRectF, QSize, QStandardPaths, Qt, QEasingCurve,
     QTimer,
     QUrl, Signal,
 )
-from PySide6.QtGui import QImageReader, QRegion, QBrush, QColor, QFont, QFontDatabase, QFontMetrics, QKeySequence, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap, QPolygonF, QRadialGradient, QShortcut, QIcon
+from PySide6.QtGui import QImage, QImageReader, QRegion, QBrush, QColor, QFont, QFontDatabase, QFontMetrics, QKeySequence, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap, QPolygonF, QRadialGradient, QShortcut, QIcon
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QAbstractItemView, QAbstractSlider, QAbstractSpinBox, QApplication, QButtonGroup, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame,
     QBoxLayout, QGraphicsOpacityEffect, QGridLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QMainWindow, QMessageBox,
     QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QTextEdit,
-    QSlider, QSpacerItem, QSpinBox, QSplitter, QStackedWidget, QStyle, QStyleOptionButton, QStyledItemDelegate, QTabWidget, QToolButton, QVBoxLayout, QWidget, QDockWidget, QMenu, QDialog, QDialogButtonBox, QFontComboBox, QSizePolicy
+    QSlider, QSpacerItem, QSpinBox, QSplitter, QStackedWidget, QStyle, QStyleOptionButton, QStyledItemDelegate, QTabWidget,
+    QTableWidget, QTableWidgetItem, QToolButton, QVBoxLayout, QWidget, QDockWidget, QMenu, QDialog, QDialogButtonBox, QFontComboBox, QSizePolicy
 )
 
 import osu_db
-from motion import HoverSheen, MorphRect, ReorderDrag, paint_living_rim, tick_while_shown
+from motion import (
+    SEGMENT_GLIDE_STYLE, HoverSheen, MorphRect, PageSlide, PlayPauseGlyph, PressRipple, ReorderDrag, RowEntrance,
+    ScanShimmer, SegmentGlide, SelectionGlide, out_cubic, paint_living_rim, tick_while_shown,
+)
 from smooth_scroll import SMOOTH_SCROLL_MS, SmoothScroller, reduced_motion, smooth
 from config_sheet import (
     SEGMENT_STYLE, WARN_COLOR, Diagram, SheetDialog, TrimmedDoubleSpinBox, bind_segments, scrub_label,
@@ -75,9 +81,12 @@ from osu_io.timing import (
 )
 from osu_io.writer import write_osu
 from song_library import (
-    group_by_song, heard_tempo, load_cache, matches_search, read_header, save_cache, scan,
+    group_by_song, heard_tempo, load_cache, matches_search, most_common_bpm, read_header, save_cache, scan,
     songs_from_cache,
 )
+from song_library import most_common_beat_length as library_common_beat_length
+import sv_curves
+from sv_curves import _true_exp_ease, sv_ease
 from time_axis import (
     KIAI_OPEN_END_MS, SNAP_DIVISORS, TimeAxisMixin, osu_round, osu_snap_ms, own_divisor,
     resnap_time, snap_time, wheel_seek_time,
@@ -96,6 +105,7 @@ from gimmick_session import (
     fake_slider as gimmick_fake_slider,
     format_length as gimmick_format_length,
     hidden_anti_barline as gimmick_hidden_anti_barline,
+    keep_sv as gimmick_keep_sv,
     red_line as gimmick_red_line,
     sv_restore_point,
     gimmick_path_for,
@@ -181,11 +191,12 @@ PAGE_LIBRARY, PAGE_EDITOR, PAGE_GIMMICK, PAGE_FANCY = 0, 1, 2, 3
 # The app's accent, used by the global button style and anywhere a widget has
 # to reproduce it in code rather than in a stylesheet.
 ACCENT_PINK = "#f3a6bd"
-# The song select's Continue row: cards shown, paths remembered. The same
-# number since 2026-10-08 (owner): four cards of one size, and nothing kept
-# that no card will ever show.
+# The song select's Continue row: cards shown, paths remembered. Four cards of
+# one size (owner, 2026-10-08), filled from a longer memory: a chart deleted or
+# moved since is skipped, and with only four kept the row came up a card short
+# until four more were opened (owner, 2026-10-09: "up to 4 continue cards").
 RECENT_CHARTS_SHOWN = 4
-RECENT_CHARTS_KEPT = RECENT_CHARTS_SHOWN
+RECENT_CHARTS_KEPT = 16
 
 # Points added to the system UI font. Applied to the QApplication font so it
 # reaches dialogs and honours DPI scaling, unlike a stylesheet pixel size.
@@ -5194,6 +5205,12 @@ class GameplayViewerView(QWidget):
         # playfield, no cover past osu!'s screen edge, and the hit target
         # nearer the left -- a glance at the chart, not a picture of the game.
         self.plain_stage = False
+        # The chart's opacity, apart from the playfield's: song select fades
+        # one chart out and the next in (owner, 2026-10-09) while the stage
+        # and the hit target stay put. Barlines and notes; never the lane.
+        self.chart_opacity = 1.0
+        self._chart_fade: QVariantAnimation | None = None
+        self._chart_fade_then = None
         self.hit_x_units = GAMEPLAY_HIT_X_UNITS
 
     def resizeEvent(self, event) -> None:
@@ -5216,6 +5233,31 @@ class GameplayViewerView(QWidget):
             self.setFixedHeight(height)
             if self.height_changed is not None:
                 self.height_changed(height)
+
+    def fade_chart(self, to: float, duration_ms: int, then=None) -> None:
+        """Take `chart_opacity` to `to` over `duration_ms`, eased out, and
+        call `then` once it is there. At once under reduced motion."""
+        if self._chart_fade is None:
+            self._chart_fade = QVariantAnimation(self)
+            self._chart_fade.setEasingCurve(QEasingCurve.OutCubic)
+            self._chart_fade.valueChanged.connect(self._set_chart_opacity)
+            self._chart_fade.finished.connect(lambda: self._chart_fade_then and self._chart_fade_then())
+        fade = self._chart_fade
+        fade.stop()  # a fade cut short never calls its `then`
+        self._chart_fade_then = then
+        if reduced_motion() or duration_ms <= 0 or not self.isVisible():
+            self._set_chart_opacity(to)
+            if then is not None:
+                then()
+            return
+        fade.setStartValue(self.chart_opacity)
+        fade.setEndValue(float(to))
+        fade.setDuration(duration_ms)
+        fade.start()
+
+    def _set_chart_opacity(self, value) -> None:
+        self.chart_opacity = float(value)
+        self.update()
 
     # -- document ------------------------------------------------------------
 
@@ -5731,6 +5773,8 @@ class GameplayViewerView(QWidget):
         after_last = bisect_right(self.note_times, end_time)
 
         painter.setRenderHint(QPainter.Antialiasing, False)
+        # The chart fades (fade_chart); the playfield drawn above does not.
+        painter.setOpacity(self.chart_opacity)
         marker = self.skin.stretched(
             "taiko-barline",
             max(1, round(self.height() * PLAYFIELD_BARLINE_WIDTH)),
@@ -5750,6 +5794,7 @@ class GameplayViewerView(QWidget):
             else:
                 painter.drawLine(round(x), top, round(x), bottom)
 
+        painter.setOpacity(1.0)
         painter.setRenderHint(QPainter.Antialiasing, True)
         if not self._draw_centred(
             painter, "approachcircle", hit_x, center_y,
@@ -5767,6 +5812,7 @@ class GameplayViewerView(QWidget):
         # underlay beneath all of it (TaikoPlayfield), drumrolls and spinners
         # included -- they share the one container with the notes.
         painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.setOpacity(self.chart_opacity)
         visible = list(enumerate(self.notes[first:after_last], first))
         visible.sort(key=lambda item: (-item[1].time, -item[0]))
         for _index, note in visible:
@@ -5796,7 +5842,9 @@ class GameplayViewerView(QWidget):
             if self.plain_stage or not self.skin.has("taiko-bar-right-glow"):
                 playfield_alpha = round(PLAYFIELD_PULSE_ALPHA * pulse)
                 if playfield_alpha > 0:
+                    painter.setOpacity(1.0)  # the lane lights whatever the chart is doing
                     painter.fillRect(self.rect(), QColor(255, 255, 255, playfield_alpha))
+                    painter.setOpacity(self.chart_opacity)
             for note in self.notes[first:after_last]:
                 end_time = self._note_end_time(note)
                 hit = self._has_been_hit(note)
@@ -5827,7 +5875,7 @@ class GameplayViewerView(QWidget):
                     alpha = self.hidden_alpha(x) if note.is_circle else 1.0
                     if alpha > 0.0:
                         painter.save()
-                        painter.setOpacity(alpha)
+                        painter.setOpacity(painter.opacity() * alpha)
                         draw_kiai_flash(
                             painter, x, center_y, radius, pulse, strength, self.skin, big,
                             colour=KIAI_CIRCLE_PULSE_COLOR if note.is_circle else KIAI_PULSE_COLOR)
@@ -5854,6 +5902,7 @@ class GameplayViewerView(QWidget):
                             painter, max(end_x, x), center_y, radius, pulse,
                             strength, self.skin, big, "taiko-roll-end", True,
                         )
+        painter.setOpacity(1.0)
         self._draw_flashlight(painter)
         self._draw_past_osu_edge(painter)
 
@@ -5961,7 +6010,7 @@ class GameplayViewerView(QWidget):
             return
         if alpha < 1.0:
             painter.save()
-            painter.setOpacity(alpha)
+            painter.setOpacity(painter.opacity() * alpha)
         draw_note_sprite(
             painter, self.kat_brush if note.is_kat else self.don_brush, self.note_pen,
             x, center_y, radius, self.skin,
@@ -6340,31 +6389,10 @@ DENSITY_FULL_BEATS = 4
 
 
 def most_common_beat_length(points, last_time: float) -> float | None:
-    """The beat length of the red line in force for the most time up to
-    `last_time` (the last object): osu!lazer's
-    `BeatmapExtensions.GetMostCommonBeatLength`, which its song select shows as
-    "BPM a-b (mostly c)". aleph-0 switches between 250, 400 and 140, and is
-    "mostly 250".
-
-    As lazer counts it: the first line from 0, each until the next, the last
-    until `last_time`, and a line after the last object counts for nothing.
-    Beat lengths are compared to a thousandth so float noise does not split
-    one tempo in two.
-    """
-    points = [point for point in points if point.uninherited and point.beat_length > 0]
-    if not points:
-        return None
-    spans: dict[float, float] = {}
-    for index, point in enumerate(points):
-        if point.time > last_time:
-            continue
-        start = 0.0 if index == 0 else point.time
-        end = last_time if index == len(points) - 1 else min(points[index + 1].time, last_time)
-        key = round(point.beat_length, 3)
-        spans[key] = spans.get(key, 0.0) + max(0.0, end - start)
-    if not spans:
-        return points[0].beat_length
-    return max(spans.items(), key=lambda item: item[1])[0]
+    """`song_library.most_common_beat_length` over timing points: the density
+    view's tempo and the difficulty rows' "(250)" are one rule."""
+    return library_common_beat_length(
+        [(point.time, point.beat_length) for point in points if point.uninherited], last_time)
 
 
 def density_bars(times, duration_ms: float, beat_length: float | None) -> list[tuple[float, float, float]]:
@@ -6848,7 +6876,12 @@ class EditorViewFrame(QWidget):
         self._overlay.update()
 
     def set_dimmed(self, dimmed: bool) -> None:
-        """Fade this view while another one on its page is focused."""
+        """Fade this view while another one on its page is focused.
+
+        Never the gameplay preview (owner, 2026-10-09): it is watched, not
+        edited, and the point of it is seeing the result of an edit made in
+        another view -- the moment that faded it."""
+        dimmed = dimmed and self.view_type != "gameplay"
         if dimmed != self.dimmed:
             self.dimmed = dimmed
             self._show_overlay()
@@ -8228,13 +8261,21 @@ class ConvertNotesDialog(SheetDialog):
     HIDDEN = "hidden"
 
     def __init__(self, config: GimmickConfig, layer_id: str = "barline", parent=None,
-                 start_ms: float | None = None, end_ms: float | None = None) -> None:
+                 start_ms: float | None = None, end_ms: float | None = None,
+                 sv_inputs=None, experimental: bool = False) -> None:
         subtitle = tr("MainWindow", "These numbers are for this conversion only; the layer's Config is not changed.")
         if start_ms is not None and end_ms is not None:
             subtitle = tr("MainWindow", "Range: {0} to {1}").format(
                 format_time(round(start_ms)), format_time(round(end_ms))) + ". " + subtitle
-        super().__init__(tr("MainWindow", "Convert notes"), subtitle, action=tr("MainWindow", "Convert"),
-                         rail=False, parent=parent)
+        title = tr("MainWindow", "Experimental Conversion") if experimental else tr("MainWindow", "Convert notes")
+        super().__init__(title, subtitle, action=tr("MainWindow", "Convert"), rail=False, parent=parent)
+        # Keep SV (owner, 2026-10-09): (timing points, notes, start, end) to
+        # read the chart's own SV from. `experimental` is the whole-map
+        # converter: Keep SV always on, and no hidden anti-barline.
+        self._sv_inputs = sv_inputs
+        self.experimental = experimental
+        self._runs: dict[str, list] = {}
+        self._table_mode: str | None = None
         self._base = config
         self.layer_id = layer_id
         icon = application_icon()
@@ -8249,20 +8290,25 @@ class ConvertNotesDialog(SheetDialog):
             # Literal tr() calls, one per option -- see AddViewDialog on the gate.
             self.mode_combo.addItem(tr("MainWindow", "Barline notes"), self.STRUCTURE)
             self.mode_combo.addItem(tr("MainWindow", "Anti-barline"), self.ANTI)
-            self.mode_combo.addItem(tr("MainWindow", "Hidden anti-barline"), self.HIDDEN)
             tiles = [
                 (tr("MainWindow", "Barline notes") + "\n" + tr("MainWindow", "Each note drawn out of bars."),
                  _tile_picture(paint_barline_notes, config)),
                 (tr("MainWindow", "Anti-barline") + "\n" + tr("MainWindow", "Each note is a slit."),
                  _tile_picture(paint_anti_barline, config)),
-                (tr("MainWindow", "Hidden anti-barline") + "\n" + tr("MainWindow", "SV opens the slits."),
-                 _tile_picture(paint_hidden_anti_barline, config)),
             ]
+            if not experimental:
+                self.mode_combo.addItem(tr("MainWindow", "Hidden anti-barline"), self.HIDDEN)
+                tiles.append(
+                    (tr("MainWindow", "Hidden anti-barline") + "\n" + tr("MainWindow", "SV opens the slits."),
+                     _tile_picture(paint_hidden_anti_barline, config)))
             picker = sheet.field(tr("MainWindow", "Convert to"), bind_tiles(self.mode_combo, tiles))
             sheet.add_widget(picker)
             self._barline_page(config)
             self._anti_page(config)
-            self._hidden_page(config)
+            if not experimental:
+                self._hidden_page(config)
+            if sv_inputs is not None:
+                self._curves_page()
         else:
             self.mode_combo.addItem(tr("MainWindow", "Fake sliders"), self.STRUCTURE)
             self._fake_slider_page(config)
@@ -8285,8 +8331,102 @@ class ConvertNotesDialog(SheetDialog):
     # -- pages ---------------------------------------------------------------
 
     def _show_mode(self, _index: int = 0) -> None:
-        self.sheet.show_only({self.mode()})
+        keys = {self.mode()}
+        if self._curves_wanted():
+            keys.add("curves")
+            self._fill_curves()
+        self.sheet.show_only(keys)
         self._changed()
+
+    # -- Keep SV -------------------------------------------------------------
+
+    def _curve_choices(self) -> list[tuple[str, str]]:
+        """What a run can be told it is: Generate SV's curves, by its names,
+        and the chart's own step."""
+        return [
+            (sv_curves.STEP, tr("MainWindow", "Step")),
+            ("linear", tr("MainWindow", "Linear")),
+            ("sin_in", tr("MainWindow", "Sin In")),
+            ("sin_out", tr("MainWindow", "Sin Out")),
+            ("exp1.3", tr("MainWindow", "Exp 1.3")),
+            ("exp1.6", tr("MainWindow", "Exp 1.6")),
+            ("true_exp", tr("MainWindow", "True Exp")),
+            ("sin", tr("MainWindow", "Sin")),
+        ]
+
+    def _curves_page(self) -> None:
+        section = self.sheet.add_section("curves", tr("MainWindow", "Detected SV curves"), tr(
+            "MainWindow", "Each run of green lines and the curve it follows. Change one if the guess is wrong."))
+        self.curve_table = QTableWidget(0, 4)
+        self.curve_table.setHorizontalHeaderLabels([
+            tr("MainWindow", "Time"), tr("MainWindow", "SV"), tr("MainWindow", "Curve"), tr("MainWindow", "Notes")])
+        self.curve_table.verticalHeader().hide()
+        self.curve_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.curve_table.setSelectionMode(QAbstractItemView.NoSelection)
+        self.curve_table.horizontalHeader().setStretchLastSection(True)
+        self.curve_table.setMinimumHeight(240)
+        smooth(self.curve_table)
+        section.add(self.curve_table, 2)
+
+    def _curves_wanted(self) -> bool:
+        if self._sv_inputs is None or self.mode() == self.HIDDEN:
+            return False
+        if self.experimental:
+            return True
+        return self.mode() == self.STRUCTURE and self.keep_sv_check.isChecked()
+
+    def _sv_mode(self) -> str:
+        """Barline notes keep a lone jump a step; the anti-barline wall ramps
+        every gap the chart changed speed in (owner, 2026-10-09)."""
+        return sv_curves.BARLINE if self.mode() == self.STRUCTURE else sv_curves.ANTI
+
+    def runs(self) -> list:
+        """The detected runs for the current mode, with any curve the mapper
+        corrected. Read once per mode: a whole map takes seconds."""
+        mode = self._sv_mode()
+        if mode not in self._runs:
+            points, notes, start_ms, end_ms = self._sv_inputs
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            try:
+                self._runs[mode] = sv_curves.detect_runs(
+                    sv_curves.anchors(points, notes, start_ms, end_ms), mode)
+            finally:
+                QApplication.restoreOverrideCursor()
+        return self._runs[mode]
+
+    def _fill_curves(self) -> None:
+        mode = self._sv_mode()
+        if self._table_mode == mode:
+            return
+        self._table_mode = mode
+        runs = self.runs()
+        choices = self._curve_choices()
+        table = self.curve_table
+        table.setRowCount(len(runs))
+        for row, run in enumerate(runs):
+            table.setItem(row, 0, QTableWidgetItem(
+                f"{format_time(round(run.start.time))} \u2013 {format_time(round(run.end.time))}"))
+            table.setItem(row, 1, QTableWidgetItem(
+                f"{run.start.value:.2f}\u00d7 \u2192 {run.end.value:.2f}\u00d7"))
+            combo = QComboBox()
+            for function, label in choices:
+                combo.addItem(label, function)
+            if combo.findData(run.function) < 0:
+                # A fitted "Exp x": its own exponent, as Generate SV writes it.
+                combo.addItem(f"Exp {run.function[3:]}", run.function)
+            combo.setCurrentIndex(combo.findData(run.function))
+            combo.currentIndexChanged.connect(
+                lambda _index, run=run, combo=combo: setattr(run, "function", combo.currentData()))
+            table.setCellWidget(row, 2, combo)
+            table.setItem(row, 3, QTableWidgetItem(str(run.count)))
+        table.resizeColumnsToContents()
+
+    def sv_model(self):
+        """`sv_curves.SvModel` for this conversion, or None without Keep SV."""
+        if not self._curves_wanted():
+            return None
+        points, notes, _start, _end = self._sv_inputs
+        return sv_curves.SvModel(self.runs(), points, notes)
 
     def _changed(self, *_args) -> None:
         try:
@@ -8401,6 +8541,13 @@ class ConvertNotesDialog(SheetDialog):
         self.omit_note_barline_check.setEnabled(self.hide_note_check.isChecked())
         self.hide_note_check.toggled.connect(self.omit_note_barline_check.setEnabled)
         section.switch(self.omit_note_barline_check, tr("MainWindow", "The note's own line draws no bar."), span=1)
+        # Per selection, Barline notes only (owner, 2026-10-09). The whole-map
+        # converter keeps SV always, so it shows no switch for it.
+        self.keep_sv_check = QCheckBox(tr("MainWindow", "Keep SV"))
+        if self._sv_inputs is not None and not self.experimental:
+            section.switch(self.keep_sv_check, tr(
+                "MainWindow", "Every line the bars add gets the chart's own SV back, following its curves."), span=1)
+            self.keep_sv_check.toggled.connect(self._show_mode)
 
     def _fake_slider_page(self, config: GimmickConfig) -> None:
         section = self.sheet.add_section(self.STRUCTURE, tr("MainWindow", "Fake sliders"),
@@ -9366,74 +9513,8 @@ class TimingLineDialog(SheetDialog):
         return changes
 
 
-def _true_exp_ease(t: float, initial: float | None, final: float | None) -> float:
-    """The one curve whose shape is not fixed.
-
-    Interpolating `initial + (final - initial) * this` reduces exactly to
-    `initial * (final / initial) ** t` -- a geometric sweep, multiplying by a
-    constant factor per step, which is what reads as an even acceleration. So
-    the bend has to come from the range itself: 1.0 -> 1.1 is nearly a straight
-    line where 1.0 -> 10.0 is a hard curve.
-
-    A fixed shape cannot do that. This was `(exp(3t) - 1) / (exp(3) - 1)`,
-    which gave every range the same bend and put every intermediate point in
-    the wrong place -- 0.52x out at the midpoint of a 1 -> 10 sweep -- while
-    still hitting both endpoints exactly, which is why it looked right.
-
-    Falls back to linear on any range with no geometric reading: equal
-    endpoints (the 0/0), a zero start, or a sign change, whose fractional power
-    is complex rather than an error in Python. TaikoEditor guards the same
-    cases at `SvFunctionLayer` lines 275-287.
-    """
-    if initial is None or final is None or initial == final or initial == 0:
-        return t
-    ratio = final / initial
-    if ratio <= 0:
-        return t
-    try:
-        eased = (initial - initial * ratio ** t) / (initial - final)
-    except (OverflowError, ValueError):
-        return t
-    return eased if math.isfinite(eased) else t
-
-
-def sv_ease(
-    function_id: str, t: float,
-    initial: float | None = None, final: float | None = None,
-) -> float:
-    """0..1 progress -> 0..1 eased position. Shared by the preview square and
-    the actual generated points, so the preview is an honest picture of what
-    Generate produces, not just a decoration.
-
-    Ported from TaikoEditor's `SvFunctionLayer` (its lines 118-128), so the
-    same-named curve in either editor writes the same numbers. That includes
-    its naming of the sine pair, which is the *inverse* of easings.net's: here
-    "Sin In" is fast at the start and slow at the end.
-
-    `initial`/`final` are the endpoints the caller goes on to interpolate
-    between. Only "true_exp" reads them; every other curve is a fixed arc.
-    """
-    t = max(0.0, min(1.0, t))
-    if function_id == "sin_in":
-        return math.sin(t * math.pi / 2)
-    if function_id == "sin_out":
-        return 1 - math.cos(t * math.pi / 2)
-    if function_id.startswith("exp") and function_id != "true_exp":
-        # The exponent is carried *in the id* ("exp1.3", "exp2.5"), so a typed
-        # one needs no extra argument threaded through every caller -- the
-        # preview, the generator and a stored choice all take the same string
-        # they always did. Floored at 1: below it the curve bends the other
-        # way, which is what the two fixed tiles above 1 were there to avoid.
-        try:
-            exponent = float(function_id[3:])
-        except ValueError:
-            return t
-        return t ** max(1.0, exponent)
-    if function_id == "true_exp":
-        return _true_exp_ease(t, initial, final)
-    if function_id == "sin":
-        return -(math.cos(math.pi * t) - 1) / 2
-    return t  # "linear" and any unrecognized id
+# sv_ease and _true_exp_ease live in sv_curves now, beside the detector that
+# reads their curves back out of a chart (experimental conversion).
 
 
 # Relative, not absolute, because the BPMs compared here span five orders of
@@ -10167,7 +10248,7 @@ def format_length(ms: int) -> str:
     return f"{seconds // 60}:{seconds % 60:02d}"
 
 
-def format_bpm(low: float, high: float) -> str:
+def format_bpm(low: float, high: float, common: float | None = None) -> str:
     # A gimmick's beat length can be subnormal (EGTS 2022's
     # `1.14514535393084E-319`), and 60000 over that is inf: round() raised,
     # and the song's difficulty list stopped filling at its first chart.
@@ -10178,19 +10259,99 @@ def format_bpm(low: float, high: float) -> str:
         return "–"
     if text(low) == text(high):
         return text(high)
+    # A range says which tempo it mostly is, as lazer's "a-b (mostly c)" and
+    # the density view do: aleph-0 is "125–400 (250)" (owner, 2026-10-09).
+    if common:
+        return f"{text(low)}–{text(high)} ({text(common)})"
     return f"{text(low)}–{text(high)}"
 
 
-def decode_background(path: Path, max_width: int) -> QPixmap | None:
+def keep_width_under_scrollbar(area: QScrollArea, layout) -> None:
+    """Hold `area`'s content at one width whether or not its vertical
+    scrollbar is showing. The bar takes its width out of the viewport when it
+    appears, so everything inside reflowed -- tiles jumped, labels rewrapped
+    -- the moment a panel grew past the window (owner, 2026-10-09). While the
+    bar is hidden, `layout` carries that width as extra right margin."""
+    left, top, right, bottom = layout.getContentsMargins()
+    bar = area.verticalScrollBar()
+
+    def fit(_minimum=0, maximum=0) -> None:
+        reserve = 0 if maximum > 0 else bar.sizeHint().width()
+        layout.setContentsMargins(left, top, right + reserve, bottom)
+
+    bar.rangeChanged.connect(fit)
+    fit(bar.minimum(), bar.maximum())
+
+
+def decode_background_image(path: Path, max_width: int) -> QImage | None:
     """A beatmap background, decoded no wider than `max_width`: a 4K
-    background at full size costs a visible pause on every selection."""
+    background at full size costs a visible pause on every selection.
+    A QImage, so it can be decoded off the GUI thread (a QPixmap cannot)."""
     reader = QImageReader(str(path))
     reader.setAutoTransform(True)
     size = reader.size()
     if size.isValid() and size.width() > max_width:
         reader.setScaledSize(size.scaled(max_width, max_width, Qt.KeepAspectRatio))
     image = reader.read()
-    return QPixmap.fromImage(image) if not image.isNull() else None
+    return image if not image.isNull() else None
+
+
+def decode_background(path: Path, max_width: int) -> QPixmap | None:
+    image = decode_background_image(path, max_width)
+    return QPixmap.fromImage(image) if image is not None else None
+
+
+class BackgroundJobs(QObject):
+    """Work song select must not do on the GUI thread, handed back to it.
+
+    Measured (tools/measure_song_switch.py, 4101 songs): picking a song held
+    the event loop for 99ms median and 208ms at worst -- 62ms of it hashing
+    every difficulty for osu!.db's staleness check, 33ms decoding the
+    background. That is the stutter before the chart preview loads. Both
+    release the GIL (file reads, hashlib over large buffers, Qt's image
+    decoders), so a thread really does take them off the frame.
+
+    `deliver` runs on the GUI thread: the done signal is emitted from the
+    worker, and Qt queues a cross-thread emit to the receiver's thread.
+    """
+
+    _done = Signal(object)
+
+    def __init__(self, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="song-select")
+        self._pending: set = set()
+        self._done.connect(self._deliver)
+
+    def submit(self, work, deliver) -> None:
+        try:
+            future = self._pool.submit(work)
+        except RuntimeError:
+            return  # shut down with the window: a late selection has nobody to show it to
+        self._pending.add(future)
+        future.add_done_callback(lambda done: self._emit(done, deliver))
+
+    def _emit(self, future, deliver) -> None:
+        try:
+            self._done.emit((future, deliver))
+        except RuntimeError:
+            pass  # the window, and this object with it, is already gone
+
+    def _deliver(self, payload) -> None:
+        future, deliver = payload
+        self._pending.discard(future)
+        if future.cancelled() or future.exception() is not None:
+            return  # an unreadable file keeps what was shown, as before
+        deliver(future.result())
+
+    def drain(self) -> None:
+        """Wait for everything submitted and deliver it (tests)."""
+        while self._pending:
+            futures_wait(list(self._pending))
+            QCoreApplication.processEvents()
+
+    def shutdown(self) -> None:
+        self._pool.shutdown(wait=False, cancel_futures=True)
 
 
 def tabular(font: QFont) -> QFont:
@@ -10254,6 +10415,11 @@ class ResizeHook(QObject):
 # holding an arrow down does not open every song on the way), and its fade in.
 PREVIEW_SETTLE_MS = 250
 PREVIEW_FADE_MS = 400
+# The chart preview's notes fading out of the song left and into the next
+# (owner, 2026-10-09). Out is shorter than the settle, so it is gone before
+# the next chart is read; in is the mockup's entering 250ms.
+CHART_FADE_OUT_MS = 150
+CHART_FADE_IN_MS = 250
 # The song list's difficulty dots, one per chart in its star colour.
 SONG_DOT_RADIUS, SONG_DOT_PITCH = 5.0, 14
 # A pack lists dozens of charts, and a dot each pushed the title off its own
@@ -10273,20 +10439,46 @@ def song_dots_shown(count: int, row_width: float) -> tuple[int, int]:
     return shown, count - shown
 
 
+def paint_selected_row(painter: QPainter, rect: QRectF, active: bool) -> None:
+    tint = QLinearGradient(rect.topLeft(), rect.topRight())
+    tint.setColorAt(0.0, theme.rgba(255, 102, 170, 46))
+    tint.setColorAt(0.7, theme.rgba(255, 102, 170, 10))
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(tint)
+    painter.drawRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), 4, 4)
+    paint_living_rim(painter, rect, 4, 1.5, active)
+
+
+def glide_selection(rows: QListWidget, inset: tuple[int, int, int, int]) -> None:
+    """Give `rows` a selection that glides between rows (SelectionGlide);
+    `inset` is how far inside the item rect its delegate draws one."""
+    rows.selection_glide = SelectionGlide(
+        rows, lambda painter, rect: paint_selected_row(painter, rect, rows.hasFocus()), inset)
+
+
+def _enter_row(painter: QPainter, option, entrance) -> None:
+    """Draw the row lifted and faded by its RowEntrance progress."""
+    if entrance is None:
+        return
+    progress = entrance.progress(option.index.row())
+    if progress < 1.0:
+        painter.setOpacity(progress)
+        painter.translate(0, RowEntrance.RISE_PX * (1.0 - progress))
+
+
 def _paint_selection(painter: QPainter, rect: QRectF, option) -> None:
     """The selected tint fades left to right, as in the mockup, inside a rim
     with two small lights running round it (motion.paint_living_rim). In the
     list that has the keys; the other list's selection keeps a dimmer, still
-    rim, so it is clear which one Up/Down will move."""
+    rim, so it is clear which one Up/Down will move.
+
+    While the list's SelectionGlide is flying to this row, the flight draws
+    the selection and the row draws only itself."""
+    widget = option.widget
+    glide = getattr(widget, "selection_glide", None)
     if option.state & QStyle.State_Selected:
-        tint = QLinearGradient(rect.topLeft(), rect.topRight())
-        tint.setColorAt(0.0, theme.rgba(255, 102, 170, 46))
-        tint.setColorAt(0.7, theme.rgba(255, 102, 170, 10))
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(tint)
-        painter.drawRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), 4, 4)
-        widget = option.widget
-        paint_living_rim(painter, rect, 4, 1.5, widget is not None and widget.hasFocus())
+        if glide is None or not glide.covers(option.index.row()):
+            paint_selected_row(painter, rect, widget is not None and widget.hasFocus())
     elif option.state & QStyle.State_MouseOver:
         painter.setPen(Qt.NoPen)
         painter.setBrush(theme.color(ROW_HOVER))
@@ -10296,6 +10488,9 @@ def _paint_selection(painter: QPainter, rect: QRectF, option) -> None:
 class SongRowDelegate(QStyledItemDelegate):
     """A song: bold title over "artist · mapped by X", a dot per difficulty in
     its star colour. A group header: small caps in the accent pink."""
+
+    # Set by the page: rows rising in after a search (RowEntrance).
+    entrance = None
 
     def sizeHint(self, option, index):
         header = index.data(Qt.UserRole) is None
@@ -10307,6 +10502,7 @@ class SongRowDelegate(QStyledItemDelegate):
         rect = QRectF(option.rect)
         row = index.data(ROW_ROLE)
         font = QFont(option.font)
+        _enter_row(painter, option, self.entrance)
         if row is None:  # a group header
             font.setBold(True)
             font.setPointSizeF(font.pointSizeF() * 0.8)
@@ -10360,6 +10556,10 @@ class DifficultyRowDelegate(QStyledItemDelegate):
     """A difficulty: star pill and name, "mapped by X" under it, notes,
     length and BPM on the right in tabular figures."""
 
+    # Set by the page: a new song's rows arriving one by one, their note
+    # counts rolling up as they come (RowEntrance).
+    entrance = None
+
     def sizeHint(self, option, index):
         return QSize(option.rect.width(), DIFFICULTY_ROW_HEIGHT)
 
@@ -10368,14 +10568,22 @@ class DifficultyRowDelegate(QStyledItemDelegate):
         painter.setRenderHint(QPainter.Antialiasing, True)
         rect = QRectF(option.rect).adjusted(2, 2, -2, -2)
         row = index.data(ROW_ROLE) or {}
+        _enter_row(painter, option, self.entrance)
         _paint_selection(painter, rect, option)
         inner = rect.adjusted(10, 6, -10, -6)
         stats_font = tabular(option.font)
         stats_font.setPointSizeF(stats_font.pointSizeF() * 0.86)
         stats_font.setWeight(QFont.DemiBold)
         stats_metrics = QFontMetrics(stats_font)
-        stats = row.get("stats", ("", ""))
-        stats_width = max(stats_metrics.horizontalAdvance(line) for line in stats) if any(stats) else 0
+        stats = final_stats = row.get("stats", ("", ""))
+        notes = row.get("notes")
+        if notes and self.entrance is not None:
+            shown = round(notes * out_cubic(self.entrance.progress(index.row()) * 1.5))
+            if shown != notes:
+                # Measured against the final count below, so the column does
+                # not shift as the digits roll.
+                stats = (tr("MainWindow", "{n} notes").format(n=shown), stats[1])
+        stats_width = max(stats_metrics.horizontalAdvance(line) for line in final_stats) if any(final_stats) else 0
         painter.setFont(stats_font)
         painter.setPen(theme.color(ROW_INK_2))
         painter.drawText(inner, Qt.AlignRight | Qt.AlignTop, stats[0])
@@ -10421,20 +10629,36 @@ class SongBanner(QWidget):
     """The selected song's own background, heading the detail pane the way
     osu!'s song select does, with the title over a wash at its foot.
 
-    The line along the bottom flashes on each beat of the selected
-    difficulty and settles at the preview's kiai level (0.15) in between. The
-    beats are its own red lines, read against `clock` (song milliseconds), so
-    a BPM change or a second audio file in the folder keeps time. A new song
-    crossfades its art in. Both are off under reduced motion.
+    Along the bottom runs the seek band (mockup, 2026-10-09): the elapsed
+    time, a track that is the whole song, and the total. A playhead circle
+    in the focus colour rides it, growing and glowing on each beat of the
+    selected difficulty. Kiai sections
+    and the preview point are marked on the track, and inside a kiai the art
+    itself lifts on the beat. The beats are the difficulty's own red lines,
+    read against `clock` (song milliseconds), so a BPM change or a second
+    audio file in the folder keeps time. A new song crossfades its art in
+    and its title rises in.
+
+    Under reduced motion the playhead still moves -- it is a position, not
+    an effect -- and everything that pulses holds still.
     """
 
     BEAT_REST = 0.15
+    KIAI_LIFT = 0.06
     MIN_HEIGHT = 150
-    # The beat stripe is also a seek bar, and says nothing about it (owner's
-    # call: a hidden feature). Its whole width is the whole song; the band
-    # that takes the pointer is taller than the 3px it draws, or nobody would
-    # ever land on it.
-    SEEK_BAND = 10
+    # The strip the band takes at the foot, which is also the height that
+    # takes the pointer: a track you have to land a 6px line on is not one
+    # anybody uses.
+    BAND_HEIGHT = 30
+    TRACK_REST, TRACK_HOVER = 6.0, 10.0
+    HEAD_RADIUS = 8.0
+    # The playhead flies to a new song's preview point rather than jumping:
+    # back to the start of the track first, then out to the preview point
+    # (owner, 2026-10-09), REWIND_SHARE of the flight on the way back.
+    GLIDE_MS = 320
+    REWIND_GLIDE_MS = 560
+    REWIND_SHARE = 0.4
+    TEXT_RISE_PX = 8.0
     seek_fraction = Signal(float)
     seek_step = Signal(int)
 
@@ -10444,6 +10668,7 @@ class SongBanner(QWidget):
         # The height the difficulty slots leave; see DIFFICULTY_SLOTS.
         self.setMinimumHeight(self.MIN_HEIGHT)
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        self.setMouseTracking(True)
         self.title = ""
         self.subtitle = ""
         self._art: QPixmap | None = None
@@ -10459,12 +10684,51 @@ class SongBanner(QWidget):
         self._tempo: list[tuple[float, float]] = []
         self._tempo_times: list[float] = []
         self._clock = None
+        self._playing = lambda: True
+        self._now = 0.0
+        self._duration_ms = 0.0
+        self._preview_ms = -1.0
+        self._kiai: list[tuple[float, float]] = []
+        self._hover_x: float | None = None
+        self._grow = 0.0
+        self.grow = QVariantAnimation(self)
+        self.grow.setDuration(160)
+        self.grow.setEasingCurve(QEasingCurve.OutCubic)
+        self.grow.valueChanged.connect(self._set_grow)
+        self._glide_from = 0.0
+        self._glide_t = 1.0
+        self._glide_rewinds = False
+        # Linear: each leg of the flight eases itself (_shown_fraction).
+        self.glide_animation = QVariantAnimation(self)
+        self.glide_animation.setDuration(self.GLIDE_MS)
+        self.glide_animation.setStartValue(0.0)
+        self.glide_animation.setEndValue(1.0)
+        self.glide_animation.valueChanged.connect(self._set_glide)
+        self._text_in = 1.0
+        self.text_animation = QVariantAnimation(self)
+        self.text_animation.setDuration(300)
+        self.text_animation.setStartValue(0.0)
+        self.text_animation.setEndValue(1.0)
+        self.text_animation.setEasingCurve(QEasingCurve.OutCubic)
+        self.text_animation.valueChanged.connect(self._set_text_in)
         self.beat = QTimer(self)
         self.beat.setInterval(16)
         self.beat.timeout.connect(self._tick_beat)
 
     def _set_fade(self, value) -> None:
         self._fade = float(value)
+        self.update()
+
+    def _set_grow(self, value) -> None:
+        self._grow = float(value)
+        self.update()
+
+    def _set_glide(self, value) -> None:
+        self._glide_t = float(value)
+        self.update()
+
+    def _set_text_in(self, value) -> None:
+        self._text_in = float(value)
         self.update()
 
     def beat_phase_at(self, time_ms: float) -> float:
@@ -10481,19 +10745,75 @@ class SongBanner(QWidget):
     def _tick_beat(self) -> None:
         if self._clock is None:
             return
-        self._beat_phase = self.beat_phase_at(self._clock())
+        self._now = self._clock()
+        self._beat_phase = self.beat_phase_at(self._now)
         self.update()
 
-    def set_tempo(self, tempo: list[tuple[float, float]], clock) -> None:
-        """Keep time with `tempo`'s red lines, read against `clock()`."""
+    def set_tempo(self, tempo: list[tuple[float, float]], clock, playing=None) -> None:
+        """Keep time with `tempo`'s red lines, read against `clock()`.
+        `playing()` False holds the pulse still: a paused song has no beat."""
         self._tempo = tempo
         self._tempo_times = [time for time, _beat in tempo]
         self._clock = clock
+        if playing is not None:
+            self._playing = playing
         self._beat_phase = 1.0
         self._sync_beat()
 
+    def set_duration(self, duration_ms: float) -> None:
+        """The song's length, which the track's width stands for."""
+        duration_ms = max(0.0, float(duration_ms))
+        # A flight already under way reads the new length live, so it is left
+        # to finish: restarted, a new song's rewind would be cut short.
+        if (self._duration_ms > 0 and abs(duration_ms - self._duration_ms) > self._duration_ms * 0.005
+                and self.glide_animation.state() != QVariantAnimation.Running):
+            self.glide()
+        self._duration_ms = duration_ms
+        self.update()
+
+    def set_preview(self, preview_ms: float) -> None:
+        self._preview_ms = float(preview_ms)
+        self.update()
+
+    def set_kiai(self, spans) -> None:
+        self._kiai = list(spans)
+        self.update()
+
+    def glide(self, rewind: bool = False) -> None:
+        """Fly the playhead from where it is drawn to wherever the clock
+        says next, instead of jumping there: a new length, or with `rewind`
+        a new song -- back to the start of the track, then out to it."""
+        if reduced_motion() or self._seeking:
+            return
+        self._glide_from = self._shown_fraction()
+        self._glide_rewinds = rewind
+        self.glide_animation.stop()
+        self.glide_animation.setDuration(self.REWIND_GLIDE_MS if rewind else self.GLIDE_MS)
+        self._glide_t = 0.0
+        self.glide_animation.start()
+
+    def _fraction(self) -> float:
+        if self._duration_ms <= 0:
+            return 0.0
+        return min(1.0, max(0.0, self._now / self._duration_ms))
+
+    def _shown_fraction(self) -> float:
+        target = self._fraction()
+        if self.glide_animation.state() != QVariantAnimation.Running:
+            return target
+        t = self._glide_t
+        if not self._glide_rewinds:
+            return self._glide_from + (target - self._glide_from) * out_cubic(t)
+        if t < self.REWIND_SHARE:
+            # In and out on the way back, so it settles at the start before
+            # setting off again rather than bouncing off it.
+            back = t / self.REWIND_SHARE
+            eased = 4 * back ** 3 if back < 0.5 else 1 - (-2 * back + 2) ** 3 / 2
+            return self._glide_from * (1.0 - eased)
+        return target * out_cubic((t - self.REWIND_SHARE) / (1.0 - self.REWIND_SHARE))
+
     def _sync_beat(self) -> None:
-        running = bool(self._tempo) and self.isVisible() and not reduced_motion()
+        running = self._clock is not None and self.isVisible()
         if running and not self.beat.isActive():
             self.beat.start()
         elif not running:
@@ -10501,8 +10821,19 @@ class SongBanner(QWidget):
             self._beat_phase = 1.0
             self.update()
 
-    def set_song(self, title: str, subtitle: str, art: QPixmap | None) -> None:
+    def set_text(self, title: str, subtitle: str) -> None:
+        if (title, subtitle) == (self.title, self.subtitle):
+            return
         self.title, self.subtitle = title, subtitle
+        self.text_animation.stop()
+        if reduced_motion():
+            self._text_in = 1.0
+        else:
+            self._text_in = 0.0
+            self.text_animation.start()
+        self.update()
+
+    def set_art(self, art: QPixmap | None) -> None:
         self._previous, self._art = self._art, art
         self._scaled = {}
         self.fade.stop()
@@ -10513,6 +10844,10 @@ class SongBanner(QWidget):
             self.fade.start()
         self.update()
 
+    def set_song(self, title: str, subtitle: str, art: QPixmap | None) -> None:
+        self.set_text(title, subtitle)
+        self.set_art(art)
+
     def showEvent(self, event) -> None:
         super().showEvent(event)
         self._sync_beat()
@@ -10521,26 +10856,59 @@ class SongBanner(QWidget):
         self.beat.stop()  # nothing to keep time for on a page nobody is looking at
         super().hideEvent(event)
 
+    # -- the seek band ------------------------------------------------------
+
+    def _band_font(self) -> QFont:
+        font = tabular(self.font())
+        font.setPointSizeF(font.pointSizeF() * 0.82)
+        font.setWeight(QFont.DemiBold)
+        return font
+
+    def _label_width(self) -> float:
+        return QFontMetrics(self._band_font()).horizontalAdvance("88:88") + 10
+
+    def track_rect(self) -> QRectF:
+        """The track, at the height it is drawn right now."""
+        label = self._label_width()
+        height = self.TRACK_REST + (self.TRACK_HOVER - self.TRACK_REST) * self._grow
+        centre = self.height() - self.BAND_HEIGHT / 2
+        return QRectF(12 + label, centre - height / 2, max(1.0, self.width() - 24 - 2 * label), height)
+
     def _in_seek_band(self, position) -> bool:
-        return position.y() >= self.height() - self.SEEK_BAND
+        return position.y() >= self.height() - self.BAND_HEIGHT
 
     def _seek_to(self, position) -> None:
-        # The width is read here, per event, so a pane the splitter has
+        # The track is read here, per event, so a pane the splitter has
         # widened or narrowed maps the same 0-100% across whatever it is now.
-        width = max(1, self.width())
-        self.seek_fraction.emit(min(1.0, max(0.0, position.x() / width)))
+        track = self.track_rect()
+        self.seek_fraction.emit(min(1.0, max(0.0, (position.x() - track.left()) / track.width())))
+
+    def _hover(self, inside: bool, x: float | None = None) -> None:
+        self._hover_x = x if inside else None
+        target = 1.0 if inside else 0.0
+        if reduced_motion():
+            self._grow = target
+        elif self._grow != target and self.grow.endValue() != target:
+            self.grow.stop()
+            self.grow.setStartValue(self._grow)
+            self.grow.setEndValue(target)
+            self.grow.start()
+        self.update()
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.LeftButton and self._in_seek_band(event.position()):
             self._seeking = True
+            self.glide_animation.stop()  # dragged, the head is under the pointer
             self._seek_to(event.position())
             event.accept()
             return
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:
+        position = event.position()
+        self._hover(self._seeking or self._in_seek_band(position), position.x())
         if self._seeking:
-            self._seek_to(event.position())
+            self._seek_to(position)
             event.accept()
             return
         super().mouseMoveEvent(event)
@@ -10548,9 +10916,15 @@ class SongBanner(QWidget):
     def mouseReleaseEvent(self, event) -> None:
         if self._seeking and event.button() == Qt.LeftButton:
             self._seeking = False
+            self._hover(self._in_seek_band(event.position()), event.position().x())
             event.accept()
             return
         super().mouseReleaseEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        if not self._seeking:
+            self._hover(False)
+        super().leaveEvent(event)
 
     def wheelEvent(self, event) -> None:
         if not self._in_seek_band(event.position()):
@@ -10586,19 +10960,35 @@ class SongBanner(QWidget):
                 painter.drawPixmap(int((rect.width() - cover.width()) / 2),
                                    int((rect.height() - cover.height()) / 2), cover)
         painter.setOpacity(1.0)
+
+        pulsing = self._playing() and not reduced_motion() and bool(self._tempo)
+        phase = self._beat_phase
+        beat = max(0.0, 1.0 - phase / 0.6) if pulsing else 0.0
+        if beat > 0.0 and any(start <= self._now < end for start, end in self._kiai):
+            # The kiai lifts the art on the beat, additively: lighting it, not
+            # laying a film over it. KIAI_LIFT, not the preview's 0.15 -- over
+            # a whole background that read too bright (owner, 2026-10-09).
+            painter.setCompositionMode(QPainter.CompositionMode_Plus)
+            painter.fillRect(rect, QColor(255, 255, 255, round(255 * self.KIAI_LIFT * beat)))
+            painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
+
         wash = QLinearGradient(rect.topLeft(), rect.bottomLeft())
         wash.setColorAt(0.25, QColor(0, 0, 0, 0))
         wash.setColorAt(0.6, theme.rgba(255, 102, 170, 20))
         wash.setColorAt(1.0, QColor(13, 17, 23, 242))
         painter.fillRect(rect, wash)
 
-        text = rect.adjusted(14, 10, -14, -14)
+        text = rect.adjusted(14, 10, -14, -(self.BAND_HEIGHT + 2))
         title_font = QFont(self.font())
         title_font.setPointSizeF(title_font.pointSizeF() * 1.55)
         title_font.setWeight(QFont.ExtraBold)
         sub_font = QFont(self.font())
         sub_font.setPointSizeF(sub_font.pointSizeF() * 0.93)
         sub_height = QFontMetrics(sub_font).height()
+        painter.save()
+        if self._text_in < 1.0:
+            painter.setOpacity(self._text_in)
+            painter.translate(0, self.TEXT_RISE_PX * (1.0 - self._text_in))
         painter.setFont(sub_font)
         painter.setPen(theme.color("#d5dce5"))
         painter.drawText(text, Qt.AlignLeft | Qt.AlignBottom,
@@ -10607,11 +10997,92 @@ class SongBanner(QWidget):
         painter.setPen(theme.color(ROW_INK))
         painter.drawText(text.adjusted(0, 0, 0, -sub_height), Qt.AlignLeft | Qt.AlignBottom | Qt.TextWordWrap,
                          self.title)
+        painter.restore()
+        self._paint_band(painter, pulsing, phase, beat)
 
-        # 0.95 on the beat, down to the kiai level by 60% of it, as the mockup.
-        flash = max(self.BEAT_REST, 0.95 - (0.95 - self.BEAT_REST) * min(1.0, self._beat_phase / 0.6))
-        painter.setOpacity(flash)
-        painter.fillRect(QRectF(rect.left(), rect.bottom() - 3, rect.width(), 3), theme.color(ROW_PINK_ON))
+    def _paint_band(self, painter: QPainter, pulsing: bool, phase: float, beat: float) -> None:
+        focus = theme.color(ROW_PINK_ON)
+        track = self.track_rect()
+        radius = track.height() / 2
+        shape = QPainterPath()
+        shape.addRoundedRect(track, radius, radius)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(theme.color("#2a3341"))
+        painter.drawPath(shape)
+        dim = QColor(focus)
+        dim.setAlphaF(0.18)
+        painter.setBrush(dim)
+        painter.drawPath(shape)
+
+        band_font = self._band_font()
+        painter.setFont(band_font)
+        painter.setPen(theme.color(ROW_INK_3))
+        labels = QRectF(12, track.center().y() - 10, self.width() - 24, 20)
+        painter.drawText(labels, Qt.AlignLeft | Qt.AlignVCenter, format_length(self._now))
+        if self._duration_ms <= 0:
+            return
+        painter.drawText(labels, Qt.AlignRight | Qt.AlignVCenter, format_length(self._duration_ms))
+
+        def x_of(ms: float) -> float:
+            return track.left() + track.width() * min(1.0, max(0.0, ms / self._duration_ms))
+
+        painter.save()
+        painter.setClipPath(shape, Qt.IntersectClip)
+        kiai = QColor(focus)
+        kiai.setAlphaF(0.34)
+        for start, end in self._kiai:
+            if start < self._duration_ms:
+                painter.fillRect(QRectF(x_of(start), track.top(), x_of(end) - x_of(start), track.height()), kiai)
+        # No fill for the part already played: a gradient trailing behind the
+        # head covered the kiai marks it ran over (owner, 2026-10-09). The
+        # head alone says where the song is, and its pop and glow keep time.
+        head_x = track.left() + track.width() * self._shown_fraction()
+        painter.restore()
+
+        centre_y = track.center().y()
+        if self._preview_ms >= 0:
+            mark = QColor(theme.color(ROW_INK_2))
+            mark.setAlphaF(0.5)
+            painter.setPen(QPen(mark, 2, Qt.SolidLine, Qt.RoundCap))
+            x = x_of(self._preview_ms)
+            painter.drawLine(QPointF(x, track.top() - 4), QPointF(x, track.bottom() + 4))
+
+        if self._hover_x is not None and not self._seeking:
+            hover_x = min(track.right(), max(track.left(), self._hover_x))
+            ghost = QColor(theme.color(ROW_INK))
+            ghost.setAlphaF(0.85 * self._grow)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(ghost)
+            painter.drawEllipse(QPointF(hover_x, centre_y), 5, 5)
+            time_text = format_length((hover_x - track.left()) / track.width() * self._duration_ms)
+            metrics = QFontMetrics(band_font)
+            bubble = QRectF(0, 0, metrics.horizontalAdvance(time_text) + 12, metrics.height() + 4)
+            bubble.moveCenter(QPointF(hover_x, track.top() - 8 - bubble.height() / 2))
+            bubble.moveLeft(min(self.width() - 4 - bubble.width(), max(4.0, bubble.left())))
+            painter.setOpacity(self._grow)
+            painter.setBrush(theme.color("#3a4554"))
+            painter.drawRoundedRect(bubble, 4, 4)
+            painter.setPen(theme.color(ROW_INK))
+            painter.drawText(bubble, Qt.AlignCenter, time_text)
+            painter.setOpacity(1.0)
+
+        centre = QPointF(head_x, centre_y)
+        head = self.HEAD_RADIUS
+        # No ring shed on the beat: spreading over the track it hid the kiai
+        # marks under it (owner, 2026-10-09). The pop and the glow keep time.
+        glow_radius = head + 6 + 10 * beat
+        glow = QRadialGradient(centre, glow_radius)
+        halo = QColor(focus)
+        halo.setAlphaF(0.35 + 0.4 * beat)
+        glow.setColorAt(0.0, halo)
+        glow.setColorAt(1.0, QColor(0, 0, 0, 0))
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(glow)
+        painter.drawEllipse(centre, glow_radius, glow_radius)
+        scale = 1.3 if self._seeking else 1.0 + 0.3 * beat
+        painter.setPen(QPen(theme.color(ROW_INK), 2))
+        painter.setBrush(focus)
+        painter.drawEllipse(centre, head * scale, head * scale)
 
 
 class ContinueCard(QFrame):
@@ -10645,7 +11116,37 @@ class ContinueCard(QFrame):
             label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
             layout.addWidget(label)
         self.art: QPixmap | None = None
+        self._cover: tuple[tuple, QPixmap] | None = None
         self._texts = ("", "")
+        # Hovered, the art slowly comes forward: zooms a little, brightens,
+        # and the rim lights (mockup, 2026-10-09). The card stays where the
+        # layout put it -- a lift would fight the layout for its position.
+        self._lift = 0.0
+        self.lift = QVariantAnimation(self)
+        self.lift.setEasingCurve(QEasingCurve.OutCubic)
+        self.lift.valueChanged.connect(self._set_lift)
+
+    def _set_lift(self, value) -> None:
+        self._lift = float(value)
+        self.update()
+
+    def _lift_to(self, target: float, duration_ms: int) -> None:
+        self.lift.stop()
+        if reduced_motion():
+            self._set_lift(target)
+            return
+        self.lift.setStartValue(self._lift)
+        self.lift.setEndValue(target)
+        self.lift.setDuration(duration_ms)
+        self.lift.start()
+
+    def enterEvent(self, event) -> None:
+        self._lift_to(1.0, 500)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        self._lift_to(0.0, 200)
+        super().leaveEvent(event)
 
     def show_chart(self, path: str, title: str, version: str, art: QPixmap | None = None) -> None:
         self.path = path
@@ -10685,12 +11186,26 @@ class ContinueCard(QFrame):
         clip = QPainterPath()
         clip.addRoundedRect(inner, 5, 5)
         painter.setClipPath(clip)
-        painter.setOpacity(self.ART_OPACITY)
-        cover = self.art.scaled(
-            inner.size().toSize(), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
-        painter.drawPixmap(
-            QPointF(inner.center().x() - cover.width() / 2, inner.center().y() - cover.height() / 2),
-            cover)
+        painter.setOpacity(self.ART_OPACITY + 0.14 * self._lift)
+        # Scaled once per size, not per paint: the hover redraws it every frame.
+        key = (self.art.cacheKey(), inner.size().toSize().width(), inner.size().toSize().height())
+        if self._cover is None or self._cover[0] != key:
+            self._cover = (key, self.art.scaled(
+                inner.size().toSize(), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation))
+        cover = self._cover[1]
+        zoom = 1.0 + 0.06 * self._lift
+        painter.translate(inner.center())
+        painter.scale(zoom, zoom)
+        painter.drawPixmap(QPointF(-cover.width() / 2, -cover.height() / 2), cover)
+        painter.resetTransform()
+        if self._lift > 0.0:
+            rim = QColor(theme.color(ROW_PINK_ON))
+            rim.setAlphaF(0.55 * self._lift)
+            painter.setOpacity(1.0)
+            painter.setClipping(False)
+            painter.setPen(QPen(rim, 1))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 6, 6)
 
     def mouseReleaseEvent(self, event) -> None:
         if event.button() == Qt.LeftButton and self.rect().contains(event.position().toPoint()):
@@ -10801,6 +11316,14 @@ class LibraryPageController:
         self.scan_timer = QTimer(window)
         self.scan_timer.setInterval(0)
         self.scan_timer.timeout.connect(self.scan_step)
+        # Hashing and image decoding, off the GUI thread (BackgroundJobs).
+        self.jobs = BackgroundJobs(window)
+        # Each audio file's real length once the player has opened it: the
+        # seek band stands for the song, and a chart's length stops at its
+        # last note.
+        self._audio_durations: dict[Path, float] = {}
+        # Each difficulty's most common BPM, once read (_show_common_bpm).
+        self._common_bpm: dict[Path, float | None] = {}
 
     def build_page(self) -> QWidget:
         """Browse every taiko chart under the osu! Songs folder: song, then difficulty.
@@ -10824,7 +11347,7 @@ class LibraryPageController:
         self.library_search.setToolTip(tr("MainWindow", "Type anywhere on this page to search"))
         self.library_search.setClearButtonEnabled(True)
         self.library_search.setMinimumWidth(240)
-        self.library_search.textChanged.connect(lambda _text: self.rebuild_song_list())
+        self.library_search.textChanged.connect(lambda _text: self.rebuild_song_list_entering())
 
         # The combos are the model the pills drive: everything that reads the
         # grouping or the sort (and the tests) reads them.
@@ -10856,7 +11379,7 @@ class LibraryPageController:
             buttons[combo.currentIndex()].setChecked(True)
             group.idClicked.connect(combo.setCurrentIndex)
             combo.currentIndexChanged.connect(lambda index, buttons=buttons: buttons[index].setChecked(True))
-            combo.currentIndexChanged.connect(lambda _index: self.rebuild_song_list())
+            combo.currentIndexChanged.connect(lambda _index: self.rebuild_song_list_entering())
             top.addWidget(segmented(buttons))
 
         self.original_metadata_check = QPushButton("原文")
@@ -10868,14 +11391,14 @@ class LibraryPageController:
         self.original_metadata_check.toggled.connect(self.original_metadata_toggled)
         top.addWidget(segmented([self.original_metadata_check]))
 
-        # osu!'s player: previous, play/pause, stop, next. In the top row with
+        # osu!'s player: previous, play/pause, next -- no stop since
+        # 2026-10-09 (owner: unnecessary for now). In the top row with
         # the other pills, where it is found at a glance -- under the banner it
         # read as part of the selected song's details. Space toggles it too.
         self.player_buttons = {}
         for key, glyph, tip, slot in (
             ("previous", "◀◀", tr("MainWindow", "Previous song"), lambda: self.step_song(-1)),
             ("play", "▶", tr("MainWindow", "Play or pause the preview"), self.toggle_preview),
-            ("stop", "■", tr("MainWindow", "Stop the preview and go back to its start"), self.rewind_preview),
             ("next", "▶▶", tr("MainWindow", "Next song"), lambda: self.step_song(1)),
         ):
             button = QPushButton(glyph)
@@ -10890,6 +11413,14 @@ class LibraryPageController:
             self.player_buttons[key] = button
         equalize_button_widths(self.player_buttons.values())
         top.addWidget(segmented(list(self.player_buttons.values())))
+        # Play is drawn rather than typed, so it can morph into pause and
+        # back (PlayPauseGlyph). Its "▶" stays, invisible: a button's height
+        # comes from its label, and emptied it came out shorter than the
+        # buttons beside it (owner, 2026-10-09).
+        play = self.player_buttons["play"]
+        play.setAccessibleName(play.toolTip())
+        play.setStyleSheet("color: transparent;")
+        self.play_glyph = PlayPauseGlyph(play, ROW_INK_2, ROW_INK)
 
         # One quiet menu for three rare actions. Quick Scan is incremental and
         # Rescan throws the index away -- see `rescan` for why both exist.
@@ -10956,7 +11487,12 @@ class LibraryPageController:
         split = QSplitter(Qt.Horizontal)
         split.setChildrenCollapsible(False)
         self.song_list = QListWidget()
-        self.song_list.setItemDelegate(SongRowDelegate(self.song_list))
+        song_rows = SongRowDelegate(self.song_list)
+        self.song_list.setItemDelegate(song_rows)
+        # Rows rising in after a search, a selection gliding between rows.
+        self.song_entrance = song_rows.entrance = RowEntrance(self.song_list)
+        glide_selection(self.song_list, (2, 1, 2, 1))
+        self.scan_shimmer = ScanShimmer(self.song_list)
         self.song_list.setMouseTracking(True)
         self.song_list.setUniformItemSizes(False)
         # Rows elide rather than scroll sideways; the delegate paints to width.
@@ -11031,7 +11567,11 @@ class LibraryPageController:
         self.chart_frame.timeout.connect(self._tick_chart_preview)
         self.difficulty_list = QListWidget()
         self.difficulty_list.setObjectName("difficultyList")
-        self.difficulty_list.setItemDelegate(DifficultyRowDelegate(self.difficulty_list))
+        difficulty_rows = DifficultyRowDelegate(self.difficulty_list)
+        self.difficulty_list.setItemDelegate(difficulty_rows)
+        self.difficulty_entrance = difficulty_rows.entrance = RowEntrance(
+            self.difficulty_list, row_ms=240, stagger_ms=40, delay_ms=60)
+        glide_selection(self.difficulty_list, (2, 2, 2, 2))
         self.difficulty_list.setMouseTracking(True)
         self.difficulty_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.difficulty_list.itemActivated.connect(lambda _item: self.open_selected_difficulty())
@@ -11490,6 +12030,14 @@ class LibraryPageController:
         self.library_status.setText(
             template.format(files=self._scan_files, songs=len(self.library_songs))
         )
+        # The first scan, with nothing found yet: placeholder rows, not a void.
+        self.scan_shimmer.setVisible(self._scan_iterator is not None and not self.library_songs)
+
+    def rebuild_song_list_entering(self) -> None:
+        """A rebuild the user asked for -- a search, a grouping, a sort --
+        with the rows rising into place. A scan's rebuilds stay still."""
+        self.rebuild_song_list()
+        self.song_entrance.start()
 
     # -- the two lists ----------------------------------------------------
 
@@ -11596,7 +12144,8 @@ class LibraryPageController:
             return  # a group header
         folder = Path(item.data(Qt.UserRole))
         # A different song, not the same one re-listed by a search keystroke.
-        if folder != self._sounded_song:
+        new_song = folder != self._sounded_song
+        if new_song:
             self._sounded_song = folder
             self.play_ui_sound("select_expand")
         difficulties = self.library_songs.get(folder, [])
@@ -11604,23 +12153,22 @@ class LibraryPageController:
             return
         original = self.original_metadata_check.isChecked()
         rated = []
+        rated_md5: dict[Path, str] = {}
         for difficulty in difficulties:
             entry = self.rating_entry(difficulty)
             stars = entry.taiko_stars if entry else None
-            # osu! keys its rating to the file's hash: an edit since, here or
-            # anywhere, leaves the number describing a chart that is gone.
-            stale = entry is not None and osu_db.file_md5(difficulty.path) != entry.md5
-            rated.append((difficulty, stars, stale))
+            if entry is not None:
+                rated_md5[difficulty.path] = entry.md5
+            rated.append((difficulty, stars, False))
         # Easiest first, as osu! lists them; unrated after, by name.
         rated.sort(key=lambda entry: (entry[1] is None, entry[1] or 0.0, entry[0].version.lower()))
         for difficulty, stars, stale in rated:
             entry_item = QListWidgetItem(difficulty.version or difficulty.path.stem)
             entry_item.setData(Qt.UserRole, str(difficulty.path))
             notes = (tr("MainWindow", "{n} notes").format(n=difficulty.notes) if difficulty.notes else "–")
-            timing = (f"{format_length(difficulty.length_ms)} · {format_bpm(difficulty.bpm_min, difficulty.bpm_max)} BPM"
-                      if difficulty.notes else "")
+            timing = self._timing_text(difficulty, self._common_bpm.get(difficulty.path))
             entry_item.setData(ROW_ROLE, {
-                "stars": stars, "stale": stale, "stats": (notes, timing),
+                "stars": stars, "stale": stale, "stats": (notes, timing), "notes": difficulty.notes,
                 "by": tr("MainWindow", "mapped by {name}").format(name=difficulty.creator) if difficulty.creator else "",
             })
             tip = difficulty.path.name
@@ -11644,9 +12192,57 @@ class LibraryPageController:
         self._shown_difficulties = {str(d.path): d for d in difficulties}
         if self.difficulty_list.count():
             self.difficulty_list.setCurrentRow(0)
+        if new_song:
+            self.difficulty_entrance.start()
+        # A range's most common BPM reads the whole file, so it is found off
+        # the GUI thread the first time and remembered after.
+        unknown = [d for d in difficulties if d.notes and round(d.bpm_min) != round(d.bpm_max)
+                   and d.path not in self._common_bpm]
+        if unknown:
+            self.jobs.submit(lambda: {d.path: most_common_bpm(d.path) for d in unknown},
+                             lambda found: self._show_common_bpm(found, unknown))
+        if rated_md5:
+            # osu! keys its rating to the file's hash: an edit since, here or
+            # anywhere, leaves the number describing a chart that is gone.
+            # Hashed off the GUI thread -- every difficulty of the song, on
+            # every selection, was 62ms of the stutter -- and marked when done.
+            self.jobs.submit(lambda: {path: osu_db.file_md5(path) for path in rated_md5},
+                             lambda found: self._mark_stale(found, rated_md5))
         self.difficulty_changed()
         if self._banner_art_key is None:
             self._show_banner_art(first)
+
+    @staticmethod
+    def _timing_text(difficulty, common: float | None) -> str:
+        if not difficulty.notes:
+            return ""
+        return (f"{format_length(difficulty.length_ms)} · "
+                f"{format_bpm(difficulty.bpm_min, difficulty.bpm_max, common)} BPM")
+
+    def _show_common_bpm(self, found: dict, difficulties) -> None:
+        self._common_bpm.update(found)
+        by_path = {d.path: d for d in difficulties}
+        for row in range(self.difficulty_list.count()):
+            item = self.difficulty_list.item(row)
+            difficulty = by_path.get(Path(item.data(Qt.UserRole)))
+            if difficulty is not None:
+                data = dict(item.data(ROW_ROLE) or {})
+                notes, _timing = data.get("stats", ("", ""))
+                data["stats"] = (notes, self._timing_text(difficulty, found.get(difficulty.path)))
+                item.setData(ROW_ROLE, data)
+
+    def _mark_stale(self, found: dict, rated_md5: dict) -> None:
+        """Dash the pill of every listed difficulty changed since osu! rated
+        it. A song moved away from has none of these rows left to mark."""
+        for row in range(self.difficulty_list.count()):
+            item = self.difficulty_list.item(row)
+            path = Path(item.data(Qt.UserRole))
+            if path in found and found[path] != rated_md5.get(path):
+                data = dict(item.data(ROW_ROLE) or {})
+                data["stale"] = True
+                item.setData(ROW_ROLE, data)
+                item.setToolTip(path.name + "\n" + tr(
+                    "MainWindow", "Changed since osu! rated it: open it in osu! to update the stars."))
 
     def _show_banner_art(self, difficulty) -> None:
         """The banner shows the selected difficulty's own background.
@@ -11660,12 +12256,20 @@ class LibraryPageController:
         if key == self._banner_art_key:
             return
         self._banner_art_key = key
-        art = (
-            decode_background(difficulty.folder / difficulty.background, 1280)
-            if difficulty.background else None
-        )
         title, subtitle = self._banner_song
-        self.song_banner.set_song(title, subtitle, art)
+        self.song_banner.set_text(title, subtitle)
+        if not difficulty.background:
+            self.song_banner.set_art(None)
+            return
+        # Decoded off the GUI thread (33ms median, measured), and crossfaded
+        # in when it lands -- unless the selection has moved on by then.
+        path = difficulty.folder / difficulty.background
+        self.jobs.submit(lambda: decode_background_image(path, 1280),
+                         lambda image: self._banner_art_decoded(key, image))
+
+    def _banner_art_decoded(self, key, image: QImage | None) -> None:
+        if key == self._banner_art_key:
+            self.song_banner.set_art(QPixmap.fromImage(image) if image is not None else None)
 
     def _keep_time_with(self, difficulty) -> None:
         """The banner's beat, from this difficulty's red lines and audio.
@@ -11682,15 +12286,43 @@ class LibraryPageController:
             start = float(difficulty.preview)
         except ValueError:
             start = -1.0
-        if audio == self._beat_audio and self.song_banner._clock is not None:
+        banner = self.song_banner
+        banner.set_preview(start)
+        if audio == self._beat_audio and banner._clock is not None:
             # Same audio: the clock already runs on it, only the lines change.
-            self.song_banner.set_tempo(tempo, self._beat_clock)
+            banner.set_tempo(tempo, self._banner_clock, self._banner_playing)
             return
         self._beat_audio = audio
         # Until the preview is heard, count from where it will start.
         self._beat_anchor_ms = start if start >= 0 else (tempo[0][0] if tempo else 0.0)
         self._beat_elapsed.start()
-        self.song_banner.set_tempo(tempo, self._beat_clock)
+        banner.set_tempo(tempo, self._banner_clock, self._banner_playing)
+        # The track is the song: its real length once the player has opened
+        # it, and until then the chart's, which stops at the last note.
+        banner.set_duration(self._audio_durations.get(audio) or float(difficulty.length_ms or 0))
+        banner.set_kiai([])  # the new chart's arrive with it (_load_chart_preview)
+        banner.glide(rewind=True)
+
+    def _banner_has_song(self) -> bool:
+        """The player holds this difficulty's audio, loaded."""
+        player = self.preview_player
+        return (player is not None and not self._preview_loading and self._preview_audio is not None
+                and self._preview_audio == self._beat_audio)
+
+    def _banner_playing(self) -> bool:
+        """The band moves and pulses only while this song is really heard.
+        Paused, stopped, loading or not yet started, it holds still: it once
+        counted wall time from the preview point whenever the player was not
+        playing this audio, so after a pick it ran on in silence (owner,
+        2026-10-09)."""
+        return self._banner_has_song() and self.preview_player.playbackState() == QMediaPlayer.PlayingState
+
+    def _banner_clock(self) -> float:
+        if self._banner_playing():
+            return self._beat_clock()
+        if self._banner_has_song():
+            return float(self.preview_player.position())  # where it was paused or stopped
+        return self._beat_anchor_ms  # where it will start
 
     def _beat_clock(self) -> float:
         """Song milliseconds for the beat line: the preview's position while it
@@ -11765,6 +12397,13 @@ class LibraryPageController:
             self._show_banner_art(difficulty)
             self._keep_time_with(difficulty)
             self._chart_pending = difficulty.path
+            # The chart on screen fades while the next one settles and loads,
+            # so it never sits there scrolling to the wrong song's clock; one
+            # come back to before it was replaced fades straight back in.
+            if difficulty.path == self._chart_shown:
+                self.chart_preview.fade_chart(1.0, CHART_FADE_IN_MS)
+            else:
+                self.chart_preview.fade_chart(0.0, CHART_FADE_OUT_MS)
             self.chart_timer.start()
 
     # -- the chart preview under the banner -------------------------------
@@ -11805,19 +12444,34 @@ class LibraryPageController:
             return
         document = self._chart_documents.get(path)
         if document is None:
-            try:
-                document = parse_osu(path)
-            except Exception:
-                return  # unreadable: the preview keeps what it had
-            # A handful, not the library: each holds every hit object.
-            if len(self._chart_documents) >= 8:
-                self._chart_documents.pop(next(iter(self._chart_documents)))
-            self._chart_documents[path] = document
+            # Parsed on a worker: up to 20ms of pure Python on the GUI thread
+            # was the longest single block left in a switch (measured). It
+            # still shares the GIL, but in the interpreter's 5ms slices rather
+            # than one frame-eating piece. Unreadable: the job fails, and the
+            # preview keeps what it had.
+            self.jobs.submit(lambda: parse_osu(path), lambda parsed: self._chart_parsed(path, parsed))
+            return
+        self._show_chart(path, document)
+
+    def _chart_parsed(self, path: Path, document) -> None:
+        # A handful, not the library: each holds every hit object.
+        if len(self._chart_documents) >= 8:
+            self._chart_documents.pop(next(iter(self._chart_documents)))
+        self._chart_documents[path] = document
+        if path == self._chart_pending:  # still the one wanted
+            self._show_chart(path, document)
+
+    def _show_chart(self, path: Path, document) -> None:
         self._chart_shown = path
         self.chart_preview.refresh_notes(document)
+        self.song_banner.set_kiai(self.chart_preview.kiai_bands)
+        # In from nothing whatever the last one was doing: its fade out may
+        # not have finished if the load was asked for directly (Play).
+        self.chart_preview._set_chart_opacity(0.0)
         self.chart_preview.show()
         self._fit_banner()
         self._tick_chart_preview(force=True)
+        self.chart_preview.fade_chart(1.0, CHART_FADE_IN_MS)
         self.chart_frame.start()
 
     def _chart_clock(self) -> float:
@@ -11861,12 +12515,13 @@ class LibraryPageController:
         if player is not None:
             self.seek_preview_to(round(self._chart_clock() + direction * player.duration() * 0.01))
 
-    def play_ui_sound(self, key: str) -> None:
+    def play_ui_sound(self, key: str, volume: float | None = None) -> None:
         """select-expand / select-difficulty: the skin's own, or the app's.
 
         Per sound, like the hitsounds: a skin with only one of the two keeps
         the app's other. At the effects (hitsound) volume, not the music's --
-        these are the interface's sounds, not the song's.
+        these are the interface's sounds, not the song's -- unless `volume`
+        says otherwise.
         """
         path = getattr(self.window, "skin", None) and self.window.skin.ui_sounds.get(key)
         if path is None:
@@ -11884,7 +12539,9 @@ class LibraryPageController:
             player.setAudioOutput(QAudioOutput(player))
             player.setSource(QUrl.fromLocalFile(str(path)))
             self._ui_players[path] = player
-        player.audioOutput().setVolume(self.window.settings.int_value("audio/hitsound_volume", 70) / 100.0)
+        if volume is None:
+            volume = self.window.settings.int_value("audio/hitsound_volume", 70) / 100.0
+        player.audioOutput().setVolume(volume)
         player.stop()
         player.play()
 
@@ -11915,6 +12572,8 @@ class LibraryPageController:
             self.preview_player = QMediaPlayer(self.window)
             self.preview_player.setAudioOutput(QAudioOutput(self.preview_player))
             self.preview_player.mediaStatusChanged.connect(self._preview_status)
+            self.preview_player.durationChanged.connect(self._preview_duration)
+            self.preview_player.playbackStateChanged.connect(self._preview_state_changed)
             self.preview_fade = QVariantAnimation(self.preview_player)
             self.preview_fade.setDuration(PREVIEW_FADE_MS)
             self.preview_fade.valueChanged.connect(
@@ -11926,6 +12585,26 @@ class LibraryPageController:
         # fresh load it started the song again the moment the page was left.
         self._preview_loading = True
         self.preview_player.setSource(QUrl.fromLocalFile(str(audio)))
+
+    def _preview_state_changed(self, state) -> None:
+        self.play_glyph.set_playing(state == QMediaPlayer.PlayingState)
+        # Re-anchor the beat clock on the player's own position whenever it
+        # starts or stops. Left alone, the anchor was wherever playback last
+        # was, and the wall time spent paused counted as song time: resumed
+        # after a long pause, the playhead (and the chart) showed where the
+        # song would have been had it kept playing, until the next position
+        # report snapped it back (owner, 2026-10-09).
+        if self._preview_audio is not None and self._preview_audio == self._beat_audio:
+            self._beat_anchor_ms = float(self.preview_player.position())
+            self._beat_elapsed.restart()
+            self._beat_seen_position = None
+
+    def _preview_duration(self, duration_ms: int) -> None:
+        audio = self._preview_audio
+        if duration_ms > 0 and audio is not None:
+            self._audio_durations[audio] = float(duration_ms)
+            if audio == self._beat_audio:
+                self.song_banner.set_duration(float(duration_ms))
 
     def _preview_status(self, status) -> None:
         if status == QMediaPlayer.LoadedMedia and self._preview_loading:
@@ -11999,8 +12678,13 @@ class LibraryPageController:
         path = Path(item.data(Qt.UserRole)).resolve()
         self.stop_preview()
         # _load_map_path reports its own failure, and moves to the Editor page
-        # itself once the difficulty really loaded.
-        self.window._load_map_path(path, refresh_difficulties=True)
+        # itself once the difficulty really loaded. From here, and only here,
+        # the default views include a gameplay preview.
+        self.window._gameplay_with_defaults = True
+        try:
+            self.window._load_map_path(path, refresh_difficulties=True)
+        finally:
+            self.window._gameplay_with_defaults = False
         if self.window.state.source_path == path:
             self.remember_recent(path)
 
@@ -12368,6 +13052,8 @@ class ToolStateController:
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
+        # Set only while song select opens a chart (_ensure_default_editor_views).
+        self._gameplay_with_defaults = False
         self.app_name="Taiko Fancy Arranger";self.setWindowTitle(self.app_name)
         icon=application_icon()
         if not icon.isNull():self.setWindowIcon(icon)
@@ -13245,7 +13931,10 @@ class MainWindow(QMainWindow):
         self.page_tabs.setStyleSheet(
             SEGMENT_STYLE
             + "QFrame#segment QPushButton { padding: 5px 18px; font-size: 14px; }"
+            + SEGMENT_GLIDE_STYLE
         )
+        # The checked pill slides to the new tab rather than jumping.
+        self._tab_glide = SegmentGlide(self.page_tabs, page_buttons)
         header.addWidget(self.page_tabs)
 
         root.addLayout(header)
@@ -13261,6 +13950,8 @@ class MainWindow(QMainWindow):
         self.page_stack.addWidget(self.fancy_arranger_page)
         self.page_stack.setCurrentIndex(PAGE_LIBRARY)
         root.addWidget(self.page_stack, 1)
+        # The page left slides away and the new one arrives (_show_page).
+        self._page_slide = PageSlide(self.page_stack, "#191f29")
         self._build_status_bar()
 
         # A transient toast for a refusal (see show_toast). Parented to
@@ -13268,6 +13959,9 @@ class MainWindow(QMainWindow):
         # whichever page is current as an ordinary un-managed child without
         # joining the QStackedLayout -- one instance serves every page.
         self._build_toast()
+        # A ripple under the pointer on every button the window has built.
+        # Lazy: a button never pressed costs an event filter, no widget.
+        self._ripples = [PressRipple(button) for button in self.findChildren(QPushButton)]
 
         # Both pages' playback-speed button sets exist now; sync them once.
         self._change_playback_speed(1.0)
@@ -13389,10 +14083,19 @@ class MainWindow(QMainWindow):
         self._toast_hide_timer.setSingleShot(True)
         self._toast_hide_timer.timeout.connect(self._start_toast_fade)
 
+        # Out faster than in (mockup, 2026-10-09): 160ms, was 400.
         self._toast_fade = QPropertyAnimation(self._toast_opacity, b"opacity", self)
-        self._toast_fade.setDuration(400)
+        self._toast_fade.setDuration(160)
         self._toast_fade.setEndValue(0.0)
         self._toast_fade.finished.connect(self._toast.hide)
+        # In: it rises 16px with a slight overshoot as it fades up.
+        self._toast_rise = QPropertyAnimation(self._toast, b"pos", self)
+        self._toast_rise.setDuration(340)
+        self._toast_rise.setEasingCurve(QEasingCurve.OutBack)
+        self._toast_appear = QPropertyAnimation(self._toast_opacity, b"opacity", self)
+        self._toast_appear.setDuration(200)
+        self._toast_appear.setStartValue(0.0)
+        self._toast_appear.setEndValue(1.0)
 
     def show_toast(self, text: str) -> None:
         """Flash `text` for 3 seconds, then fade it out over ~400ms.
@@ -13405,6 +14108,7 @@ class MainWindow(QMainWindow):
         already showing replaces the text and restarts the 3 seconds rather
         than queuing a second toast behind it.
         """
+        arriving = not self._toast.isVisible()
         self._toast_fade.stop()
         self._toast_opacity.setOpacity(1.0)
         self._toast.setText(text)
@@ -13412,9 +14116,18 @@ class MainWindow(QMainWindow):
         self._position_toast()
         self._toast.show()
         self._toast.raise_()
+        if arriving and not reduced_motion():
+            # A replacement swaps its text in place; only a new toast rises.
+            rest = self._toast.pos()
+            self._toast_rise.stop()
+            self._toast_rise.setStartValue(rest + QPoint(0, 16))
+            self._toast_rise.setEndValue(rest)
+            self._toast_rise.start()
+            self._toast_appear.start()
         self._toast_hide_timer.start(3000)
 
     def _start_toast_fade(self) -> None:
+        self._toast_appear.stop()
         self._toast_fade.stop()
         self._toast_fade.setStartValue(self._toast_opacity.opacity())
         self._toast_fade.start()
@@ -13656,6 +14369,7 @@ class MainWindow(QMainWindow):
         transform_scroll.setFrameShape(QFrame.NoFrame)
         transform_scroll.setWidget(right)
         smooth(transform_scroll)
+        keep_width_under_scrollbar(transform_scroll, right_layout)
         self.fancy_transform_dock = QDockWidget(tr("MainWindow", "Transform"), docks)
         self.fancy_transform_dock.setObjectName("fancy_transform_dock")
         self.fancy_transform_dock.setWidget(transform_scroll)
@@ -13738,6 +14452,11 @@ class MainWindow(QMainWindow):
         self.timeline.timing_bar = self.fancy_timing_bar
 
         self.timeline_play_button=QPushButton("▶");self.timeline_play_button.clicked.connect(self.toggle_playback);timeline_row.addWidget(self.timeline_play_button)
+        # Song select's morphing play/pause (owner, 2026-10-09). The text
+        # still flips between ▶ and ❚❚ -- it is what the row's widths are
+        # measured from -- but drawn invisible, under PlayPauseGlyph.
+        self.timeline_play_button.setStyleSheet("QPushButton { color: transparent; }")
+        self.fancy_play_glyph = PlayPauseGlyph(self.timeline_play_button, "#17191f", "#17191f")
         self.playback_speed_buttons=[]
         for label,rate in (("25%",.25),("50%",.5),("75%",.75),("100%",1.0)):
             button=QPushButton(label);button.setCheckable(True);button.setProperty("playbackRate",rate)
@@ -13824,7 +14543,16 @@ class MainWindow(QMainWindow):
         # by an earlier _leave_editor never gets them back on its own.
         if index == PAGE_EDITOR and self.state is not None:
             self._ensure_default_editor_views(self.state)
+        if index != current:
+            self._click_page_change()
         self._show_page(index)
+
+    def _click_page_change(self) -> None:
+        """The skin's difficulty click, for a page the user changed -- a tab,
+        or Esc back to the songs -- at full level rather than the effects
+        volume the difficulty list plays it at (owner, 2026-10-09). Not in
+        _show_page: loading a map changes page too, and that is not a click."""
+        self._library.play_ui_sound("select_difficulty", volume=1.0)
 
     def _reload_timing_bars(self, state, force: bool = False) -> None:
         """Rebuild every kiai/bookmark/marker bar from `state`.
@@ -13852,7 +14580,15 @@ class MainWindow(QMainWindow):
     def _show_page(self, index: int) -> None:
         """Switch page and keep the header tab that owns it checked."""
         leaving = self.page_stack.currentIndex()
+        sliding = index != leaving and self.page_stack.isVisible() and not reduced_motion()
+        before = self.page_stack.currentWidget().grab() if sliding else None
         self.page_stack.setCurrentIndex(index)
+        if sliding:
+            # Laid out before it is photographed: a page whose views were
+            # just built still has its layout requests queued.
+            for _ in range(2):
+                QApplication.sendPostedEvents(None, QEvent.LayoutRequest)
+            self._page_slide.play(before, self.page_stack.currentWidget().grab(), 1 if index > leaving else -1)
         button = self.page_button_group.button(index)
         if button is not None:
             button.setChecked(True)
@@ -13906,6 +14642,8 @@ class MainWindow(QMainWindow):
 
     def _back_to_library(self) -> None:
         if self._leave_editor():
+            if self.page_stack.currentIndex() != PAGE_LIBRARY:
+                self._click_page_change()
             self._show_page(PAGE_LIBRARY)
 
     def _confirm_exit_application(self) -> None:
@@ -14092,6 +14830,7 @@ class MainWindow(QMainWindow):
             self._release_application_hooks()
             self._release_audio_file()
             self._library.stop_preview()
+            self._library.jobs.shutdown()
             event.accept()
         else:
             event.ignore()
@@ -14303,7 +15042,9 @@ class MainWindow(QMainWindow):
         # the widest things on it for the least information.
         self.editor_play_button = QPushButton("▶")
         self.editor_play_button.setFocusPolicy(Qt.NoFocus)
-        self.editor_play_button.setStyleSheet(TOOL_BUTTON_STYLE)
+        # Morphs like the Fancy Arranger's; the typed text stays for width.
+        self.editor_play_button.setStyleSheet(TOOL_BUTTON_STYLE + " QPushButton { color: transparent; }")
+        self.editor_play_glyph = PlayPauseGlyph(self.editor_play_button, "#17191f", "#17191f")
         self.editor_play_button.clicked.connect(self.toggle_playback)
         strip.addWidget(self.editor_play_button)
 
@@ -14429,6 +15170,8 @@ class MainWindow(QMainWindow):
         self.gimmick_play_button = QPushButton("▶")
         self.gimmick_play_button.setFocusPolicy(Qt.NoFocus)
         self.gimmick_play_button.clicked.connect(self.toggle_playback)
+        self.gimmick_play_button.setStyleSheet("QPushButton { color: transparent; }")
+        self.gimmick_play_glyph = PlayPauseGlyph(self.gimmick_play_button, "#17191f", "#17191f")
         strip.addWidget(self.gimmick_play_button)
 
         self.gimmick_playback_speed_buttons = []
@@ -14462,6 +15205,19 @@ class MainWindow(QMainWindow):
         self.gimmick_reference_button.clicked.connect(self._change_gimmick_reference)
         self.gimmick_reference_button.setProperty("role", "ghost")
         status_row.addWidget(self.gimmick_reference_button)
+        # The Editor page's View size, for the layer bands (owner, 2026-10-09):
+        # every band at once, for the same reason as there -- the six layers
+        # are read together, so they share a height. Its own setting, since a
+        # band and a full Editor view want different sizes.
+        self.gimmick_view_height_spin = QSpinBox()
+        self.gimmick_view_height_spin.setRange(TimelineGameplay.MIN_HEIGHT, 600)
+        self.gimmick_view_height_spin.setSingleStep(10)
+        self.gimmick_view_height_spin.setToolTip(tr("MainWindow", "View height"))
+        self.gimmick_view_height_spin.setValue(self.settings.int_value(
+            "gimmick/view_height", self.GIMMICK_LAYER_HEIGHT))
+        self.gimmick_view_height_spin.valueChanged.connect(self._gimmick_view_height_changed)
+        status_row.addWidget(QLabel(tr("MainWindow", "View size")))
+        status_row.addWidget(self.gimmick_view_height_spin)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -14601,6 +15357,20 @@ class MainWindow(QMainWindow):
         config_button.setFocusPolicy(Qt.NoFocus)
         config_button.clicked.connect(lambda _=False, lid=layer_id: self._open_gimmick_config(lid))
         layout.addWidget(config_button)
+        if layer_id == "barline":
+            # Experimental Conversion (owner, 2026-10-09): a menu, not a tool,
+            # since what is in it acts on the whole map and needs no drag.
+            experimental = QPushButton(tr("MainWindow", "Experimental Conversion"))
+            experimental.setFixedHeight(self.TOOL_BUTTON_HEIGHT)
+            experimental.setStyleSheet(gimmick_button_style)
+            experimental.setFocusPolicy(Qt.NoFocus)
+            menu = QMenu(experimental)
+            menu.addAction(tr("MainWindow", "Convert Whole Map, Keep SV…")).triggered.connect(
+                lambda _=False: self._gimmick_pairing is not None
+                and self._experimental_conversion(self._gimmick_pairing.target))
+            experimental.setMenu(menu)
+            self.gimmick_experimental_button = experimental
+            layout.addWidget(experimental)
 
         layout.addStretch(1)
         self.gimmick_tool_buttons[layer_id] = buttons
@@ -16082,7 +16852,7 @@ class MainWindow(QMainWindow):
             # has to be fixed rather than merely allowed: a bare QWidget has no
             # height of its own to fall back on, so a minimum of zero is what
             # the layout gives it.
-            view.setFixedHeight(self.GIMMICK_LAYER_HEIGHT)
+            view.setFixedHeight(self.gimmick_view_height_spin.value())
             frame.set_content(view)
             setattr(frame, "chart_view" if view_type == "chart" else "sv_view", view)
 
@@ -16238,7 +17008,7 @@ class MainWindow(QMainWindow):
     def _gimmick_commands(
         self, state, pairing, layer_id: str, kind: str, time_ms: int, indices,
         copies: int | None = None, big: bool = False,
-        config: GimmickConfig | None = None,
+        config: GimmickConfig | None = None, sv_model=None,
     ) -> list:
         """Everything one gimmick structure writes, as commands. [] for a no-op.
 
@@ -16254,6 +17024,10 @@ class MainWindow(QMainWindow):
         `config` overrides the layer's saved one for this call. Convert Notes
         asks for its numbers per drag (see `ConvertNotesDialog`), and those must
         not be written back to the layer.
+
+        `sv_model` (`sv_curves.SvModel`) is Keep SV: every red line the
+        structure writes gets the chart's own speed back on its millisecond,
+        instead of the one restore handle at the end of the cluster.
         """
         if kind in ("don", "kat"):
             time_ms = self._note_centre_near(state.document, time_ms)
@@ -16351,7 +17125,9 @@ class MainWindow(QMainWindow):
         # differently. The cost is accepted and real: layer 5 matches its green
         # lines by exact millisecond, so these structures no longer arrive with
         # a line for it to show, drag or sweep from.
-        if layer_id != "fake_slider" and points:
+        if sv_model is not None and points:
+            points = gimmick_keep_sv(points, sv_model, at_note=time_ms)
+        elif layer_id != "fake_slider" and points:
             restore_at = max(point.time for point in points)
             already_handled = any(
                 not point.uninherited and round(point.time) == round(restore_at)
@@ -16584,7 +17360,7 @@ class MainWindow(QMainWindow):
 
     def _convert_to_anti_barline(
         self, difficulty_path: Path, start_ms: float, end_ms: float,
-        config: GimmickConfig | None = None,
+        config: GimmickConfig | None = None, sv_model=None,
     ) -> None:
         """Turn a dragged range into the anti-barline gimmick.
 
@@ -16617,7 +17393,7 @@ class MainWindow(QMainWindow):
                     note for note in state.document.hit_objects
                     if start_ms <= note.time <= end_ms
                 ],
-                start_ms, end_ms, pairing.base_timing, config,
+                start_ms, end_ms, pairing.base_timing, config, model=sv_model,
             )
         except GimmickConfigError as error:
             QMessageBox.warning(self, tr("MainWindow", "Cannot place this"), str(error))
@@ -16625,6 +17401,7 @@ class MainWindow(QMainWindow):
         if not points:
             self.show_toast(tr("MainWindow", "No notes in the selected range to convert."))
             return
+        replaced = self._greens_under_wall(state.document, points, sv_model) if sv_model is not None else []
         # Only the red lines are filtered against what is already there. The
         # green line beside each one is this layer's handle on it and has to
         # survive even where the map's own timing supplied the red line, or
@@ -16639,12 +17416,56 @@ class MainWindow(QMainWindow):
             self.show_toast(tr("MainWindow", "There is already a gimmick here."))
             return
         # Same reason as every other generator: a thousand lines with kiai off
-        # is a thousand ways to kill the section they were drawn across.
+        # is a thousand ways to kill the section they were drawn across. Read
+        # before the chart's own green lines go (Keep SV), from the chart as
+        # it was.
         carry_active_state(points, state.document.timing_points)
-        state.history.push(self._insert_points_command(state.document, points), state)
+        # Displacement is worked out on the timeline as it will be, without
+        # the lines already being removed: removed twice, an undo would put
+        # each of them back twice.
+        gone = {point.uid for command in replaced if isinstance(command, RemoveTimingPoints)
+                for point in command.points}
+        remaining = SimpleNamespace(
+            timing_points=[point for point in state.document.timing_points if point.uid not in gone])
+        command = self._insert_points_command(remaining, points)
+        if replaced:
+            command = CompositeCommand([*replaced, command], "insert_timing_points")
+        state.history.push(command, state)
         with self._refresh_cycle():
             self._refresh_difficulty_views(pairing.target)
             self._refresh_difficulty_sv_views(pairing.target)
+
+    def _greens_under_wall(self, document, points: list, model) -> list:
+        """Keep SV's anti-barline: what becomes of the chart's own green lines
+        under the wall.
+
+        Left in place, each would hold its step value until the next wall
+        tick, cutting the interpolated sheet back into the staircase Keep SV
+        exists to remove -- so they go. Except a line that changes **kiai or
+        volume**: that is a section edge, kept on its exact millisecond with
+        its SV rewritten to the curve's value there.
+        """
+        reds = [point.time for point in points if point.uninherited]
+        if not reds:
+            return []
+        first, last = min(reds), max(reds)
+        ordered = sorted_by_time(document.timing_points)
+        removed, commands = [], []
+        previous = None
+        for point in ordered:
+            if not point.uninherited and first < point.time < last:
+                edge = previous is not None and (
+                    bool(point.kiai) != bool(previous.kiai) or point.volume != previous.volume)
+                if edge:
+                    value = model.value_at(point.time)
+                    commands.append(EditTimingPoint(
+                        point.uid, {"beat_length": (point.beat_length, -100.0 / value)}))
+                else:
+                    removed.append(point)
+            previous = point
+        if removed:
+            commands.insert(0, RemoveTimingPoints(removed))
+        return commands
 
     def _convert_to_hidden_anti_barline(
         self, difficulty_path: Path, start_ms: float, end_ms: float,
@@ -16719,14 +17540,42 @@ class MainWindow(QMainWindow):
         state = self._states.get(difficulty_path)
         if state is None or pairing is None:
             return
-        dialog = ConvertNotesDialog(self._gimmick_config(layer_id), layer_id, self, start_ms, end_ms)
+        self._run_conversion(difficulty_path, layer_id, start_ms, end_ms, experimental=False)
+
+    def _experimental_conversion(self, difficulty_path: Path) -> None:
+        """The barline layer's Experimental Conversion: the whole map into
+        barline notes or anti-barline, with the chart's SV kept (owner,
+        2026-10-09). Every note, first to last; same window, no hidden
+        anti-barline, Keep SV always on."""
+        state = self._states.get(difficulty_path)
+        if state is None or self._gimmick_pairing is None or not state.document.hit_objects:
+            self.show_toast(tr("MainWindow", "No notes in the selected range to convert."))
+            return
+        times = [note.time for note in state.document.hit_objects]
+        self._run_conversion(difficulty_path, "barline", min(times), max(times), experimental=True)
+
+    def _run_conversion(
+        self, difficulty_path: Path, layer_id: str, start_ms: float, end_ms: float, experimental: bool,
+    ) -> None:
+        pairing = self._gimmick_pairing
+        state = self._states.get(difficulty_path)
+        # The chart's own SV, read from this difficulty (owner: the gimmick
+        # difficulty is still the original chart wherever it has not been
+        # converted). A snapshot, so the window's reading does not move under
+        # it; the barline layer only.
+        sv_inputs = (
+            (list(state.document.timing_points), list(state.document.hit_objects), start_ms, end_ms)
+            if layer_id == "barline" else None
+        )
+        dialog = ConvertNotesDialog(self._gimmick_config(layer_id), layer_id, self, start_ms, end_ms,
+                                    sv_inputs=sv_inputs, experimental=experimental)
         accepted = dialog.exec() == QDialog.DialogCode.Accepted
-        mode, config = dialog.mode(), dialog.config()
+        mode, config, sv_model = dialog.mode(), dialog.config(), dialog.sv_model() if accepted else None
         dialog.deleteLater()
         if not accepted:
             return
         if mode == ConvertNotesDialog.ANTI:
-            self._convert_to_anti_barline(difficulty_path, start_ms, end_ms, config)
+            self._convert_to_anti_barline(difficulty_path, start_ms, end_ms, config, sv_model=sv_model)
             return
         if mode == ConvertNotesDialog.HIDDEN:
             self._convert_to_hidden_anti_barline(difficulty_path, start_ms, end_ms, config)
@@ -16738,11 +17587,21 @@ class MainWindow(QMainWindow):
                 continue
             commands.extend(self._gimmick_commands(
                 state, pairing, layer_id, "kat" if note.is_kat else "don",
-                round(note.time), indices, config=config,
+                round(note.time), indices, config=config, sv_model=sv_model,
             ))
         if not commands:
             self.show_toast(tr("MainWindow", "No notes in the selected range to convert."))
             return
+        # One insert for the whole batch, where the first one was: each sorts
+        # the whole timing list as it applies, and a whole map was 5,310
+        # sorts (measured, Darling Game Over Love). A stable sort of the
+        # concatenation leaves every tie in the order the separate ones did.
+        inserts = [command for command in commands if isinstance(command, InsertTimingPoints)]
+        if len(inserts) > 1:
+            merged = InsertTimingPoints([point for command in inserts for point in command.points])
+            first = commands.index(inserts[0])
+            commands = [command for command in commands if not isinstance(command, InsertTimingPoints)]
+            commands.insert(first, merged)
         state.history.push(CompositeCommand(commands, "place_gimmick"), state)
         with self._refresh_cycle():
             self._refresh_difficulty_views(pairing.target)
@@ -16804,7 +17663,12 @@ class MainWindow(QMainWindow):
         )
         if existing is None:
             return notes
-        if bool(existing.hit_sound & HITSOUND_CLAP) != (kind == "kat"):
+        # osu!'s own rule, whistle *or* clap: on the clap bit alone every
+        # whistle kat read as a don, so converting a map replaced each one with
+        # a fresh clap kat at the playfield centre -- its hitsound and its
+        # Fancy Arranger position gone (owner, 2026-10-09: 713 notes of
+        # Darling Game Over Love's Ura Oni).
+        if existing.is_kat != (kind == "kat"):
             return notes
         return [note for note in notes if self.is_fake_slider(note) or round(note.time) != time_ms]
 
@@ -17035,6 +17899,19 @@ class MainWindow(QMainWindow):
         does not put the two on different scales.
         """
         return self._editor_zoom_ms
+
+    def _gimmick_view_height_changed(self, height: int) -> None:
+        """Resize every gimmick band (the six layers and any "+" view), and
+        remember the size."""
+        self.settings.set_value("gimmick/view_height", int(height))
+        # The layers live in _gimmick_views; a "+" band in _editor_views,
+        # told apart from the Editor's own views by its compact chrome.
+        for frame in [*self._gimmick_views, *self._editor_views]:
+            if not getattr(frame, "compact", False):
+                continue
+            content = getattr(frame, "content", None)
+            if isinstance(content, (TimelineGameplay, SVEditorView)):
+                content.setFixedHeight(int(height))
 
     def _editor_view_height_changed(self, height: int) -> None:
         """Resize every open Editor-page view, and remember the size."""
@@ -17421,7 +18298,7 @@ class MainWindow(QMainWindow):
         if container is not None:
             content = frame.content
             if isinstance(content, (TimelineGameplay, SVEditorView)):
-                content.setFixedHeight(self.GIMMICK_LAYER_HEIGHT)
+                content.setFixedHeight(self.gimmick_view_height_spin.value())
                 # Same base snapshot and snap the six layers use: a view added
                 # here that snapped against the live document would collapse its
                 # grid onto the gimmick's 60000 BPM lines.
@@ -19601,6 +20478,11 @@ class MainWindow(QMainWindow):
                 return
         self._add_editor_view("chart", state.source_path)
         self._add_editor_view("sv", state.source_path)
+        # Opened from song select, the pair comes with a gameplay preview
+        # under it (owner, 2026-10-09); another difficulty opened from inside
+        # the editor gets the pair alone.
+        if self._gameplay_with_defaults:
+            self._add_editor_view("gameplay", state.source_path)
 
     def open_map(self) -> None:
         filename, _ = QFileDialog.getOpenFileName(
@@ -20183,8 +21065,11 @@ class MainWindow(QMainWindow):
             self._set_views_playing(False)
             self.play_button.setText(tr("MainWindow", "Play"))
             if hasattr(self,"timeline_play_button"):self.timeline_play_button.setText("▶")
+            if hasattr(self,"fancy_play_glyph"):self.fancy_play_glyph.set_playing(False)
             if hasattr(self,"editor_play_button"):self.editor_play_button.setText("▶")
+            if hasattr(self,"editor_play_glyph"):self.editor_play_glyph.set_playing(False)
             if hasattr(self,"gimmick_play_button"):self.gimmick_play_button.setText("▶")
+            if hasattr(self,"gimmick_play_glyph"):self.gimmick_play_glyph.set_playing(False)
         else:
             # The anchor is already the playhead, to the fraction of a
             # millisecond seek_audio kept there on purpose; self.player.position()
@@ -20202,8 +21087,11 @@ class MainWindow(QMainWindow):
             self._awaiting_rate_report=False
             self.play_button.setText(tr("MainWindow", "Pause"))
             if hasattr(self,"timeline_play_button"):self.timeline_play_button.setText("❚❚")
+            if hasattr(self,"fancy_play_glyph"):self.fancy_play_glyph.set_playing(True)
             if hasattr(self,"editor_play_button"):self.editor_play_button.setText("❚❚")
+            if hasattr(self,"editor_play_glyph"):self.editor_play_glyph.set_playing(True)
             if hasattr(self,"gimmick_play_button"):self.gimmick_play_button.setText("❚❚")
+            if hasattr(self,"gimmick_play_glyph"):self.gimmick_play_glyph.set_playing(True)
 
     def seek_audio(self, position: float) -> None:
         """Move the shared playhead. `position` is a float on purpose.

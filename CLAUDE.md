@@ -102,6 +102,28 @@ recovery -- two real bugs inherited from reading a stale copy.
   warble, clicks and cost. **Needs a real track**; every signal it generates
   itself is synthetic, and that is exactly how a geometry that took a kick
   drum apart scored 0.987 and shipped.
+- `tools/measure_wheel_seek.py ... --rate R` plays at a speed button's rate;
+  `tools/measure_play_start.py <map> [rate ...] [--editor] [--gameplay]` is
+  the wait after Play and the longest stall once moving. "Scrolling while
+  playing freezes the playhead for about a second, worse slowed down" was
+  **a stale parked seek landing after a newer one** (2026-10-09): a notch
+  inside `SEEK_COALESCE_MS` parked, the next one landed immediately, and the
+  parked one's timer then put the audio back up to a notch. The playhead held
+  at the newer target under the no-backwards clamp until the music caught up
+  -- gap / rate, hence slower is longer: 774ms at 0.5x, 300-400ms at 1.0x.
+  `_land_seek` now cancels whatever is parked; 15 traced runs, worst 22ms.
+- `tools/measure_song_switch.py [switches] [--seed N]` — what moving to
+  another song in song select costs the event loop, phase by phase, with the
+  worst gap of each switch put down to what ran inside it and a no-switch
+  floor to compare against. **Run it twice**: the first pass reads every
+  `.osu` cold, which is the real case when browsing, and hashing for the
+  staleness check was 62ms of a switch cold against 0.6ms warm. It found
+  the stutter before the chart preview loads: 99ms median, 208ms worst on
+  the GUI thread, now 16ms / 27ms against a 9.6ms floor (2026-10-09), by
+  moving the hashing, the background decode and the `.osu` parse onto
+  `BackgroundJobs`. Qt's image decode was measured to release the GIL (0.7ms
+  worst main-thread stall during 1.3s of decoding); a worker that merely
+  *overlaps* a gap is not its cause, which the attribution once got wrong.
 - `tools/play_with_hitsounds.py <map.osu> [rate] [seconds] [start_ms]` — the
   whole path, audibly: parse, schedule, decode, stretch, mix, sink. `voiced`
   and `offered` must be equal, or the 1/rate dedupe has leaked and every note
@@ -448,6 +470,49 @@ meter 1 and no end of its own, so without a closing red line the sheet runs to
 the map's next one, which on cleanly-timed chart is the rest of the song. It is
 placed on the chart's own next barline after the range, so the bars resume in
 phase.
+
+### Keep SV: the chart's speed survives a conversion
+
+Every structure is red lines, and a red line resets SV to 1.0x. Keep SV
+(Convert Notes > Barline notes, per selection) and the barline layer's
+**Experimental Conversion** menu (whole map, barline notes or anti-barline,
+owner 2026-10-09) write the chart's own speed back after every one of them,
+read from `sv_curves.SvModel`:
+
+- **A green line belongs to the next note**, provided no note sits between
+  them: mappers offset a note's line a few ms back so the note reads it, and
+  never past the previous note. Original red lines split everything -- nothing
+  is interpolated across an SV reset.
+- **Runs are Generate SV's own curves**, detected by fitting `sv_ease`
+  (moved to `sv_curves`, the very function that wrote them) by note time:
+  linear, Sin In/Out, Sin, Exp 1.3/1.6, True Exp, and a fitted Exp x. A run
+  is found by its monotonic reach, tried from the far end inward -- grown one
+  point at a time it broke every Sin sweep into pieces, since the start of a
+  Sin sweep is not a Sin sweep between its own ends.
+- **At every note, the exact value osu! reads there.** A green line usually
+  governs several notes; interpolating anchor to anchor sped up the ones in
+  between (up to 7.7x off, measured on installed maps). Between two notes the
+  value ramps along the curve **only if a green line sits in that gap**, the
+  owner's "never interpolate where there is no green line".
+- **Barline keeps a lone jump a step; anti-barline ramps it.** The wall fills
+  every gap, and a step in it is a tear in the sheet.
+- **A barline note is one object**: every line of its structure takes the
+  note's own value (`keep_sv(..., at_note=)`). Read per line, a Kat's mirrored
+  bars (before the note) kept the speed from before a jump and came apart
+  from the rest -- Don never showed it, its bars default to after the note.
+- **A kat is whistle *or* clap.** `_without_redundant_note` tested the clap
+  bit alone, so converting replaced every whistle kat with a new clap kat at
+  the playfield centre: 713 notes of a real map lost their hitsound and their
+  Fancy Arranger position.
+- **Speed**: the exponent of a typed Exp x is solved (`ln u / ln t`), not
+  searched, and a candidate curve stops at its first miss; `anti_barline`
+  looks BPM up in the red lines alone. Whole map, Darling Game Over Love Ura
+  Oni: barline 131s -> 7.7s, anti-barline 22.5s -> 3.9s.
+- **Under an anti-barline wall the chart's green lines go**, or each would hold
+  its step until the next tick. A line that changes kiai or volume stays on its
+  millisecond with its SV rewritten to the curve. Measured over ten installed
+  maps: every note's SV identical to the original, whole-map detection
+  0.01-7s.
 
 ### Convert Notes is the one way in, and its numbers are per call
 

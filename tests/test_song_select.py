@@ -8,6 +8,7 @@ import struct
 import tempfile
 import types
 import unittest
+import unittest.mock
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -109,6 +110,17 @@ class BpmTextTests(unittest.TestCase):
         self.assertEqual(gui.format_bpm(bpm, bpm), "∞")
         self.assertEqual(gui.format_bpm(150.2, 149.8), "150")
 
+    def test_a_range_says_which_bpm_it_mostly_is(self):
+        # Owner, 2026-10-09: aleph-0 as "125–400 (250)", the density view's rule.
+        import gui
+        from song_library import most_common_beat_length
+
+        self.assertEqual(gui.format_bpm(125, 400, 250), "125–400 (250)")
+        self.assertEqual(gui.format_bpm(250, 250, 250), "250", "one tempo needs no brackets")
+        # 250 for 60s, 400 for 20s, 125 for 10s up to the last object at 90s.
+        lines = [(0.0, 240.0), (60000.0, 150.0), (80000.0, 480.0)]
+        self.assertEqual(most_common_beat_length(lines, 90000.0), 240.0)
+
 
 class SongDotTests(unittest.TestCase):
     def test_a_pack_shows_a_count_of_the_rest(self):
@@ -167,6 +179,68 @@ class PageTests(unittest.TestCase):
         # sendEvent, not widget.event(): only the former passes the filters.
         QApplication.sendEvent(widget, QKeyEvent(QKeyEvent.KeyPress, key, Qt.NoModifier, text))
 
+    def test_the_band_holds_still_unless_the_song_is_heard(self):
+        # Owner, 2026-10-09: paused (or loading another pick), the playhead
+        # ran on from the preview point in silence.
+        from PySide6.QtMultimedia import QMediaPlayer
+
+        lib = self.window._library
+        state = [QMediaPlayer.StoppedState]
+
+        class Player:
+            def playbackRate(self): return 1.0
+            def playbackState(self): return state[0]
+            def position(self): return 42000
+
+        lib.preview_player = Player()
+        lib._preview_audio = lib._beat_audio = Path("audio.mp3")
+        lib._beat_anchor_ms = 30000.0
+        lib._preview_loading = True
+        self.assertEqual(lib._banner_clock(), 30000.0, "loading: held at where it will start")
+        self.assertFalse(lib._banner_playing())
+        lib._preview_loading = False
+        state[0] = QMediaPlayer.PausedState
+        self.assertEqual(lib._banner_clock(), 42000.0, "paused: held where it stopped")
+        self.assertFalse(lib._banner_playing())
+        state[0] = QMediaPlayer.PlayingState
+        self.assertTrue(lib._banner_playing())
+        lib.preview_player = None  # tearDown's close() would stop the fake
+
+    def test_a_long_pause_does_not_count_as_song_time_on_resume(self):
+        # Owner, 2026-10-09: paused for a long while, the playhead blinked to
+        # where the song would have been had it kept playing.
+        from PySide6.QtMultimedia import QMediaPlayer
+
+        lib = self.window._library
+        wall = [0.0]
+        state = [QMediaPlayer.PlayingState]
+
+        class Elapsed:
+            def __init__(self): self.base = 0.0
+            def elapsed(self): return wall[0] - self.base
+            def start(self): self.base = wall[0]
+            restart = start
+
+        class Player:
+            def playbackRate(self): return 1.0
+            def playbackState(self): return state[0]
+            def position(self): return 20000
+
+        lib.preview_player = Player()
+        lib._preview_audio = lib._beat_audio = Path("audio.mp3")
+        lib._beat_elapsed = Elapsed()
+        lib._beat_anchor_ms = 20000.0
+        state[0] = QMediaPlayer.PausedState
+        lib._preview_state_changed(state[0])
+        wall[0] = 600000.0  # ten minutes paused
+        state[0] = QMediaPlayer.PlayingState
+        lib._preview_state_changed(state[0])
+        wall[0] += 8.0  # the first frame after resuming, before any new report
+        reading = lib._beat_clock()
+        lib.preview_player = None  # tearDown's close() would stop the fake
+        # Within the clock's own easing of a frame; ten minutes off before.
+        self.assertLess(abs(reading - 20008.0), 5.0)
+
     def test_the_preview_clock_never_steps_back_between_coarse_positions(self):
         # The player reports its position in ~52ms steps. Checked every frame
         # against a 40ms bound, the stale value snapped the clock back 40ms
@@ -216,6 +290,25 @@ class PageTests(unittest.TestCase):
         self.key(self.window.song_list, Qt.Key_Up)
         self.assertEqual(self.window.song_list.currentRow(), 0)
 
+    def test_a_missing_chart_leaves_its_card_to_the_next_one(self):
+        # Owner, 2026-10-09: one of the last four had been deleted, and with
+        # only four remembered the row showed three.
+        import gui
+
+        library = self.window._library
+        charts = []
+        for index in range(gui.RECENT_CHARTS_SHOWN + 1):
+            folder = self.root / f"Extra {index}"
+            folder.mkdir()
+            charts.append(write_fixture(folder, "full_v14"))
+        for chart in charts:
+            library.remember_recent(chart)
+        charts[-1].unlink()  # the newest is gone
+        library.refresh_continue_row()
+        shown = [card.path for card in library.continue_cards if not card.isHidden()]
+        self.assertEqual(len(shown), gui.RECENT_CHARTS_SHOWN)
+        self.assertNotIn(str(charts[-1]), shown)
+
     def test_opening_a_chart_puts_it_in_continue(self):
         library = self.window._library
         library.refresh_continue_row()  # built from the real settings, before the patch
@@ -226,6 +319,22 @@ class PageTests(unittest.TestCase):
         self.assertEqual(Path(recent[0][0]), self.window.state.source_path)
         self.assertFalse(library.continue_row.isHidden())
         self.assertEqual(library.continue_cards[0].path, recent[0][0])
+
+    def test_song_select_opens_a_gameplay_preview_under_the_pair(self):
+        # Owner, 2026-10-09: from song select, chart + SV + gameplay; another
+        # difficulty opened from inside the editor gets the pair alone.
+        self.window.song_list.setCurrentRow(0)
+        self.window._open_selected_difficulty()
+        first = self.window.state.source_path
+        kinds = [frame.view_type for frame in self.window._editor_views
+                 if getattr(frame, "difficulty_path", None) == first]
+        self.assertEqual(kinds, ["chart", "sv", "gameplay"])
+        other = Path(self.window.song_list.item(1).data(Qt.UserRole))
+        other = next(other.glob("*.osu"))
+        self.window._load_map_path(other)
+        kinds = [frame.view_type for frame in self.window._editor_views
+                 if getattr(frame, "difficulty_path", None) == self.window.state.source_path]
+        self.assertEqual(kinds, ["chart", "sv"])
 
     def test_a_continue_card_shows_its_charts_art_and_no_age(self):
         """Owner's call: no "opened N min ago", the chart's background
@@ -286,9 +395,43 @@ class PageTests(unittest.TestCase):
             with self.subTest(stale=stale):
                 self.window._library.star_ratings = osu_db.read(self._write_db(db, song, md5))
                 self.window._library.song_selected(0)
+                # Hashed off the GUI thread, and marked when it is done.
+                self.window._library.jobs.drain()
                 row = self.window.difficulty_list.item(0).data(Qt.UserRole + 1)
                 self.assertAlmostEqual(row["stars"], 4.5, places=5)
                 self.assertEqual(row["stale"], stale)
+
+    def test_background_work_is_delivered_on_the_gui_thread(self):
+        import threading
+
+        seen = []
+        jobs = self.window._library.jobs
+        jobs.submit(threading.get_ident, lambda worker: seen.append((worker, threading.get_ident())))
+        jobs.drain()
+        (worker, deliverer), = seen
+        self.assertNotEqual(worker, threading.main_thread().ident, "the work left the GUI thread")
+        self.assertEqual(deliverer, threading.main_thread().ident, "and came back to it")
+
+    def test_the_banner_art_is_decoded_off_the_gui_thread_and_kept_only_if_still_wanted(self):
+        library = self.window._library
+        self.window.song_list.setCurrentRow(0)
+        key = library._banner_art_key
+        library._banner_art_key = ("somewhere", "else")  # the user moved on
+        library.jobs.drain()
+        library._banner_art_decoded(key, None)
+        self.assertIsNone(library.song_banner._art)
+
+    def test_the_chart_fades_out_on_a_new_song_and_in_once_loaded(self):
+        library = self.window._library
+        self.window.song_list.setCurrentRow(0)
+        library._load_chart_preview()
+        library.jobs.drain()  # parsed on a worker
+        self.assertEqual(library.chart_preview.chart_opacity, 1.0)
+        self.window.song_list.setCurrentRow(1)
+        self.assertEqual(library.chart_preview.chart_opacity, 0.0, "the old chart goes")
+        library._load_chart_preview()
+        library.jobs.drain()  # parsed on a worker
+        self.assertEqual(library.chart_preview.chart_opacity, 1.0, "the new one comes")
 
     def test_the_preview_follows_the_difficultys_own_audio(self):
         """One folder, two songs: each difficulty previews its own file."""
@@ -368,6 +511,16 @@ class PageTests(unittest.TestCase):
         played = []
         self.window._library.play_ui_sound = played.append
         return played
+
+    def test_changing_page_clicks_at_full_level(self):
+        import gui
+
+        played = []
+        self.window._library.play_ui_sound = lambda key, volume=None: played.append((key, volume))
+        self.window._switch_page(gui.PAGE_EDITOR)
+        self.window._switch_page(gui.PAGE_EDITOR)  # already there: no page changed
+        self.window._show_page(gui.PAGE_LIBRARY)   # a map loading, not a click
+        self.assertEqual(played, [("select_difficulty", 1.0)])
 
     def test_a_new_song_expands_and_a_new_difficulty_clicks(self):
         played = self._record_ui_sounds()
@@ -455,9 +608,9 @@ class PageTests(unittest.TestCase):
         self.window.play_shortcut.activated.emit()
         self.assertEqual((len(toggles), len(editor)), (1, 0))
 
-    def test_the_beat_stripe_is_a_hidden_seek_bar(self):
-        """Owner's easter egg: the stripe's whole width is the whole song,
-        and nothing on screen says so."""
+    def test_the_seek_band_is_the_whole_song(self):
+        """The track between the two times is the whole song (2026-10-09:
+        the hidden stripe became a band with a playhead on it)."""
         from PySide6.QtCore import QPointF
         from PySide6.QtGui import QMouseEvent
 
@@ -474,13 +627,45 @@ class PageTests(unittest.TestCase):
                                   Qt.LeftButton, Qt.NoButton, Qt.NoModifier)
             banner.mouseReleaseEvent(release)
 
-        press(100, 50)
-        self.assertEqual(seen, [], "the art above the stripe is not a seek bar")
-        press(100, 195)
-        self.assertEqual(seen, [0.25])
+        def quarter():
+            track = banner.track_rect()
+            return track.left() + track.width() / 4
+
+        press(quarter(), 50)
+        self.assertEqual(seen, [], "the art above the band is not a seek bar")
+        press(quarter(), 195)
+        self.assertAlmostEqual(seen[-1], 0.25)
         banner.resize(800, 200)  # the splitter widened the pane
-        press(100, 195)
-        self.assertEqual(seen[-1], 0.125)
+        press(quarter(), 195)
+        self.assertAlmostEqual(seen[-1], 0.25)
+
+    def test_a_new_song_rewinds_the_playhead_then_glides_out(self):
+        # Owner, 2026-10-09: back to the start, then out to the preview point.
+        import gui
+
+        banner = self.window._library.song_banner
+        banner.set_tempo([(0.0, 500.0)], lambda: 30000.0)
+        banner.set_duration(100000)
+        banner._tick_beat()                     # drawn at 0.30
+        with unittest.mock.patch.object(gui, "reduced_motion", return_value=False):
+            banner.glide(rewind=True)
+        banner._now = 60000.0                   # the new song's preview point
+        path = []
+        for t in (0.0, banner.REWIND_SHARE, 0.7, 1.0 - 1e-9):
+            banner._glide_t = t
+            path.append(round(banner._shown_fraction(), 3))
+        banner.glide_animation.stop()
+        self.assertEqual(path[0], 0.3, "it leaves from where it was drawn")
+        self.assertEqual(path[1], 0.0, "it reaches the start")
+        self.assertTrue(0.0 < path[2] < 0.6, "then heads out")
+        self.assertAlmostEqual(path[3], 0.6, places=2)
+
+    def test_the_playhead_is_the_clock_over_the_songs_length(self):
+        banner = self.window._library.song_banner
+        banner.set_tempo([(0.0, 500.0)], lambda: 30000.0)
+        banner.set_duration(120000)
+        banner._tick_beat()
+        self.assertAlmostEqual(banner._shown_fraction(), 0.25)
 
     def test_a_fraction_seeks_the_song_lists_player_only(self):
         import gui
@@ -511,6 +696,7 @@ class PageTests(unittest.TestCase):
         self.window.song_list.setCurrentRow(0)
         library.difficulty_changed()
         library._load_chart_preview()
+        library.jobs.drain()  # parsed on a worker
         self.assertTrue(library.chart_preview.notes)
         library.chart_preview.resize(600, 300)
         natural = gui.osu_screen_height_for(600)
@@ -527,6 +713,7 @@ class PageTests(unittest.TestCase):
         self.window.song_list.setCurrentRow(0)
         library.difficulty_changed()
         library._load_chart_preview()
+        library.jobs.drain()  # parsed on a worker
         self.assertTrue(library.chart_preview.isVisible())
         self.window.song_list.setCurrentRow(-1)
         self.assertFalse(library.chart_preview.isVisible())

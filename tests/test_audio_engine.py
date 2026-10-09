@@ -334,6 +334,23 @@ class SeekCoalesceTests(unittest.TestCase):
             rebuilds[-1], 1020.0 / 1000.0 * SAMPLE_RATE, delta=0.005 * SAMPLE_RATE)
         self.assertIsNone(engine._pending_seek_ms)
 
+    def test_a_newer_landing_cancels_a_parked_seek(self):
+        """Owner, 2026-10-09: scrolling while playing froze the playhead for
+        about a second at 0.5x. A seek parked inside the burst window, then a
+        newer one landing immediately (the window had passed), and the parked
+        one's timer fired afterwards and put the audio back on the older
+        target."""
+        engine, rebuilds = self._playing_engine()
+        engine.seek(1000.0)               # lands
+        engine.seek(1395.0)               # inside the window: parked
+        self.assertEqual(engine._pending_seek_ms, 1395.0)
+        engine._last_seek_wall -= SEEK_COALESCE_MS + 1  # the window has passed
+        engine.seek(1790.0)               # lands immediately
+        self.assertIsNone(engine._pending_seek_ms, "the older target is gone")
+        self.assertFalse(engine._seek_timer.isActive(), "and its timer with it")
+        engine._land_pending_seek()       # a timeout already queued finds nothing
+        self.assertAlmostEqual(rebuilds[-1], 1790.0 / 1000.0 * SAMPLE_RATE, delta=1)
+
     def test_a_late_landing_starts_where_the_playhead_has_got_to(self):
         """The playhead runs from the target from the moment it is asked for;
         audio landing on the bare target 40ms later starts 40ms behind it."""

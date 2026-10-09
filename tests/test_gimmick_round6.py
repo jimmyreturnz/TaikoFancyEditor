@@ -2061,5 +2061,144 @@ class FakeSliderBpmMultiplierConfigTests(_Session, unittest.TestCase):
         self.assertEqual(config.shiny_bpm_multiplier, 1.0, "the shiny field is untouched")
 
 
+class KeepSvConversionTests(_Session, unittest.TestCase):
+    """Experimental Conversion and Convert Notes' Keep SV (owner, 2026-10-09):
+    notes become barline structures or an anti-barline wall and the chart's
+    own SV survives -- exactly at every note, along its curve in between --
+    with kiai and volume where they were."""
+
+    NOTES = [1000 + 250 * index for index in range(17)]  # 1000 .. 5000
+
+    def setUp(self) -> None:
+        super().setUp()
+        from osu_io.timing import TimingPoint
+
+        # A linear 1.0x -> 2.0x sweep, one line per note, each offset 10ms
+        # back as mappers place them; kiai opening on a green line mid-sweep;
+        # the volume dropping on a flat green line after it.
+        sweep = self.NOTES[:9]  # 1000 .. 3000
+        greens = []
+        for index, time_ms in enumerate(sweep):
+            point = TimingPoint.inherited_at(time_ms - 10, 1.0 + index / (len(sweep) - 1))
+            point.volume = 60
+            greens.append(point)
+        greens[6].set_kiai(True)                      # 2490: kiai opens
+        greens[7].set_kiai(True)
+        greens[8].set_kiai(True)
+        flat = TimingPoint.inherited_at(3990, 2.0, kiai=True)
+        flat.volume = 40                               # 3990: volume drops
+        red = TimingPoint.uninherited_at(0, 120)
+        red.volume = 60
+        closing = TimingPoint.uninherited_at(6000, 120)
+        self.document.timing_points[:] = [red, *greens, flat, closing]
+        self.document.hit_objects[:] = [
+            gui.HitObject(x=256, y=192, time=time_ms, type=gui.TYPE_CIRCLE, hit_sound=0)
+            for time_ms in self.NOTES
+        ]
+        self.before = [(p.time, p.beat_length, p.uninherited, bool(p.kiai), p.volume)
+                       for p in self.document.timing_points]
+        # Copies: the converter edits a kept kiai/volume edge in place.
+        self.ordered_before = gui.sorted_by_time([dataclasses.replace(p) for p in self.document.timing_points])
+
+    def _convert(self, mode, keep_sv=True, whole_map=True):
+        original = gui.ConvertNotesDialog
+
+        class Answered(original):
+            def exec(self):
+                self.mode_combo.setCurrentIndex(self.mode_combo.findData(mode))
+                if not self.experimental:
+                    self.keep_sv_check.setChecked(keep_sv)
+                return gui.QDialog.DialogCode.Accepted
+
+        with patch.object(gui, "ConvertNotesDialog", Answered):
+            if whole_map:
+                self.window._experimental_conversion(self.window._gimmick_pairing.target)
+            else:
+                self.window._convert_notes_to_gimmick(
+                    self.window._gimmick_pairing.target, "barline", 900, 5100)
+        return gui.sorted_by_time(list(self.document.timing_points))
+
+    def test_whole_map_anti_barline_keeps_sv_kiai_and_volume_and_is_one_undo(self):
+        from osu_io.timing import active_point_at, kiai_spans, sv_at
+
+        after = self._convert(gui.ConvertNotesDialog.ANTI)
+        self.assertGreater(len(after), len(self.before) * 10, "a wall was written")
+        for time_ms in self.NOTES:
+            self.assertAlmostEqual(sv_at(after, time_ms), sv_at(self.ordered_before, time_ms), places=9,
+                                   msg=f"the note at {time_ms} scrolls as it did")
+        self.assertEqual(kiai_spans(after, 7000), kiai_spans(self.ordered_before, 7000))
+        for time_ms in range(0, 6500, 5):
+            self.assertEqual(active_point_at(after, time_ms).volume,
+                             active_point_at(self.ordered_before, time_ms).volume, msg=f"volume at {time_ms}")
+        self.window._states[self.window._gimmick_pairing.target].history.undo(self.state)
+        self.assertEqual(sorted((p.time, p.beat_length, p.uninherited, bool(p.kiai), p.volume)
+                                for p in self.document.timing_points), sorted(self.before))
+
+    def test_the_wall_follows_the_sweep_instead_of_its_steps(self):
+        after = self._convert(gui.ConvertNotesDialog.ANTI)
+        wall = [p.sv_multiplier for p in after if not p.uninherited and 1000 < p.time < 3000]
+        self.assertEqual(wall, sorted(wall), "the sweep only rises")
+        self.assertGreater(len(set(round(v, 6) for v in wall)), 2 * 9, "a ramp, not nine steps")
+
+    def test_converting_keeps_whistle_kats_and_their_positions(self):
+        # Owner, 2026-10-09: a whistle kat read as a don on the clap bit alone,
+        # so each was replaced by a fresh clap kat at the centre -- 713 notes of
+        # a real map lost their hitsound and their Fancy Arranger position.
+        for note in self.document.hit_objects[::2]:
+            note.hit_sound = 2  # whistle
+            note.x, note.y = 400, 300
+        before = [(n.time, n.hit_sound, n.x, n.y) for n in self.document.hit_objects]
+        self._convert(gui.ConvertNotesDialog.STRUCTURE, whole_map=True)
+        after = sorted((n.time, n.hit_sound, n.x, n.y) for n in self.document.hit_objects)
+        self.assertEqual(after, sorted(before))
+
+    def test_a_kats_leading_bars_take_the_notes_speed_after_a_jump(self):
+        # Owner, 2026-10-09 (Darling Game Over Love, 50841ms): a Kat's mirrored
+        # bars sit before the note, and right after a speed change they still
+        # carried the old speed, so the bars came apart.
+        from osu_io.timing import TimingPoint
+
+        jump = TimingPoint.inherited_at(4000, 0.5)  # on the note's own millisecond
+        self.document.timing_points.append(jump)
+        self.document.hit_objects[12].hit_sound = gui.HITSOUND_CLAP  # 4000: a kat
+        after = self._convert(gui.ConvertNotesDialog.STRUCTURE, whole_map=True)
+        # The Kat's own bars: 3990 is the fixture's own flat line.
+        cluster = [p for p in after if not p.uninherited and 3992 <= p.time <= 4008]
+        self.assertTrue(any(p.time < 4000 for p in cluster), "the mirrored bars before the note")
+        self.assertTrue(all(abs(p.sv_multiplier - 0.5) < 1e-9 for p in cluster),
+                        [(p.time, round(p.sv_multiplier, 4)) for p in cluster])
+
+    def test_keep_sv_barline_notes_restore_the_speed_after_every_red_line(self):
+        from osu_io.timing import sv_at
+
+        after = self._convert(gui.ConvertNotesDialog.STRUCTURE, whole_map=False)
+        reds = [p for p in after if p.uninherited and 900 <= p.time <= 5100]
+        self.assertTrue(reds)
+        for red in reds:
+            index = after.index(red)
+            following = after[index + 1] if index + 1 < len(after) else None
+            self.assertTrue(following is not None and not following.uninherited and following.time == red.time,
+                            f"a green line straight after the red line at {red.time}")
+        for time_ms in self.NOTES:
+            self.assertAlmostEqual(sv_at(after, time_ms), sv_at(self.ordered_before, time_ms), places=9)
+
+
+class GimmickViewSizeTests(_Session, unittest.TestCase):
+    """The gimmick page's View size (owner, 2026-10-09): every layer band at
+    once, as the Editor page's does for its views."""
+
+    def test_view_size_resizes_every_layer_and_leaves_the_editor_alone(self):
+        stored = {}
+        self.window.settings.set_value = stored.__setitem__
+        editor_heights = [view.height() for view in self.window._all_editor_views()]
+        self.window.gimmick_view_height_spin.setValue(150)
+        layers = [frame.content for frame in self.window._gimmick_views
+                  if isinstance(frame.content, (gui.TimelineGameplay, gui.SVEditorView))]
+        self.assertTrue(layers)
+        self.assertEqual({view.minimumHeight() for view in layers}, {150})
+        self.assertEqual(stored.get("gimmick/view_height"), 150)
+        self.assertEqual([view.height() for view in self.window._all_editor_views()], editor_heights)
+
+
 if __name__ == "__main__":
     unittest.main()

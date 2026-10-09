@@ -503,7 +503,8 @@ class LibraryPageTests(unittest.TestCase):
         self.window.song_list.setCurrentRow(0)
         self.window._open_selected_difficulty()
         opened = [frame.view_type for frame in self.window._editor_views]
-        self.assertEqual(sorted(opened), ["chart", "sv"])
+        # Song select opens a gameplay preview with the pair (owner, 2026-10-09).
+        self.assertEqual(sorted(opened), ["chart", "gameplay", "sv"])
 
         self.window._back_to_library()
         self.assertEqual(self.window._editor_views, [])
@@ -511,7 +512,7 @@ class LibraryPageTests(unittest.TestCase):
         self.assertEqual(self.window._active_chart_view, None)
 
         self.window._open_selected_difficulty()
-        self.assertEqual(sorted(frame.view_type for frame in self.window._editor_views), ["chart", "sv"])
+        self.assertEqual(sorted(frame.view_type for frame in self.window._editor_views), ["chart", "gameplay", "sv"])
 
     def test_going_back_keeps_the_song_playing_from_the_playhead(self):
         self.run_scan()

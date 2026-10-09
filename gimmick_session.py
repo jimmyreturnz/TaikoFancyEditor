@@ -931,12 +931,44 @@ def barline_note(
     return points, notes
 
 
+def keep_sv(points: list[TimingPoint], model, at_note: float | None = None) -> list[TimingPoint]:
+    """A green line after every red line in `points`, at the chart's SV there.
+
+    Every structure is red lines, and each resets SV to 1.0x for whatever
+    follows it -- bars, the note, the wall. This writes the chart's own speed
+    back on the same millisecond, read from `model` (`sv_curves.SvModel`):
+    exactly what osu! read at a note, the chart's curve between notes where
+    the chart changed speed. Placed straight after its red line, since osu!
+    resolves a shared millisecond by file order. A green line the builder
+    already put on that millisecond is replaced rather than stacked.
+
+    `at_note`: the structure is one object drawn around that note, so every
+    line of it takes the *note's* value. Read per line, a barline note right
+    after a break wrote its leading bars (T-5..T-1) at the speed before the
+    break and the rest at the note's, and the bars came apart (owner,
+    2026-10-09, Darling Game Over Love at 50841ms). Its first element is in
+    effect where the ramp toward the note ends.
+    """
+    reds = [point for point in points if point.uninherited]
+    taken = {round(point.time) for point in reds}
+    kept = [point for point in points
+            if point.uninherited or round(point.time) not in taken]
+    result: list[TimingPoint] = []
+    for point in sorted_by_time(kept):
+        result.append(point)
+        if point.uninherited:
+            result.append(TimingPoint.inherited_at(
+                point.time, model.value_at(point.time if at_note is None else at_note)))
+    return result
+
+
 def anti_barline(
     notes: list[HitObject],
     start_ms: float,
     end_ms: float,
     base_timing: list[TimingPoint],
     config: GimmickConfig,
+    model=None,
 ) -> list[TimingPoint]:
     """`barline_note` in negative: a solid wall of bars with the notes as gaps.
 
@@ -977,6 +1009,11 @@ def anti_barline(
 
     Returns timing points only. The notes are the chart's own and are not
     rewritten -- being converted here changes nothing about what is played.
+
+    With `model` (`sv_curves.SvModel`, the experimental conversion) every
+    line's speed is the chart's own curve rather than its step: the wall's
+    green lines follow the sweep between notes, and the note's own lines get
+    one too, so a visible note keeps the speed it had (`keep_sv`).
     """
     eligible = sorted(
         (note for note in notes if note.is_circle and not note.is_finisher),
@@ -984,6 +1021,12 @@ def anti_barline(
     )
     if not eligible:
         return []
+    # The red lines alone, looked up per wall tick: `active_uninherited_at`
+    # steps back one point at a time, and over the full snapshot that was
+    # every green line between a tick and its red line -- 6.2s of a 22s
+    # whole-map conversion (Darling Game Over Love, 2026-10-09).
+    full_timing = base_timing
+    base_timing = [point for point in sorted_by_time(base_timing) if point.uninherited] or base_timing
 
     def step_at(time_ms: float) -> float:
         """Tick spacing at `time_ms`. Read per tick rather than once for the
@@ -1088,7 +1131,8 @@ def anti_barline(
         #
         # And it carries the chart's own SV rather than 1.0x, so a wall drawn
         # across a section the map had sped up does not silently flatten it.
-        points.append(TimingPoint.inherited_at(at, sv_at(base_timing, at)))
+        points.append(TimingPoint.inherited_at(
+            at, model.value_at(at) if model is not None else sv_at(full_timing, at)))
     for note in eligible:
         time_ms = round(note.time)
         if not config.hide_note:
@@ -1111,6 +1155,17 @@ def anti_barline(
             restore_at, base_bpm_at(base_timing, restore_at),
             meter=ANTI_RESTORE_METER, omit_first_barline=True,
         ))
+    if model is not None:
+        # The objects the wall leaves alone -- finishers, drumrolls, spinners
+        # -- have no line of their own, so each would read the wall's ramp
+        # at its millisecond rather than its own speed (measured: 0.0085x off
+        # on an installed map). A green line on it says its own value.
+        converted = {round(note.time) for note in eligible}
+        for note in notes:
+            at = round(note.time)
+            if start_ms <= note.time <= end_ms and at not in converted:
+                points.append(TimingPoint.inherited_at(at, model.value_at(at)))
+        return keep_sv(points, model)
     points.sort(key=lambda point: point.time)
     return points
 

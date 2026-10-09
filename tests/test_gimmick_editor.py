@@ -404,6 +404,15 @@ class ViewReorderTests(_GimmickFixture, unittest.TestCase):
         self.assertTrue(frames[0].dimmed)
         self.assertFalse(frames[1].dimmed)
 
+    def test_the_gameplay_preview_never_fades(self):
+        # Owner, 2026-10-09: it shows the result of an edit made elsewhere.
+        frame = gui.EditorViewFrame("gameplay", "x")
+        frame.set_dimmed(True)
+        self.assertFalse(frame.dimmed)
+        chart = gui.EditorViewFrame("chart", "x")
+        chart.set_dimmed(True)
+        self.assertTrue(chart.dimmed)
+
     def test_escape_or_a_blank_click_lets_go_of_the_focused_view(self):
         """Owner, 2026-10-08: Esc lets go of the focused view first, and the
         next Esc goes back as before; so does a press under the views."""
@@ -1155,7 +1164,8 @@ class GimmickPageChromeTests(_GimmickFixture, unittest.TestCase):
         # top, so the screen budget is measured on the frames' size hints.
         heights = [frame.sizeHint().height() for frame in self.window._gimmick_views]
         self.assertEqual(len(heights), len(gui.MainWindow.GIMMICK_LAYERS))
-        self.assertTrue(all(v.height() == gui.MainWindow.GIMMICK_LAYER_HEIGHT for v in self._views()))
+        # The page's View size (2026-10-09), which a saved setting can move off 88.
+        self.assertTrue(all(v.height() == self.window.gimmick_view_height_spin.value() for v in self._views()))
         # Per band rather than a total: the stack grows a row whenever a
         # layer is added, and what must not grow is any one band's share of
         # the screen -- 150px keeps the whole stack plus the strip and tool
@@ -2118,7 +2128,7 @@ class GimmickAddViewTests(_GimmickFixture, unittest.TestCase):
         self.assertEqual(self.window.gimmick_views_layout.count(), before + 1)
         frame = self.window._editor_views[-1]
         view = frame.chart_view
-        self.assertEqual(view.height(), self.window.GIMMICK_LAYER_HEIGHT)
+        self.assertEqual(view.height(), self.window.gimmick_view_height_spin.value())
         self.assertTrue(frame.compact)
         self.assertTrue(view.show_timing_lines)
         self.assertEqual(
@@ -2229,7 +2239,7 @@ class GimmickLayoutTests(_GimmickFixture, unittest.TestCase):
         gives it zero and the layer disappears)."""
         for frame in self.window._gimmick_views:
             view = getattr(frame, "chart_view", None) or frame.sv_view
-            band = self.window.GIMMICK_LAYER_HEIGHT
+            band = self.window.gimmick_view_height_spin.value()
             self.assertEqual(view.minimumHeight(), band, frame.gimmick_layer)
             self.assertEqual(view.maximumHeight(), band, frame.gimmick_layer)
 

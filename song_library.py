@@ -237,6 +237,77 @@ def heard_tempo(path: Path) -> list[tuple[float, float]]:
     ]
 
 
+def most_common_beat_length(lines, last_time: float) -> float | None:
+    """The beat length of the red line in force for the most time up to
+    `last_time` (the last object): osu!lazer's
+    `BeatmapExtensions.GetMostCommonBeatLength`, which its song select shows as
+    "BPM a-b (mostly c)". aleph-0 switches between 250, 400 and 140, and is
+    "mostly 250". `lines` are (time, beat length) of red lines, in order.
+
+    As lazer counts it: the first line from 0, each until the next, the last
+    until `last_time`, and a line after the last object counts for nothing.
+    Beat lengths are compared to a thousandth so float noise does not split
+    one tempo in two.
+    """
+    lines = [(time, beat) for time, beat in lines if beat > 0]
+    if not lines:
+        return None
+    spans: dict[float, float] = {}
+    for index, (time, beat) in enumerate(lines):
+        if time > last_time:
+            continue
+        start = 0.0 if index == 0 else time
+        end = last_time if index == len(lines) - 1 else min(lines[index + 1][0], last_time)
+        key = round(beat, 3)
+        spans[key] = spans.get(key, 0.0) + max(0.0, end - start)
+    if not spans:
+        return lines[0][1]
+    return max(spans.items(), key=lambda item: item[1])[0]
+
+
+def most_common_bpm(path: Path) -> float | None:
+    """`most_common_beat_length` of a file, as a BPM: the "(250)" of a
+    difficulty row's "125–400 (250)". Every red line counts here, gimmick or
+    not, as it does for lazer; None when the file cannot be read."""
+    lines: list[tuple[float, float]] = []
+    last_time = 0.0
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            section = ""
+            for line in handle:
+                stripped = line.strip()
+                if stripped.startswith("[") and stripped.endswith("]"):
+                    section = stripped
+                    if section == "[HitObjects]":
+                        # Only its last object matters: one read, not a loop.
+                        objects = [row for row in handle.read().splitlines() if row.strip()]
+                        objects = objects[:next((i for i, row in enumerate(objects) if row.startswith("[")),
+                                                len(objects))]
+                        if objects:
+                            try:
+                                last_time = float(objects[-1].split(",", 3)[2])
+                            except (IndexError, ValueError):
+                                pass
+                        break
+                    continue
+                if section != "[TimingPoints]":
+                    continue
+                parts = stripped.split(",")
+                if len(parts) < 2:
+                    continue
+                try:
+                    time, beat_length = float(parts[0]), float(parts[1])
+                except ValueError:
+                    continue
+                if len(parts) < 7 or parts[6].strip() != "0":
+                    lines.append((time, beat_length))
+    except OSError:
+        return None
+    lines.sort()
+    beat = most_common_beat_length(lines, last_time)
+    return 60000.0 / beat if beat else None
+
+
 def _read_hit_objects(fields: dict, text: str) -> None:
     lines = [line for line in text.splitlines() if line.strip()]
     lines = lines[:next((i for i, line in enumerate(lines) if line.startswith("[")), len(lines))]

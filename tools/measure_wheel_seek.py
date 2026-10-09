@@ -3,6 +3,8 @@
     python tools/measure_wheel_seek.py <map.osu> [notch_interval_ms ...] [--seconds S]
                                        [--paused] [--editor | --gimmick] [--from MS] [--burst] [--profile]
 
+`--rate R` plays at a speed button's rate (0.75, 0.5, 0.25).
+
 `--paused` scrolls a stopped track, which is how most scrolling happens while
 editing; `--editor` aims the notches at the Editor page's chart view and
 `--gimmick` at the Gimmick page's first layer (entered on the current
@@ -53,6 +55,14 @@ def main() -> None:
         at = args.index("--seconds")
         seconds = float(args[at + 1])
         del args[at:at + 2]
+    # The speed buttons' rate (owner, 2026-10-09: "when I play while at
+    # slowdown, it frozen"): the time-stretched path is a different engine
+    # path from 1.0x, and a run at 1.0x measures none of it.
+    rate = 1.0
+    if "--rate" in args:
+        at = args.index("--rate")
+        rate = float(args[at + 1])
+        del args[at:at + 2]
     start_at = None
     if "--from" in args:
         at = args.index("--from")
@@ -68,6 +78,9 @@ def main() -> None:
     window.show()
     window._load_map_path(path, refresh_difficulties=True)
     pump(app, 1.5)  # decode
+    if rate != 1.0:
+        window._choose_speed(rate)
+        pump(app, 0.3)
     target = window.timeline
     if "--editor" in sys.argv:
         window._show_page(gui.PAGE_EDITOR)

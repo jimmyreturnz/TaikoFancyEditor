@@ -281,6 +281,38 @@
             <translation>生成するすべての線に付ける速度です。</translation>
         </message>
         <message>
+            <source>Experimental Conversion</source>
+            <translation>実験的な変換</translation>
+        </message>
+        <message>
+            <source>Convert Whole Map, Keep SV…</source>
+            <translation>譜面全体を変換（SVを保持）…</translation>
+        </message>
+        <message>
+            <source>Keep SV</source>
+            <translation>SVを保持</translation>
+        </message>
+        <message>
+            <source>Every line the bars add gets the chart's own SV back, following its curves.</source>
+            <translation>追加される各線に、譜面本来のSVを曲線に沿って戻します。</translation>
+        </message>
+        <message>
+            <source>Detected SV curves</source>
+            <translation>検出したSVカーブ</translation>
+        </message>
+        <message>
+            <source>Each run of green lines and the curve it follows. Change one if the guess is wrong.</source>
+            <translation>緑線の各区間と、それが沿うカーブです。推定が違う場合は変更してください。</translation>
+        </message>
+        <message>
+            <source>Step</source>
+            <translation>段差</translation>
+        </message>
+        <message>
+            <source>Notes</source>
+            <translation>ノーツ</translation>
+        </message>
+        <message>
             <source>Time</source>
             <translation>時間</translation>
         </message>

@@ -1151,6 +1151,16 @@ class _Engine(QObject):
         self._land_seek(position_ms)
 
     def _land_seek(self, position_ms: float) -> None:
+        # Whatever lands now supersedes a seek still parked: left armed, its
+        # timer fired after this one and landed the *older* target -- the audio
+        # jumped back up to a notch while the playhead held at the newer one
+        # (gui.py's no-backwards clamp) until the music caught up. Measured at
+        # 0.5x (scratch trace through `tools/measure_wheel_seek.py`'s notch): a
+        # seek parked at 932ms, a newer one landed at 963ms, the stale one at
+        # 991ms, 774ms frozen; the catch-up is gap / rate, so slower is longer.
+        self._pending_seek_ms = None
+        if self._seek_timer is not None:
+            self._seek_timer.stop()
         self._last_seek_target = position_ms
         frame = max(0.0, position_ms) / 1000.0 * SAMPLE_RATE
         self._stretcher.reset(frame)

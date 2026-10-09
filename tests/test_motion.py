@@ -86,5 +86,67 @@ class MorphRectTests(unittest.TestCase):
         self.assertFalse(morph.isVisibleTo(parent))
 
 
+class RowEntranceTests(unittest.TestCase):
+    def test_rows_land_in_order_and_settle(self):
+        from PySide6.QtWidgets import QListWidget
+
+        rows = QListWidget()
+        rows.addItems([str(n) for n in range(30)])
+        rows.resize(200, 300)
+        rows.show()
+        entrance = motion.RowEntrance(rows, row_ms=200, stagger_ms=22)
+        with mock.patch.object(motion, "reduced_motion", return_value=False):
+            entrance.start()
+        self.assertTrue(entrance.running)
+        self.assertLessEqual(entrance.progress(5), entrance.progress(0), "a later row rises later")
+        entrance._timer.stop()
+        self.assertEqual(entrance.progress(5), 1.0, "and a finished run draws every row settled")
+
+    def test_reduced_motion_never_starts(self):
+        from PySide6.QtWidgets import QListWidget
+
+        rows = QListWidget()
+        rows.show()
+        entrance = motion.RowEntrance(rows)
+        with mock.patch.object(motion, "reduced_motion", return_value=True):
+            entrance.start()
+        self.assertFalse(entrance.running)
+
+
+class SegmentGlideTests(unittest.TestCase):
+    def test_the_pill_lands_on_the_checked_button(self):
+        from PySide6.QtWidgets import QButtonGroup, QHBoxLayout
+
+        frame = QWidget()
+        layout = QHBoxLayout(frame)
+        buttons = [QPushButton(text) for text in ("A", "B", "C")]
+        group = QButtonGroup(frame)
+        for button in buttons:
+            button.setCheckable(True)
+            group.addButton(button)
+            layout.addWidget(button)
+        buttons[0].setChecked(True)
+        glide = motion.SegmentGlide(frame, buttons)
+        frame.show()
+        QApplication.processEvents()
+        with mock.patch.object(motion, "reduced_motion", return_value=True):
+            buttons[2].setChecked(True)
+        self.assertEqual(glide.current_rect(), QRectF(buttons[2].geometry()))
+
+
+class PlayPauseGlyphTests(unittest.TestCase):
+    def test_it_morphs_to_pause_and_back(self):
+        button = QPushButton()
+        glyph = motion.PlayPauseGlyph(button, "#aeb8c5", "#e8edf3")
+        with mock.patch.object(motion, "reduced_motion", return_value=True):
+            glyph.set_playing(True)
+            self.assertEqual(glyph.progress, 1.0)
+            glyph.set_playing(False)
+            self.assertEqual(glyph.progress, 0.0)
+        # Every corner has a partner: the two shapes morph point for point.
+        self.assertEqual([len(quad) for quad in motion.PlayPauseGlyph.PLAY],
+                         [len(quad) for quad in motion.PlayPauseGlyph.PAUSE])
+
+
 if __name__ == "__main__":
     unittest.main()
