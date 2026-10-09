@@ -61,32 +61,9 @@ The main inspirations include Alchyr's ranked maps *13 Stairs* and *Helios*, whi
 
 A song select rebuilt around the chart, live themes, and views that move.
 
-- **The chart scrolls under the art in song select**, with its own SV and BPM, and the beat stripe under the art is a hidden seek bar.
-- **Drag a view by its header to reorder it.** The focused view carries a running light round its rim and the others fade; Esc or a click on blank space lets go of it.
-- **Themes change as you pick them**, no restart: **osu!** (default), **Taiko**, **Lantern Rite**, **Gold** and **Monokai**.
-- **Density reads against the chart's most common BPM**, one bar per 1% of the song.
-- **A finisher plays its small note's sound under the big one**, and is a third bigger in the chart views.
-- **Fixed**: the EGTS 2022 pack not loading, a stuttering song select preview, pasted spinners changing length.
+- **Reorder views by Dragging**
+- **App Themes**
 
-Full notes: [`docs/releases/v3.5.0.md`](docs/releases/v3.5.0.md).
-
-## What is new in 3.4.0
-
-A redesign release: song select, the editor, the Fancy Arranger and every settings dialog were rebuilt, and the gameplay preview now shows what osu! shows.
-
-- **Mods** on the Editor and Gimmick pages: HD, NC / DT / DC / HT, HR / EZ and FL. NC and DC change the song's pitch and leave the hitsounds alone.
-- **New song select** with star ratings from your osu!.db, each difficulty's own background and preview, and a Continue row. Going back from the editor keeps the song playing at 1.00x.
-- **Every settings dialog redone**: settings grouped by tool, a side panel that explains each field and draws what it writes, and a warning on the fields that clash.
-- **Fancy Arranger** UI and Animation overhaul.
-- **The gameplay preview** now matches osu!'s range, Kiai effect is still appears different from osu taiko though.
-- **Resnap** (Ctrl+R) puts objects that sit a millisecond off their snap back on it.
-- Faster heavy gimmick sections, eased scrolling everywhere, and a sharper font.
-
-Full notes: [`docs/releases/v3.4.0.md`](docs/releases/v3.4.0.md).
-
-## To be added / fixed:
-- improving the smoothness when scrolling too fast.
-- Will also try to come up with a way that you can make barline kat or fake slider kat to have different approaching behavior (like adding an increasing SV speed to barline kat to make them look harder to read). 
 
 Full development log detail lives in [`docs/DEVELOPMENT_PLAN.md`](docs/DEVELOPMENT_PLAN.md).
 
