@@ -44,7 +44,7 @@ The main inspirations include Alchyr's ranked maps *13 Stairs* and *Helios*, whi
 
 ![Gimmick editor](docs/screenshots/gimmick-editor.png)
 
-**Fancy Arranger**: transform notes into shape, text, or image.
+**Fancy Arranger**: transform notes into shape, text, or image. You can change CS and AR here.
 
 ![Fancy Arranger](docs/screenshots/fancy-arranger.png)
 
