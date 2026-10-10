@@ -15,7 +15,7 @@ Taiko Fancy Arranger started as a tool for turning osu!taiko notes into visual p
 
 The editor does not support editing storyboards, breaks, colours, editor bookmarks yet.
 
-> **Current release:** v3.5.0  
+> **Current release:** v3.5.2  
 > **Platform:** Windows x64  
 > **Author:** [jimmyreturnz](https://osu.ppy.sh/users/11306153)
 
@@ -57,12 +57,16 @@ The main inspirations include Alchyr's ranked maps *13 Stairs* and *Helios*, whi
 
 ---
 
-## What is new in 3.5.0
+## What is new in 3.5.2
 
-A song select rebuilt around the chart, live themes, and views that move.
+An autoplay in the gameplay preview, plus drumroll hitsounds.
 
-- **Reorder views by Dragging**
-- **App Themes**
+- **Autoplay**: the skin's input drum is played in kddk full alt, semi alt, single tap, roll or ddkk, with 1234 / 1324 / 4231 bindings and either dominant hand
+- **Kiai glow** and the grey note in the hit target, as in osu!
+- **Drumrolls are heard**, a don on every 1/4 beat tick
+- Semi alt is experimental: send the pattern and how you would play it in 1234
+
+Details: [`docs/releases/v3.5.2.md`](docs/releases/v3.5.2.md)
 
 
 Full development log detail lives in [`docs/DEVELOPMENT_PLAN.md`](docs/DEVELOPMENT_PLAN.md).
@@ -71,7 +75,7 @@ Full development log detail lives in [`docs/DEVELOPMENT_PLAN.md`](docs/DEVELOPME
 
 ## Windows SmartScreen notice
 
-Taiko Fancy Arranger v3.5.0 is a currently unsigned Windows application. The release includes source-level security hardening, input validation, safer file handling, automated tests, and published SHA-256 checksums.
+Taiko Fancy Arranger v3.5.2 is a currently unsigned Windows application. The release includes source-level security hardening, input validation, safer file handling, automated tests, and published SHA-256 checksums.
 
 Windows Defender SmartScreen may still display an "unrecognized app" warning because the executable has not yet established download reputation.
 
@@ -487,7 +491,7 @@ Do not upload copyrighted audio or private beatmap assets unless permission has 
 
 ## Project status
 
-Version 3.5.0 is the current public release. The project focuses on creative single player editing, arrangement and previewing. Multiplayer and automatic difficulty calculation are outside the current scope.
+Version 3.5.2 is the current public release. The project focuses on creative single player editing, arrangement and previewing. Multiplayer and automatic difficulty calculation are outside the current scope.
 
 Not yet implemented, and next in line:
 
