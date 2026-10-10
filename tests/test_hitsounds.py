@@ -89,6 +89,18 @@ class SampleChoiceTests(unittest.TestCase):
         # No timing points given, so nothing is quieter than as authored.
         self.assertEqual(volumes, [1.0, 1.0])
 
+    def test_a_real_drumrolls_ticks_sound_and_a_fake_sliders_do_not(self):
+        """Owner, 2026-10-10: a roll is heard the way the autoplay hits it --
+        a don every 1/4 beat, head to end. At SliderMultiplier 1.2, 1.0x and a
+        500ms beat, length 120 is one beat: ticks at 0, 125, 250, 375, 500."""
+        roll = HitObject(x=256, y=192, time=1000, type=TYPE_SLIDER, hit_sound=0,
+                         extras=("L|356:192", "1", "120"))
+        points = [TimingPoint(time=0.0, beat_length=500.0, meter=4)]
+        times, keys, _volumes = gui.hitsound_schedule(
+            [roll, fake_slider(3000)], points, slider_multiplier=1.2)
+        self.assertEqual(times, [1000.0, 1125.0, 1250.0, 1375.0, 1500.0])
+        self.assertEqual(set(keys), {"normal"})
+
     def test_a_finisher_schedules_both_its_samples_on_one_millisecond(self):
         times, keys, _volumes = gui.hitsound_schedule([
             circle(100, HITSOUND_FINISH),

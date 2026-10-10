@@ -685,7 +685,10 @@ class PlayfieldTests(unittest.TestCase):
         "taiko-bar-right", "taiko-bar-right-glow",
         "taiko-barline", "approachcircle",
         "taikohitcircle", "taikohitcircleoverlay",
+        "taiko-bar-left", "taiko-drum-inner", "taiko-drum-outer", "taiko-glow",
+        "taikobigcircle",
     )
+    DRUM = ("taiko-bar-left", "taiko-drum-inner", "taiko-drum-outer")
 
     def setUp(self) -> None:
         self._temp = tempfile.TemporaryDirectory()
@@ -696,7 +699,7 @@ class PlayfieldTests(unittest.TestCase):
             image.save(str(folder / f"{name}.png"))
         self.skin = skin.TaikoSkin(folder)
         self.asked: list[str] = []
-        for method in ("scaled", "stretched"):
+        for method in ("scaled", "stretched", "natural"):
             inner = getattr(self.skin, method)
             setattr(self.skin, method, self._spy(inner))
 
@@ -709,8 +712,10 @@ class PlayfieldTests(unittest.TestCase):
     def tearDown(self) -> None:
         self._temp.cleanup()
 
-    def _view(self, kiai: bool, at: float = 1000.0):
+    def _view(self, kiai: bool, at: float = 1000.0, autoplay=None, plain=False):
         view = gui.GameplayViewerView()
+        view.autoplay = autoplay
+        view.plain_stage = plain
         view.resize(900, 200)
         point = TimingPoint(time=0.0, beat_length=500.0, meter=4)
         view.timing_points = [point]
@@ -740,14 +745,52 @@ class PlayfieldTests(unittest.TestCase):
         self._view(kiai=True, at=0.0)
         self.assertIn("taiko-bar-right-glow", self.asked)
 
-    def test_no_glow_is_drawn_at_the_hit_target(self):
-        """`taiko-glow` and `lighting` are a bloom around a marker where
-        nothing is judged. Kiai is the notes pulsing and the lane's own kiai
-        state, both of which mean something."""
-        self._view(kiai=True, at=0.0)
+    def test_no_glow_is_drawn_at_the_hit_target_without_autoplay(self):
+        """`taiko-glow` is the autoplay's; `lighting` is a hit explosion's,
+        and nothing is judged here at all."""
+        self._view(kiai=True, at=50.0)
         for element in ("taiko-glow", "lighting"):
             with self.subTest(element=element):
                 self.assertNotIn(element, self.asked)
+
+    def test_autoplay_draws_the_drum_and_the_kiai_glow(self):
+        """The halves only while lit -- see the next test."""
+        self._view(kiai=True, at=50.0, autoplay=("full", "1234", False))
+        for element in ("taiko-bar-left", "taiko-glow"):
+            with self.subTest(element=element):
+                self.assertIn(element, self.asked)
+
+    def test_the_hit_target_holds_a_grey_note(self):
+        """TaikoLegacyHitTarget's taikobigcircle, autoplay or not -- but not on
+        song select's bare stage."""
+        self._view(kiai=False)
+        self.assertIn("taikobigcircle", self.asked)
+        self._view(kiai=False, plain=True)
+        self.assertNotIn("taikobigcircle", self.asked)
+
+    def test_song_selects_bare_stage_never_shows_the_autoplay(self):
+        self._view(kiai=True, at=50.0, autoplay=("full", "1234", False), plain=True)
+        for element in (*self.DRUM, "taiko-glow"):
+            with self.subTest(element=element):
+                self.assertNotIn(element, self.asked)
+
+    def test_a_hit_lights_its_half_and_lets_go(self):
+        """LegacyHalfDrum: lit by 80ms, fading from 100ms, gone at 150ms --
+        Delay counts from the press, not from the end of the fade-in."""
+        view = self._view(kiai=False, autoplay=("full", "1234", False))
+        view.notes = [HitObject(x=256, y=192, time=1000, type=1, hit_sound=0)]
+        view._rebuild_hits()
+        view.current_time = 1100.0
+        self.assertEqual(view._half_alpha(3), 1.0)  # right don, right-handed
+        self.assertEqual(view._half_alpha(2), 0.0)
+        self.asked.clear()
+        view.grab()
+        self.assertIn("taiko-drum-inner", self.asked)
+        self.assertNotIn("taiko-drum-outer", self.asked)
+        view.current_time = 1125.0
+        self.assertAlmostEqual(view._half_alpha(3), 0.5)
+        view.current_time = 1150.0
+        self.assertEqual(view._half_alpha(3), 0.0)
 
     def test_the_bar_is_stretched_to_the_whole_view(self):
         """1024x200 art "stretched to fit screen width" -- aspect deliberately
@@ -756,9 +799,8 @@ class PlayfieldTests(unittest.TestCase):
         bar = self.skin.stretched("taiko-bar-right", view.width(), view.height())
         self.assertEqual((bar.width(), bar.height()), (view.width(), view.height()))
 
-    def test_the_input_drum_is_not_drawn(self):
-        """The wiki files it under the playfield; it is where the player hits,
-        not where the notes are, and nobody is hitting this preview."""
+    def test_the_input_drum_is_not_drawn_without_autoplay(self):
+        """It is where the player hits, and with autoplay off nobody is."""
         self._view(kiai=False)
         for element in ("taiko-bar-left", "taiko-drum-inner", "taiko-drum-outer"):
             with self.subTest(element=element):

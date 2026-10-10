@@ -22,17 +22,16 @@ Left out on purpose, though the wiki files them under the playfield:
   2026-10-07. The bar is the lane, and the scrolling art under it read as a
   second lane behind the first;
 * the hit explosions (`taiko-hit300` and friends) and `taiko-slider-fail`: a
-  judgement is a thing that happens to a *player*, and nobody is playing this.
-  Drawing a 300 burst at the target would be inventing an autoplay run the
-  preview is not;
+  judgement is a thing that happens to a *player*. The autoplay below shows
+  which hand hits, not how well (owner, 2026-10-10: in-app play testing
+  comes later);
+* `lighting`, the hit explosion's light;
 
-* the input drum (`taiko-bar-left`, `taiko-drum-inner`, `taiko-drum-outer`) is
-  where the player hits, not where the notes are, and nobody is hitting a
-  preview;
-* `taiko-glow` and `lighting` are the kiai glow *behind the hit position* --
-  a bloom around a spot where nothing is being judged. Kiai is shown by the
-  notes themselves pulsing and by `taiko-bar-right-glow` over the lane, which
-  is information; a particle at the hit target is decoration on a marker;
+Loaded for the **autoplay** only, and drawn only while one plays an editor
+preview (never song select's bare stage): the input drum (`taiko-bar-left`,
+`taiko-drum-inner`, `taiko-drum-outer`), where the autoplay's hands land, and
+`taiko-glow`, the kiai glow behind the hit target. See AUTOPLAY_ELEMENTS.
+
 * the mascot (`pippidon*`) is a character animation, in 6 of 39 installed
   skins, and the only element here that would need BPM-synced frames.
 
@@ -81,14 +80,29 @@ SKIN_ELEMENTS = {
     "taiko-bar-right": False,
     "taiko-bar-right-glow": False,
     "taiko-barline": False,
+    # The autoplay's: the input drum and the kiai glow at the hit target. See
+    # AUTOPLAY_ELEMENTS.
+    "taiko-bar-left": False,
+    "taiko-drum-inner": False,
+    "taiko-drum-outer": False,
+    # LegacyKiaiGlow tints it yellow.
+    "taiko-glow": True,
 }
+
+# Drawn only while an autoplay plays the editor's preview, never on song
+# select's bare stage. Not part of the taiko signature: mania skins ship the
+# input drum as often as taiko ones do, and offering one for its drum alone
+# would change nothing about the notes.
+AUTOPLAY_ELEMENTS = frozenset(
+    ("taiko-bar-left", "taiko-drum-inner", "taiko-drum-outer", "taiko-glow"))
 
 # What makes a folder a *taiko* skin, for the menu. Every name above that is
 # not taiko-specific -- `approachcircle` is an osu!standard file that almost
 # every skin of any mode ships -- has to be excluded here, or the menu fills up
 # with mania and standard skins that would change nothing.
 TAIKO_SIGNATURE_ELEMENTS = frozenset(
-    name for name in SKIN_ELEMENTS if name.startswith("taiko")
+    name for name in SKIN_ELEMENTS
+    if name.startswith("taiko") and name not in AUTOPLAY_ELEMENTS
 )
 
 # The four taiko hitsounds, keyed the way `HitsoundPlayer` already keys them so
@@ -163,6 +177,38 @@ def sound_paths(folder: Path, names: dict[str, str] = SKIN_SOUNDS) -> dict[str, 
                 found[key] = Path(entry)
                 break
     return found
+
+
+# What a skin with no skin.ini reads as, as osu! does; one with a skin.ini
+# that names no version is 1.0.
+LATEST_SKIN_VERSION = 99.0
+
+
+def skin_version(folder: Path) -> float:
+    """The `Version:` in the skin's skin.ini. The input drum's layout changed
+    at 2.1, so the drum is the one thing here that reads it."""
+    try:
+        names = {entry.name.lower(): entry.path for entry in os.scandir(folder) if entry.is_file()}
+    except OSError:
+        return LATEST_SKIN_VERSION
+    ini = names.get("skin.ini")
+    if ini is None:
+        return LATEST_SKIN_VERSION
+    try:
+        text = Path(ini).read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return LATEST_SKIN_VERSION
+    for line in text.splitlines():
+        key, _, value = line.partition(":")
+        if key.strip().lower() == "version":
+            value = value.strip().lower()
+            if value == "latest":
+                return LATEST_SKIN_VERSION
+            try:
+                return float(value)
+            except ValueError:
+                return 1.0
+    return 1.0
 
 
 def element_paths(folder: Path) -> dict[str, Path]:
@@ -320,10 +366,17 @@ class TaikoSkin:
         self._flash: dict[tuple, QPixmap] = {}
         self._stretched: dict[tuple, QPixmap] = {}
         self._ink: dict[str, float] = {}
+        # Source pixels per osu! unit: 2 for an `@2x` file. The ratio Qt keeps
+        # is thrown away below, and the input drum is the one element drawn at
+        # its own size rather than one the caller picks.
+        self._density: dict[str, float] = {}
+        self._natural: dict[tuple, QPixmap] = {}
+        self.version = skin_version(folder) if folder is not None else LATEST_SKIN_VERSION
         if folder is None or not folder.is_dir():
             return
         for element, path in element_paths(folder).items():
             pixmap = QPixmap(str(path))
+            self._density[element] = 2.0 if "@2x" in path.name.lower() else 1.0
             if not pixmap.isNull():
                 # Qt stamps devicePixelRatio 2.0 on anything named `@2x`, which
                 # halves it again at every `drawPixmap(point, ...)`. Every size
@@ -399,6 +452,32 @@ class TaikoSkin:
                 stamp = _masked_by(stamp, overlay.scaledToHeight(
                     stamp.height(), Qt.SmoothTransformation))
             self._flash[key] = cached = stamp
+        return cached
+
+    def natural(self, element: str, px_per_unit: float, mirrored: bool = False,
+                colour: QColor | None = None) -> QPixmap | None:
+        """`element` at the skin's own size, one source pixel (two at @2x)
+        per osu! unit, `px_per_unit` screen pixels to the unit. Mirrored
+        left-right if asked: the input drum draws one half from the other.
+        Tinted by `colour` if the element takes one."""
+        source = self._sources.get(element)
+        if source is None:
+            return None
+        scale = px_per_unit / self._density.get(element, 1.0)
+        width, height = round(source.width() * scale), round(source.height() * scale)
+        if width <= 0 or height <= 0:
+            return None
+        tint = colour if SKIN_ELEMENTS.get(element) and colour is not None else None
+        key = (element, width, height, mirrored, tint.rgba() if tint is not None else 0)
+        cached = self._natural.get(key)
+        if cached is None:
+            if tint is not None:
+                source = tinted(source, tint)
+            image = source.toImage().scaled(
+                width, height, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+            if mirrored:
+                image = image.flipped(Qt.Orientation.Horizontal)
+            self._natural[key] = cached = QPixmap.fromImage(image)
         return cached
 
     def stretched(self, element: str, width: int, height: int) -> QPixmap | None:

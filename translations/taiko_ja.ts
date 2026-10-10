@@ -141,6 +141,54 @@
     <context>
         <name>MainWindow</name>
         <message>
+            <source>Autoplay</source>
+            <translation>オートプレイ</translation>
+        </message>
+        <message>
+            <source>Play the gameplay preview&apos;s drum the way a player would</source>
+            <translation>ゲームプレイプレビューの太鼓をプレイヤーのように叩きます</translation>
+        </message>
+        <message>
+            <source>Style</source>
+            <translation>スタイル</translation>
+        </message>
+        <message>
+            <source>Off</source>
+            <translation>オフ</translation>
+        </message>
+        <message>
+            <source>kddk full alternate</source>
+            <translation>kddk フルオルタ</translation>
+        </message>
+        <message>
+            <source>kddk semi alternate</source>
+            <translation>kddk セミオルタ</translation>
+        </message>
+        <message>
+            <source>kddk single tap</source>
+            <translation>kddk 片手打ち</translation>
+        </message>
+        <message>
+            <source>kddk roll</source>
+            <translation>kddk ロール</translation>
+        </message>
+        <message>
+            <source>Binding (kddk)</source>
+            <translation>キー配置 (kddk)</translation>
+        </message>
+        <message>
+            <source>Dominant hand</source>
+            <translation>利き手</translation>
+        </message>
+        <message>
+            <source>Right</source>
+            <translation>右</translation>
+        </message>
+        <message>
+            <source>Left</source>
+            <translation>左</translation>
+        </message>
+        <message>
             <source>1 beat</source>
             <translation>1 拍</translation>
         </message>

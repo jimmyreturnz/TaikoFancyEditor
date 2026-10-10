@@ -25,7 +25,7 @@ from PySide6.QtCore import (
     QTimer,
     QUrl, Signal,
 )
-from PySide6.QtGui import QImage, QImageReader, QRegion, QBrush, QColor, QFont, QFontDatabase, QFontMetrics, QKeySequence, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap, QPolygonF, QRadialGradient, QShortcut, QIcon
+from PySide6.QtGui import QActionGroup, QImage, QImageReader, QRegion, QBrush, QColor, QFont, QFontDatabase, QFontMetrics, QKeySequence, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap, QPolygonF, QRadialGradient, QShortcut, QIcon
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QAbstractItemView, QAbstractSlider, QAbstractSpinBox, QApplication, QButtonGroup, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame,
@@ -85,6 +85,7 @@ from song_library import (
     songs_from_cache,
 )
 from song_library import most_common_beat_length as library_common_beat_length
+import autoplay
 import sv_curves
 from sv_curves import _true_exp_ease, sv_ease
 from time_axis import (
@@ -555,7 +556,9 @@ def is_row_visible(layout: QFormLayout | None, widget: QWidget) -> bool:
 #
 # Which sample a note asks for. **Circles only.** A drumroll -- which is what
 # every fake slider and every shiny note is -- a spinner, and a timing point
-# are all silent. That single rule is the whole of "play them wherever normal
+# are all silent as objects. A *real* drumroll's ticks are not (owner,
+# 2026-10-10): `hitsound_schedule` voices each one as a don, the way the
+# autoplay hits it; a fake slider has no duration and so no ticks. That single rule is the whole of "play them wherever normal
 # chart notes exist, never for fake sliders or barlines", and it needs no
 # special case for the gimmick layers: the hittable note a Don/Kat fake slider
 # or a barline note writes *is* an ordinary circle in the chart, and the player
@@ -596,8 +599,26 @@ def hitsound_keys(note) -> tuple[str, ...]:
     return (small,)
 
 
+def drumroll_tick_times(note, beat_points, timing_points, slider_multiplier) -> list[float]:
+    """Where a real drumroll's ticks fall: every 1/4 beat of its red line,
+    from the head to the end. A fake slider -- no positive duration -- has
+    none. SliderTickRate 3 (1/3 beat) is not read by the parser, so not here.
+    """
+    if not note.is_slider or note.length is None or note.slides is None:
+        return []
+    timing = active_uninherited_at(beat_points, note.time)
+    duration = duration_for_slider_length(
+        note.length * note.slides, timing.beat_length,
+        sv_at(timing_points, note.time), slider_multiplier)
+    tick = timing.beat_length / 4
+    if duration <= 0 or tick <= 0:
+        return []
+    count = int(duration / tick + 1e-6) + 1
+    return [note.time + index * tick for index in range(count)]
+
+
 def hitsound_schedule(
-    hit_objects, timing_points=(),
+    hit_objects, timing_points=(), slider_multiplier: float | None = None,
 ) -> tuple[list[float], list[str], list[float]]:
     """(times, sample keys, volume fractions) for every audible note, in order.
 
@@ -613,11 +634,22 @@ def hitsound_schedule(
     `active_point_at` walks backwards a point at a time and a gimmick
     difficulty has thousands of them between any two notes.
     """
-    scheduled = sorted(
+    scheduled = [
         (float(note.time), key)
         for note in hit_objects
         for key in hitsound_keys(note)
-    )
+    ]
+    # Drumroll ticks, given the map's SliderMultiplier to derive their end.
+    if slider_multiplier is not None:
+        ordered_points = sorted_by_time(list(timing_points))
+        beat_points = uninherited_points(ordered_points)
+        if beat_points:
+            for note in hit_objects:
+                if note.is_slider:
+                    scheduled.extend(
+                        (float(time_ms), "normal") for time_ms in drumroll_tick_times(
+                            note, beat_points, ordered_points, slider_multiplier))
+    scheduled.sort()
     times = [time_ms for time_ms, _key in scheduled]
     keys = [key for _time, key in scheduled]
     ordered = sorted_by_time(list(timing_points))
@@ -731,9 +763,10 @@ class HitsoundPlayer:
         self._sent_paths = paths
         self._player.set_hitsound_samples(paths)
 
-    def set_schedule(self, hit_objects, timing_points=()) -> None:
+    def set_schedule(self, hit_objects, timing_points=(), slider_multiplier=None) -> None:
         self._objects = hit_objects
         self._points = timing_points
+        self._slider_multiplier = slider_multiplier
         self._send_schedule()
 
     @property
@@ -744,7 +777,8 @@ class HitsoundPlayer:
         reached the samples (`test_kiai_sound_layer`), and a stored copy would
         be a second few-thousand-entry list per refresh on a gimmick
         difficulty for the benefit of nothing that plays."""
-        return hitsound_schedule(self._objects, self._points)
+        return hitsound_schedule(
+            self._objects, self._points, getattr(self, "_slider_multiplier", None))
 
     def _send_schedule(self) -> None:
         self._player.set_hitsound_schedule(*self.schedule)
@@ -5004,6 +5038,53 @@ STABLE_UNIT_PER_PLAYFIELD = 768.0 / 480.0 / PLAYFIELD_UNIT
 # container at X = -24 in it (`TaikoPlayfield`). 256 playfield units is exactly
 # the 160 stable units `ComputeTimeRange` measures from, so the two agree.
 GAMEPLAY_HIT_X_UNITS = 180.0 - 24.0 + 200.0 / 2.0
+# The input drum, ppy/osu `TaikoPlayfield.INPUT_DRUM_WIDTH`, drawn only by the
+# autoplay. Its pieces as `LegacyInputDrum` places them, in playfield units:
+# (half, element, x, y, mirrored), with halves numbered 1 left kat, 2 left
+# don, 3 right don, 4 right kat. Stable's offsets are 480-space, hence 1.6.
+INPUT_DRUM_WIDTH = 180.0
+_RIGHT_HALF_X = INPUT_DRUM_WIDTH - (INPUT_DRUM_WIDTH / 1.6 - 56) * 1.6
+DRUM_LAYOUT = (
+    (2, "taiko-drum-inner", 0.0, 0.0, False),
+    (1, "taiko-drum-outer", 0.0, 0.0, True),
+    (3, "taiko-drum-inner", _RIGHT_HALF_X, 0.0, True),
+    (4, "taiko-drum-outer", _RIGHT_HALF_X, 0.0, False),
+)
+DRUM_LAYOUT_PRE_2_1 = (
+    (2, "taiko-drum-inner", 18 * 1.6, 31 * 1.6, False),
+    (1, "taiko-drum-outer", 8 * 1.6, 23 * 1.6, True),
+    (3, "taiko-drum-inner", INPUT_DRUM_WIDTH - (INPUT_DRUM_WIDTH / 1.6 - 54) * 1.6, 31 * 1.6, True),
+    (4, "taiko-drum-outer", INPUT_DRUM_WIDTH - (INPUT_DRUM_WIDTH / 1.6 - 53) * 1.6, 23 * 1.6, False),
+)
+# LegacyHalfDrum's press: `FadeTo(1, 80 * (1 - Alpha)).Delay(100)
+# .FadeOut(50)`. osu-framework's Delay counts from the *start* of the
+# sequence, not the end of the fade before it, so the half goes dark at 100ms
+# and is gone at 150ms. Read as consecutive steps it held for 230ms.
+DRUM_HIT_DOWN_MS = 80.0
+DRUM_HIT_OUT_AT_MS = 100.0
+DRUM_HIT_UP_MS = 50.0
+DRUM_HIT_LIT_MS = DRUM_HIT_OUT_AT_MS + DRUM_HIT_UP_MS
+
+
+def _drum_hit_alpha(since: float, start: float) -> float:
+    """A drum half `since` ms after a hit that found it at alpha `start`."""
+    if since < 0.0 or since >= DRUM_HIT_LIT_MS:
+        return 0.0
+    if since >= DRUM_HIT_OUT_AT_MS:
+        return 1.0 - (since - DRUM_HIT_OUT_AT_MS) / DRUM_HIT_UP_MS
+    fade_in = DRUM_HIT_DOWN_MS * (1.0 - start)
+    if since >= fade_in:
+        return 1.0
+    t = since / fade_in
+    return start + (1.0 - start) * (1.0 - (1.0 - t) ** 2)
+# LegacyKiaiGlow.
+KIAI_GLOW_IN_MS = 100.0
+KIAI_GLOW_OUT_MS = 600.0
+KIAI_GLOW_SCALE = 0.8  # TaikoLegacyHitTarget.SCALE
+HIT_TARGET_NOTE_ALPHA = 0.22  # its taikobigcircle
+KIAI_GLOW_KICK = 0.15
+KIAI_GLOW_KICK_MS = 80.0
+KIAI_GLOW_COLOR = QColor(255, 228, 0)
 # Scroll distance per beat at 1.0x SV, in stable units:
 # `100 * SliderMultiplier * VELOCITY_MULTIPLIER(1.4)`. `_scroll_scale` already
 # carries SliderMultiplier / SLIDER_MULTIPLIER_ASSUMED, so the assumed value is
@@ -5212,6 +5293,11 @@ class GameplayViewerView(QWidget):
         self._chart_fade: QVariantAnimation | None = None
         self._chart_fade_then = None
         self.hit_x_units = GAMEPLAY_HIT_X_UNITS
+        # (style, binding, left_handed) while an autoplay plays this preview,
+        # else None. Its hits, per drum half (1-4), sorted: see _rebuild_hits.
+        self.autoplay: tuple[str, str, bool] | None = None
+        self._half_hits: dict[int, list[float]] = {}
+        self._all_hits: list[float] = []
 
     def resizeEvent(self, event) -> None:
         """Take the height that makes this view exactly an osu! screen.
@@ -5311,7 +5397,42 @@ class GameplayViewerView(QWidget):
                 # of still-visible track with it.
                 self._max_extend_ms = max(
                     self._max_extend_ms, abs(phantom - note.time))
+        self._rebuild_hits()
         self.update()
+
+    def set_autoplay(self, setting: tuple[str, str, bool] | None) -> None:
+        if setting == self.autoplay:
+            return
+        self.autoplay = setting
+        self._rebuild_hits()
+        self.update()
+
+    def _rebuild_hits(self) -> None:
+        """Every drum half the autoplay hits and when, once per edit -- a frame
+        only bisects these. Rest and break lengths are judged against the
+        map's main tempo: a gimmick's 60000 BPM line would make every gap in
+        the chart a rest."""
+        self._half_hits = {half: [] for half in (1, 2, 3, 4)}
+        self._all_hits = []
+        if self.autoplay is None or not self.notes:
+            return
+        style, binding, left = self.autoplay
+        circles = [note for note in self.notes if note.is_circle]
+        beat = most_common_beat_length(self.timing_points, self.notes[-1].time) or 500.0
+        hits = list(zip(
+            (float(note.time) for note in circles),
+            autoplay.note_halves(
+                [(note.time, note.is_kat, note.is_finisher) for note in circles],
+                beat, style, binding, left)))
+        for note in self.notes:
+            if note.is_slider and note.uid in self._end_times:
+                hits.extend(autoplay.roll_halves(drumroll_tick_times(
+                    note, self.beat_points, self.timing_points, self.slider_multiplier), left))
+        hits.sort(key=lambda hit: hit[0])
+        for time_ms, halves in hits:
+            self._all_hits.append(time_ms)
+            for half in halves:
+                self._half_hits[half].append(time_ms)
 
     # Timing points move the notes here (that is the whole point of the view),
     # so an SV edit refreshes exactly like a note edit does.
@@ -5768,6 +5889,8 @@ class GameplayViewerView(QWidget):
 
         start_time, end_time = self.visible_time_range()
         hit_x = self._hit_x()
+        if self._autoplay_shown():
+            self._draw_kiai_glow(painter, hit_x, center_y, band_index)
 
         first = bisect_left(self.note_times, start_time - self._max_extend_ms)
         after_last = bisect_right(self.note_times, end_time)
@@ -5796,6 +5919,8 @@ class GameplayViewerView(QWidget):
 
         painter.setOpacity(1.0)
         painter.setRenderHint(QPainter.Antialiasing, True)
+        if not self.plain_stage:
+            self._draw_hit_target_note(painter, hit_x, center_y, big_radius)
         if not self._draw_centred(
             painter, "approachcircle", hit_x, center_y,
             normal_radius * 2 * PLAYFIELD_HIT_TARGET_SCALE,
@@ -5903,8 +6028,148 @@ class GameplayViewerView(QWidget):
                             strength, self.skin, big, "taiko-roll-end", True,
                         )
         painter.setOpacity(1.0)
+        if self._autoplay_shown():
+            # Over the notes: a roll passing the target slides under the drum.
+            self._draw_input_drum(painter, center_y)
         self._draw_flashlight(painter)
         self._draw_past_osu_edge(painter)
+
+    def _draw_hit_target_note(self, painter, hit_x, center_y, big_radius) -> None:
+        """The grey note sitting in the hit target (owner, 2026-10-10):
+        ppy/osu `TaikoLegacyHitTarget`'s `taikobigcircle`, untinted, at alpha
+        0.22 and SCALE (0.8) of its own size. Drawn under the ring rather than
+        over it as lazer does -- at 0.22 the order barely shows, and under is
+        what was asked for. Without the art, a white disc the size of a
+        finisher at the same alpha."""
+        previous = painter.opacity()
+        painter.setOpacity(previous * HIT_TARGET_NOTE_ALPHA)
+        circle = self.skin.natural(
+            "taikobigcircle", self.height() / PLAYFIELD_UNIT * KIAI_GLOW_SCALE)
+        if circle is not None:
+            painter.drawPixmap(
+                QPointF(hit_x - circle.width() / 2.0, center_y - circle.height() / 2.0), circle)
+        else:
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(255, 255, 255))
+            painter.drawEllipse(QPointF(hit_x, center_y), big_radius, big_radius)
+        painter.setOpacity(previous)
+
+    # -- autoplay ------------------------------------------------------------
+
+    def _autoplay_shown(self) -> bool:
+        # Never on song select's bare stage (owner, 2026-10-10).
+        return self.autoplay is not None and not self.plain_stage
+
+    def _half_alpha(self, half: int) -> float:
+        """How lit drum half `half` is now: ppy/osu `LegacyHalfDrum`, see
+        DRUM_HIT_OUT_AT_MS. A hit landing while the half is still lit fades
+        in from where it is, over the part of 80ms that is left -- osu!'s
+        `80 * (1 - Alpha)` -- so a stream on one half does not blink."""
+        times = self._half_hits.get(half)
+        if not times:
+            return 0.0
+        index = bisect_right(times, self.current_time) - 1
+        if index < 0:
+            return 0.0
+        start = 0.0
+        if index > 0:
+            start = _drum_hit_alpha(times[index] - times[index - 1], 0.0)
+        return _drum_hit_alpha(self.current_time - times[index], start)
+
+    def _draw_input_drum(self, painter, center_y) -> None:
+        """`taiko-bar-left` and the four drum halves, lit by the autoplay.
+
+        Laid out as ppy/osu's `LegacyInputDrum` does, in its own units: the
+        drum is INPUT_DRUM_WIDTH (180) of the playfield's 200, and each half
+        is the same art, the right one mirrored. The rim art is drawn
+        mirrored on the *left* -- skinners draw it for the right -- which is
+        why `taiko-drum-outer` is flipped where `-inner` is not. Skins before
+        2.1 place the pieces at stable's offsets instead.
+        """
+        unit = self.height() / PLAYFIELD_UNIT
+        skin = self.skin
+        painter.save()
+        painter.setClipRect(QRectF(0.0, 0.0, INPUT_DRUM_WIDTH * unit, float(self.height())))
+        bar = skin.natural("taiko-bar-left", unit)
+        if bar is not None:
+            painter.drawPixmap(QPointF(0.0, 0.0), bar)
+        else:
+            painter.fillRect(QRectF(0.0, 0.0, INPUT_DRUM_WIDTH * unit, float(self.height())),
+                             QColor(18, 21, 28))
+        layout = DRUM_LAYOUT if skin.version >= 2.1 else DRUM_LAYOUT_PRE_2_1
+        for half, element, x, y, mirrored in layout:
+            alpha = self._half_alpha(half)
+            if not skin.has(element):
+                self._draw_builtin_half(painter, half, center_y, alpha)
+                continue
+            if alpha <= 0.0:
+                continue
+            pixmap = skin.natural(element, unit, mirrored)
+            if pixmap is not None:
+                painter.setOpacity(alpha)
+                painter.drawPixmap(QPointF(x * unit, y * unit), pixmap)
+        painter.restore()
+
+    def _draw_builtin_half(self, painter, half, center_y, alpha) -> None:
+        """A drum half for a skin with no art for it: a half disc (don) or
+        half ring (kat), outlined always, filled while lit."""
+        height = self.height()
+        centre = QPointF(INPUT_DRUM_WIDTH / 2.0 * height / PLAYFIELD_UNIT, center_y)
+        outer, inner = height * 0.34, height * 0.24
+        path = QPainterPath()
+        path.setFillRule(Qt.OddEvenFill)
+        if half in (1, 4):
+            path.addEllipse(centre, outer, outer)
+        path.addEllipse(centre, inner, inner)
+        left = half in (1, 2)
+        side = QPainterPath()
+        side.addRect(QRectF(centre.x() - outer if left else centre.x(), 0.0, outer, float(height)))
+        path = path.intersected(side)
+        painter.save()
+        painter.setOpacity(1.0)
+        painter.setPen(QPen(QColor(255, 255, 255, 60), 1))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawPath(path)
+        if alpha > 0.0:
+            painter.setOpacity(alpha)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(self.kat_brush if half in (1, 4) else self.don_brush)
+            painter.drawPath(path)
+        painter.restore()
+
+    def _draw_kiai_glow(self, painter, hit_x, center_y, band_index) -> None:
+        """`taiko-glow` behind the hit target, ppy/osu `LegacyKiaiGlow`: in over
+        100ms when a kiai starts, out over 600ms after it ends, tinted
+        (255, 228, 0), at TaikoLegacyHitTarget.SCALE -- and kicked 0.15 larger
+        by each hit, easing back over 80ms."""
+        if not 0 <= band_index < len(self.kiai_bands):
+            return
+        band_start, band_end = self.kiai_bands[band_index]
+        now = self.current_time
+        if now < band_end:
+            alpha = min(1.0, (now - band_start) / KIAI_GLOW_IN_MS)
+        else:
+            alpha = 1.0 - (now - band_end) / KIAI_GLOW_OUT_MS
+        if alpha <= 0.0:
+            return
+        unit = self.height() / PLAYFIELD_UNIT
+        glow = self.skin.natural("taiko-glow", unit, colour=KIAI_GLOW_COLOR)
+        if glow is None:
+            return
+        scale = KIAI_GLOW_SCALE
+        index = bisect_right(self._all_hits, now) - 1
+        if index >= 0 and now < band_end:
+            since = now - self._all_hits[index]
+            if since < KIAI_GLOW_KICK_MS:
+                t = since / KIAI_GLOW_KICK_MS
+                scale += KIAI_GLOW_KICK * (1.0 - t) ** 2
+        width, height = glow.width() * scale, glow.height() * scale
+        previous = painter.opacity()
+        painter.setOpacity(previous * alpha)
+        painter.drawPixmap(
+            QRectF(hit_x - width / 2.0, center_y - height / 2.0, width, height),
+            glow, QRectF(glow.rect()))
+        painter.setOpacity(previous)
 
     def _unfinished_pulse_anchor(self, band_start, band_end) -> float | None:
         """`band_start` while the pulse the section left running is still fading.
@@ -13292,6 +13557,7 @@ class MainWindow(QMainWindow):
         self._rebuild_control_tabs()
         self._restore_mods()
         self._sync_mod_controls()
+        self._restore_autoplay()
         QApplication.instance().installEventFilter(self)
 
     # -- DifficultyState forwarding -----------------------------------------
@@ -15368,7 +15634,9 @@ class MainWindow(QMainWindow):
             menu.addAction(tr("MainWindow", "Convert Whole Map, Keep SV…")).triggered.connect(
                 lambda _=False: self._gimmick_pairing is not None
                 and self._experimental_conversion(self._gimmick_pairing.target))
-            experimental.setMenu(menu)
+            # A drop-up (owner, 2026-10-10).
+            experimental.clicked.connect(lambda _=False, b=experimental, m=menu: m.exec(
+                b.mapToGlobal(QPoint(0, -m.sizeHint().height()))))
             self.gimmick_experimental_button = experimental
             layout.addWidget(experimental)
 
@@ -18282,6 +18550,7 @@ class MainWindow(QMainWindow):
             if skin is not None:
                 view.set_skin(skin)
             view.set_mods(self._mods)
+            view.set_autoplay(self._autoplay)
             self._gameplay_views.append(view)
             self._editor_snap_views.append(view)
         elif view_type == "density":
@@ -19319,7 +19588,8 @@ class MainWindow(QMainWindow):
         if state is None:
             return
         self.hitsounds.set_schedule(
-            state.document.hit_objects, state.document.timing_points)
+            state.document.hit_objects, state.document.timing_points,
+            state.document.slider_multiplier)
 
     def _reschedule_hitsounds(self, state) -> None:
         """`self.hitsounds.set_schedule`, once per refresh cycle.
@@ -19336,7 +19606,9 @@ class MainWindow(QMainWindow):
             if self._doc_cache.get("hitsounds_scheduled"):
                 return
             self._doc_cache["hitsounds_scheduled"] = True
-        self.hitsounds.set_schedule(state.document.hit_objects, state.document.timing_points)
+        self.hitsounds.set_schedule(
+            state.document.hit_objects, state.document.timing_points,
+            state.document.slider_multiplier)
 
     def _refresh_difficulty_views(self, difficulty_path: Path) -> None:
         """Re-read hit objects into every open view of this difficulty after an edit.
@@ -20943,6 +21215,83 @@ class MainWindow(QMainWindow):
             for mod in group:
                 buttons[mod].setStyleSheet(mod_pill_style(mod))
         self._mod_buttons.append(buttons)
+        self._build_autoplay_button(strip)
+
+    _autoplay: tuple[str, str, bool] | None = None
+    _autoplay_choice: tuple = (None, autoplay.BINDINGS[0], False)
+
+    def _build_autoplay_button(self, strip) -> None:
+        """Autoplay (owner, 2026-10-10): the preview's input drum played the
+        way a player would, in a chosen style. One menu: style, binding,
+        dominant hand. Checked while one plays."""
+        if not hasattr(self, "_autoplay_menus"):
+            self._autoplay_menus: list[tuple[QPushButton, dict]] = []
+        button = QPushButton(tr("MainWindow", "Autoplay"))
+        button.setCheckable(True)
+        button.setFocusPolicy(Qt.NoFocus)
+        button.setToolTip(tr("MainWindow", "Play the gameplay preview's drum the way a player would"))
+        menu = QMenu(button)
+        actions: dict = {}
+        sections = (
+            ("style", tr("MainWindow", "Style"), (
+                (None, tr("MainWindow", "Off")),
+                (autoplay.FULL_ALT, tr("MainWindow", "kddk full alternate")),
+                (autoplay.SEMI_ALT, tr("MainWindow", "kddk semi alternate")),
+                (autoplay.SINGLE_TAP, tr("MainWindow", "kddk single tap")),
+                (autoplay.ROLL, tr("MainWindow", "kddk roll")),
+                (autoplay.DDKK, "ddkk"),
+            )),
+            ("binding", tr("MainWindow", "Binding (kddk)"), tuple((b, b) for b in autoplay.BINDINGS)),
+            ("left", tr("MainWindow", "Dominant hand"), (
+                (False, tr("MainWindow", "Right")),
+                (True, tr("MainWindow", "Left")),
+            )),
+        )
+        for key, title, choices in sections:
+            menu.addSection(title)
+            group = QActionGroup(menu)
+            for value, label in choices:
+                action = menu.addAction(label)
+                action.setCheckable(True)
+                group.addAction(action)
+                action.triggered.connect(lambda _=False, k=key, v=value: self._choose_autoplay(k, v))
+                actions[(key, value)] = action
+        button.setMenu(menu)
+        strip.addWidget(button)
+        self._autoplay_menus.append((button, actions))
+
+    def _choose_autoplay(self, key: str, value) -> None:
+        style, binding, left = self._autoplay_choice
+        if key == "style":
+            style = value
+        elif key == "binding":
+            binding = value
+        else:
+            left = value
+        self._set_autoplay_choice(style, binding, left)
+
+    def _set_autoplay_choice(self, style, binding: str, left: bool) -> None:
+        # The binding and hand are kept while Off, so turning it back on
+        # plays the way it last did.
+        self._autoplay_choice = (style, binding, left)
+        self._autoplay = (style, binding, left) if style is not None else None
+        self.settings.set_value("playback/autoplay", f"{style or ''},{binding},{int(left)}")
+        for view in self._gameplay_views:
+            view.set_autoplay(self._autoplay)
+        for button, actions in getattr(self, "_autoplay_menus", []):
+            button.setChecked(style is not None)
+            for (key, value), action in actions.items():
+                action.setChecked(value == {"style": style, "binding": binding, "left": left}[key])
+
+    def _restore_autoplay(self) -> None:
+        saved = self.settings.string_value("playback/autoplay", "")
+        # kddk full alt until the user picks otherwise (owner, 2026-10-10).
+        # Off is saved as an empty style, so it survives a restart.
+        style, binding, left = ((saved or autoplay.FULL_ALT) + ",,").split(",")[:3]
+        self._set_autoplay_choice(
+            style if style in autoplay.STYLES else None,
+            binding if binding in autoplay.BINDINGS else autoplay.BINDINGS[0],
+            left == "1")
 
     def _rate_mod(self) -> str | None:
         return next((mod for mod in MOD_ORDER if mod in self._mods and mod in RATE_MODS), None)
@@ -21064,11 +21413,11 @@ class MainWindow(QMainWindow):
             self.player.pause()
             self._set_views_playing(False)
             self.play_button.setText(tr("MainWindow", "Play"))
-            if hasattr(self,"timeline_play_button"):self.timeline_play_button.setText("▶")
+            # The glyph buttons keep their typed "▶" for good: it is only
+            # there for width, and swapping in the wider "❚❚" grew the button
+            # under the glyph on every Play.
             if hasattr(self,"fancy_play_glyph"):self.fancy_play_glyph.set_playing(False)
-            if hasattr(self,"editor_play_button"):self.editor_play_button.setText("▶")
             if hasattr(self,"editor_play_glyph"):self.editor_play_glyph.set_playing(False)
-            if hasattr(self,"gimmick_play_button"):self.gimmick_play_button.setText("▶")
             if hasattr(self,"gimmick_play_glyph"):self.gimmick_play_glyph.set_playing(False)
         else:
             # The anchor is already the playhead, to the fraction of a
@@ -21086,11 +21435,8 @@ class MainWindow(QMainWindow):
             self._last_predicted_position=self.audio_anchor_position
             self._awaiting_rate_report=False
             self.play_button.setText(tr("MainWindow", "Pause"))
-            if hasattr(self,"timeline_play_button"):self.timeline_play_button.setText("❚❚")
             if hasattr(self,"fancy_play_glyph"):self.fancy_play_glyph.set_playing(True)
-            if hasattr(self,"editor_play_button"):self.editor_play_button.setText("❚❚")
             if hasattr(self,"editor_play_glyph"):self.editor_play_glyph.set_playing(True)
-            if hasattr(self,"gimmick_play_button"):self.gimmick_play_button.setText("❚❚")
             if hasattr(self,"gimmick_play_glyph"):self.gimmick_play_glyph.set_playing(True)
 
     def seek_audio(self, position: float) -> None:

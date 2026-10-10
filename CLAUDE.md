@@ -217,10 +217,9 @@ its constants are `ppy/osu`'s and not chosen by eye. Read them from
 ### The playfield is the skin's, and 200 is the unit
 
 `GameplayViewerView` draws the wiki's playfield list — the bar, its kiai glow,
-the scrolling background, the barline, the hit target, `lighting`. **Not the
-input drum** (`taiko-bar-left`, `taiko-drum-inner`, `taiko-drum-outer`): the
-wiki files it under the playfield, but it is where the player hits rather than
-where the notes are, and nobody is hitting a preview. `TaikoPlayfield
+the scrolling background, the barline, the hit target, `lighting`. The **input
+drum** (`taiko-bar-left`, `taiko-drum-inner`, `taiko-drum-outer`) and
+`taiko-glow` are the autoplay's, below, and never drawn without one. `TaikoPlayfield
 .BASE_HEIGHT` is 200 and **every** playfield element in the wiki is sized
 against that same 200 (bar 1024x200, barline 4x175, background 776x162), so the
 view's height *is* the 200 and each constant is the wiki's number over it. That is also what keeps `TAIKO_NOTE_SIZE` and the panels
@@ -245,12 +244,42 @@ Three things that cost real time here:
 Deliberately not loaded, each because it depicts something this preview is not
 doing: the **hit explosions** (`taiko-hit300*`) and `taiko-slider-fail` — a
 judgement happens to a player, and nobody is playing, so a 300 burst would be
-inventing an autoplay run; `taiko-glow` and `lighting` — a bloom around a
-target where nothing is judged; the **input drum** (`taiko-bar-left`,
-`taiko-drum-inner`, `taiko-drum-outer`) — where the player hits, not where the
-notes are; `sliderscorepoint` — drumroll ticks need `SliderTickRate`, which the
+inventing a judgement the autoplay does not make; `sliderscorepoint` — drumroll ticks need `SliderTickRate`, which the
 parser does not read; and `pippidon*` — a mascot, in 6 of 39 installed skins,
 and the only element needing BPM-synced frames.
+
+### Autoplay: the owner's hands, not osu!'s
+
+The editor strips' **Autoplay** menu (owner, 2026-10-10) plays the preview's
+input drum in a playstyle -- kddk full alt, semi alt, single tap, roll, ddkk --
+with a binding (1234, 1324, 4231) and a dominant hand -- kddk full alt until
+the user picks otherwise; Off is saved like any choice. `autoplay.py` assigns
+the halves; its rules were taken down from the owner typing how *they* play
+interview strings in 1234, and `tests/test_autoplay.py` holds those answers
+verbatim. Change a rule only by asking for another string -- semi alt in
+particular is "80% full alt, 20% single tap, no big rule", so it is a stable
+hash of the note time, not a derivation.
+
+- **Never on song select** (`plain_stage`), and nothing is judged: no hit
+  explosions, no flying notes. In-app play testing is a later, bigger thing.
+- Rests and breaks are measured against the map's **main** beat
+  (`most_common_beat_length`): under a gimmick's 60000 BPM line every gap is a
+  rest.
+- **A half is lit for 150ms, not 230.** `LegacyHalfDrum` is
+  `FadeTo(1, 80).Delay(100).FadeOut(50)`, and osu-framework's `Delay` counts
+  from the start of the sequence, not the end of the fade before it. Read as
+  three consecutive steps, every hit held visibly too long (owner, 2026-10-10).
+- **A real drumroll is heard**: `hitsound_schedule` voices a don on every
+  tick (`drumroll_tick_times`, 1/4 beat), the same ticks the autoplay hits. A
+  fake slider has no duration, so no ticks, so it stays silent.
+- The hit target holds `taikobigcircle` at 0.22 alpha (`TaikoLegacyHitTarget`),
+  under the ring, everywhere but the bare stage.
+- Layout and timings are ppy/osu's current `LegacyInputDrum` / `LegacyKiaiGlow`.
+  The rim art is drawn **mirrored on the left** -- skinners draw it for the
+  right half -- and skins before 2.1 (or with a skin.ini naming no version)
+  use stable's offsets. `TaikoSkin.natural` is the one place an element is
+  drawn at its own size, so it is the one place that needs to know a file was
+  `@2x`.
 
 ### A drumroll is three pieces, and the wiki gives their origins
 

@@ -3,7 +3,10 @@
     python tools/profile_playback.py <a real .osu> [frames] [--gimmick]
                                      [--gameplay] [--skin NAME] [--profile]
                                      [--at MS] [--playing RATE] [--view-opacity N]
-                                     [--focused] [--no-motion]
+                                     [--focused] [--no-motion] [--autoplay STYLE]
+
+--autoplay plays the gameplay preview's input drum in STYLE (autoplay.STYLES,
+or "off"); without it the run uses whatever the settings last saved.
 
 --playing plays the song for real at RATE and reports the gaps between the
 app's own rendered frames instead of timing synthetic ones.
@@ -104,6 +107,12 @@ if "--skin" in sys.argv:
     window.settings.set_value("appearance/skin", name)
     window._apply_appearance_settings()
     print(f"     skin: {window.skin.name or '(built-in)'}")
+    app.processEvents()
+
+if "--autoplay" in sys.argv:
+    style = sys.argv[sys.argv.index("--autoplay") + 1]
+    window._set_autoplay_choice(None if style == "off" else style, "1234", False)
+    print(f"     autoplay: {style}")
     app.processEvents()
 
 if "--focused" in sys.argv:
